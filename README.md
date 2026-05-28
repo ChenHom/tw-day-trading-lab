@@ -63,6 +63,7 @@ docs/
   rebuild-baseline.md   # 從舊專案整理出的重建基線
   data-contracts.md     # schema / sample contract
   mvp-roadmap.md        # 第一階段工作順序
+  development-work.md   # 開發工作拆解與驗收標準
 ```
 
 ## Current Decision
