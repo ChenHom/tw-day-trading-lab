@@ -1,0 +1,8 @@
+id,position_id,timestamp,symbol,action,price,vwap,ma_5,reason,entry_price,stop_loss,position_size,mfe,mae,realized_r,context
+enter-2330,pos-2330,2026-03-25T09:10:00,2330,ENTER,600,599,598,進場訊號觸發,600,595,1000,,,,"{""source_tag"": ""manual_watchlist""}"
+exit-2330,pos-2330,2026-03-25T09:20:00,2330,EXIT_STOP_LOSS,594,596,597,觸發出場條件: EXIT_STOP_LOSS,600,595,1000,,,-1.2,"{""realized_r"": -1.2}"
+enter-4967-a,pos-4967-a,2026-03-25T09:29:05,4967,ENTER,260,258,257,進場訊號觸發,260,258,1000,,,,"{}"
+enter-4967-b,pos-4967-b,2026-03-25T09:29:05,4967,ENTER,260,258,257,進場訊號觸發,260,258,1000,,,,"{}"
+exit-4967-a,pos-4967-a,2026-03-25T09:30:45,4967,EXIT_STOP_LOSS,258,258,258,觸發出場條件: EXIT_STOP_LOSS,260,258,1000,,,-1.0,"{}"
+enter-missing-exit,pos-missing,2026-03-25T10:05:00,6187,ENTER,947,944,944,進場訊號觸發,947,944,1000,,,,"{}"
+enter-debug,pos-debug,2026-03-25T14:10:00,2330,ENTER,600,599,598,強制下單測試,600,595,1000,,,,"{""source_tag"": ""debug""}"

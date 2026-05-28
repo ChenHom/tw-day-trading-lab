@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from html import escape
+from typing import Any
 
 from .models import CandidateScore
 
 
-def render_markdown(trading_date: str, candidates: list[CandidateScore]) -> str:
+def render_markdown(
+    trading_date: str,
+    candidates: list[CandidateScore],
+    sample_summary: dict[str, Any] | None = None,
+) -> str:
+    """Render the daily candidate report as Markdown."""
     actionable = [item for item in candidates if item.next_day_actionable]
     lines = [
         f"# 台股當沖日報 {trading_date}",
@@ -32,14 +38,19 @@ def render_markdown(trading_date: str, candidates: list[CandidateScore]) -> str:
             "",
             "## 樣本統計",
             "",
-            "- valid / excluded / needs_review：尚未接 replay ledger",
+            _format_sample_summary_markdown(sample_summary),
             "- simulation 樣本必須和 replay 樣本分開列示",
         ]
     )
     return "\n".join(lines) + "\n"
 
 
-def render_html(trading_date: str, candidates: list[CandidateScore]) -> str:
+def render_html(
+    trading_date: str,
+    candidates: list[CandidateScore],
+    sample_summary: dict[str, Any] | None = None,
+) -> str:
+    """Render the daily candidate report as a small standalone HTML page."""
     rows = []
     for item in candidates:
         downgrade = ", ".join(item.downgrade_reasons) if item.downgrade_reasons else "-"
@@ -70,6 +81,7 @@ def render_html(trading_date: str, candidates: list[CandidateScore]) -> str:
 <body>
   <h1>台股當沖日報 {escape(trading_date)}</h1>
   <p>第一階段只允許 replay / paper / simulation 驗證，禁止真實自動下單。</p>
+  <p>{escape(_format_sample_summary_text(sample_summary))}</p>
   <table>
     <thead>
       <tr>
@@ -85,3 +97,26 @@ def render_html(trading_date: str, candidates: list[CandidateScore]) -> str:
 </html>
 """
 
+
+def _format_sample_summary_markdown(sample_summary: dict[str, Any] | None) -> str:
+    """Format validity counts for Markdown while keeping the old fallback text."""
+    if not sample_summary:
+        return "- valid / excluded / needs_review：尚未接 replay ledger"
+    return (
+        "- valid / excluded / needs_review："
+        f"{sample_summary.get('valid', 0)} / "
+        f"{sample_summary.get('excluded', 0)} / "
+        f"{sample_summary.get('needs_review', 0)}"
+    )
+
+
+def _format_sample_summary_text(sample_summary: dict[str, Any] | None) -> str:
+    """Format validity counts for HTML text."""
+    if not sample_summary:
+        return "valid / excluded / needs_review：尚未接 replay ledger"
+    return (
+        "valid / excluded / needs_review："
+        f"{sample_summary.get('valid', 0)} / "
+        f"{sample_summary.get('excluded', 0)} / "
+        f"{sample_summary.get('needs_review', 0)}"
+    )

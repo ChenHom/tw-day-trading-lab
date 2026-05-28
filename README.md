@@ -41,6 +41,11 @@ python3 -m tw_day_trading_lab.cli report daily \
   --input reports/2026-05-28-candidates.json \
   --format md \
   --output reports/2026-05-28-daily.md
+python3 -m tw_day_trading_lab.cli old-logs import \
+  --date 2026-03-25 \
+  --input examples/old-log.sample.csv \
+  --output reports/old-log-sample-samples.json \
+  --report-output reports/old-log-sample-failure.md
 ```
 
 如果沒有安裝 package，先加上 `PYTHONPATH=src`：
@@ -64,6 +69,7 @@ docs/
   data-contracts.md     # schema / sample contract
   mvp-roadmap.md        # 第一階段工作順序
   development-work.md   # 開發工作拆解與驗收標準
+  old-log-importer.md   # P1 舊 log / CSV importer 說明
 ```
 
 ## Current Decision

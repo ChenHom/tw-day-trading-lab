@@ -64,6 +64,8 @@
 
 ### P1. Old Log / CSV Importer
 
+目前狀態：已完成 MVP。
+
 目標：把舊專案失敗資料轉成新系統可驗證樣本。
 
 工作項目：
@@ -96,6 +98,21 @@
 - `tests/test_old_log_importer.py`
 - `docs/old-log-importer.md`
 - `examples/old-log.sample.csv`
+
+實際產出：
+
+- `src/tw_day_trading_lab/old_log_importer.py`
+- `tests/test_old_log_importer.py`
+- `docs/old-log-importer.md`
+- `examples/old-log.sample.csv`
+- CLI：`tw-daytrade old-logs import`
+- Daily report sample summary：`tw-daytrade report daily --samples ...`
+
+驗證結果：
+
+- sample fixture：valid / excluded / needs_review = 1 / 3 / 1。
+- 舊 log `2026-03-25`：events 1410，valid / excluded / needs_review = 0 / 8 / 0，8 筆皆因 `duplicate_enter_same_symbol_timestamp` 排除。
+- 舊 log `2026-04-01`：events 2467，valid / excluded / needs_review = 0 / 8 / 0，2 筆雙 ENTER、6 筆 after-hours entry 排除。
 
 ### P2. TiDB Integration
 
@@ -189,23 +206,23 @@
 
 ## 4. Immediate Next Sprint
 
-推薦下一個 sprint：P1 Old Log / CSV Importer。
+推薦下一個 sprint：P2 TiDB Integration。
 
 任務切分：
 
-1. 探索舊 repo log / CSV 欄位與路徑。
-2. 建立 importer contract 與 sample fixture。
-3. 實作 normalized lifecycle parser。
-4. 實作 sample classifier。
-5. 接 daily report 的 valid / excluded / needs_review 區塊。
-6. 補 tests。
+1. 建立最小 DB port / repository protocol。
+2. 實作 TiDB adapter，但讓核心邏輯只依賴 protocol。
+3. 套用 `sql/001_init.sql`。
+4. 寫入 P1 產生的 valid samples。
+5. 讀回 summary，確認 report 可重現。
+6. 補 TiDB smoke 文件與 adapter tests。
 7. commit。
 
 完成標準：
 
-- 至少匯入一份舊 log sample。
-- 已知雙 `ENTER` 能被偵測。
-- 產生 failure replay report。
+- TiDB schema 可重複套用。
+- sample valid/excluded/needs_review 可寫入與讀回。
+- DB adapter 不滲進 importer / classifier 核心邏輯。
 - tests 通過。
 
 ## 5. Working Commands
@@ -215,6 +232,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli candidates build --date 2026-05-28 --input examples/candidates.sample.json
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli report daily --date 2026-05-28 --input reports/2026-05-28-candidates.json --format md
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli notify telegram --date 2026-05-28 --report reports/2026-05-28-daily.md --dry-run
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli old-logs import --date 2026-03-25 --input examples/old-log.sample.csv --output reports/old-log-sample-samples.json --report-output reports/old-log-sample-failure.md
 ```
 
 ## 6. Backlog
