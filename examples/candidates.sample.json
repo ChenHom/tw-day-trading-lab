@@ -1,0 +1,39 @@
+[
+  {
+    "symbol": "2330",
+    "name": "台積電",
+    "trading_money": 18500000000,
+    "change_pct": 2.1,
+    "intraday_range_pct": 2.6,
+    "volume_expansion": 1.4,
+    "theme_strength": 0.9,
+    "structure_quality": 0.82,
+    "crowding_risk": 0.42,
+    "data_quality": "ok"
+  },
+  {
+    "symbol": "3017",
+    "name": "奇鋐",
+    "trading_money": 3200000000,
+    "change_pct": 5.4,
+    "intraday_range_pct": 5.9,
+    "volume_expansion": 2.8,
+    "theme_strength": 0.78,
+    "structure_quality": 0.74,
+    "crowding_risk": 0.68,
+    "data_quality": "ok"
+  },
+  {
+    "symbol": "9999",
+    "name": "低流動測試",
+    "trading_money": 12000000,
+    "change_pct": 9.8,
+    "intraday_range_pct": 8.2,
+    "volume_expansion": 4.5,
+    "theme_strength": 0.4,
+    "structure_quality": 0.3,
+    "crowding_risk": 0.9,
+    "data_quality": "ok"
+  }
+]
+

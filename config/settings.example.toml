@@ -1,0 +1,30 @@
+[app]
+timezone = "Asia/Taipei"
+raw_data_dir = "data/raw"
+processed_data_dir = "data/processed"
+report_dir = "reports"
+
+[tidb]
+host = "127.0.0.1"
+port = 4000
+user = "root"
+password = ""
+database = "tw_day_trading_lab"
+
+[quota.finmind]
+hourly_limit = 600
+planned_hourly_calls = 540
+
+[quota.shioaji]
+quote_calls_per_5s = 50
+subscribe_limit = 200
+planned_subscribe_limit = 100
+intraday_ticks_query_limit = 10
+intraday_kbars_query_limit = 270
+
+[candidate]
+top_n = 80
+min_trading_money = 80000000
+min_intraday_range_pct = 1.5
+max_crowding_risk = 0.8
+
