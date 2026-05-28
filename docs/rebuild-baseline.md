@@ -6,6 +6,8 @@
 
 新專案 repo：`~/services/stock/tw-day-trading-lab`
 
+預設分支：`master`
+
 原因：
 
 - `lab` 表示第一階段是候選、回放、樣本與執行鏈路驗證。
@@ -56,3 +58,15 @@ First, achieve the goal of producing value as the top priority.
 - 用 simulation 成交結果直接宣稱策略有效。
 - 用 raw signal log 直接算績效。
 
+## 為什麼先做舊 log / CSV importer
+
+舊 log importer 的目的不是修補舊策略，也不是讓舊系統復活。它的目的只有一個：把舊失敗轉成新系統的驗證資料。
+
+具體價值：
+
+- 驗證樣本分級：debug、強制下單、盤後測試、資料缺口、重複開倉必須被標成 `excluded` 或 `needs_review`。
+- 驗證 ledger：同一 `idempotency_key` 或同 symbol / setup 重複開倉必須被擋下。
+- 驗證報告：日報必須能清楚列出 valid / excluded / needs_review，而不是只回報漂亮的勝率。
+- 驗證新架構：如果連舊失敗都無法被正確分類，新系統還不該接真實資料。
+
+因此 Q7 的推薦答案是先做舊 log / CSV importer，再接 FinMind nightly ingestion。

@@ -69,3 +69,17 @@ docs/
 
 專案名稱採用 `tw-day-trading-lab`，因為第一階段定位是 lab：先快速證明候選、樣本與執行鏈路是否有價值，再決定是否拆出正式 live execution service。
 
+預設分支使用 `master`。
+
+## Why Import Old Logs First
+
+舊 log / CSV importer 不是為了沿用舊策略，而是為了把舊系統的失敗資料轉成可驗證的反例資料。
+
+第一階段先匯入舊 log 的價值：
+
+- 立刻驗證 `valid / excluded / needs_review` 樣本分級是否能擋掉 debug、盤後測試、重複開倉與資料污染。
+- 立刻重現同秒同標的雙 `ENTER` 問題，確認新 ledger 的 `idempotency_key` 能防住。
+- 先用已知失敗樣本測報告與統計，避免新系統只在乾淨 sample 上看起來正常。
+- 更快建立「不要再做什麼」的規則，這比一開始接新資料更快產生價值。
+
+FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的候選資料來源，而不是用來回答舊系統到底壞在哪裡。
