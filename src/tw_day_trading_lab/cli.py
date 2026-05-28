@@ -8,6 +8,16 @@ from .candidate_engine import rank_candidates
 from .models import CandidateInput, CandidateScore
 from .old_log_importer import import_trade_log_csv, render_failure_replay_markdown
 from .reports import render_html, render_markdown
+from .storage import (
+    DatabaseStorage,
+    TiDBConfig,
+    apply_schema_file,
+    connect_tidb,
+    load_candidate_payload,
+    load_import_payload,
+    persist_candidate_run,
+    persist_import_samples,
+)
 
 
 def load_candidate_inputs(path: Path) -> list[CandidateInput]:
@@ -78,6 +88,26 @@ def cmd_candidates_build(args: argparse.Namespace) -> None:
     print(output)
 
 
+def cmd_candidates_persist(args: argparse.Namespace) -> None:
+    """Persist ranked candidate output into TiDB."""
+    config = TiDBConfig.from_env()
+    connection = connect_tidb(config, use_database=True)
+    try:
+        storage = DatabaseStorage(connection, dialect="tidb")
+        run_id = args.run_id or f"{args.date}:{args.source}"
+        summary = persist_candidate_run(
+            storage,
+            run_id=run_id,
+            trading_date=args.date,
+            source=args.source,
+            status=args.status,
+            candidates=load_candidate_payload(Path(args.input)),
+        )
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    finally:
+        connection.close()
+
+
 def cmd_report_daily(args: argparse.Namespace) -> None:
     """Build the daily candidate report, optionally including sample counts."""
     candidates = load_candidate_scores(Path(args.input))
@@ -118,6 +148,40 @@ def cmd_old_logs_import(args: argparse.Namespace) -> None:
     print(report_output)
 
 
+def cmd_db_init(args: argparse.Namespace) -> None:
+    """Apply the TiDB schema through the MySQL protocol."""
+    config = TiDBConfig.from_env()
+    connection = connect_tidb(config, use_database=False)
+    try:
+        apply_schema_file(connection, Path(args.schema), database=config.database)
+        print(f"schema applied: {config.database}")
+    finally:
+        connection.close()
+
+
+def cmd_samples_persist(args: argparse.Namespace) -> None:
+    """Persist old-log import JSON samples into TiDB."""
+    config = TiDBConfig.from_env()
+    connection = connect_tidb(config, use_database=True)
+    try:
+        storage = DatabaseStorage(connection, dialect="tidb")
+        summary = persist_import_samples(storage, load_import_payload(Path(args.input)))
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    finally:
+        connection.close()
+
+
+def cmd_samples_summary(args: argparse.Namespace) -> None:
+    """Print persisted sample validity counts from TiDB."""
+    config = TiDBConfig.from_env()
+    connection = connect_tidb(config, use_database=True)
+    try:
+        storage = DatabaseStorage(connection, dialect="tidb")
+        print(json.dumps(storage.fetch_sample_summary(), ensure_ascii=False, indent=2))
+    finally:
+        connection.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create the CLI parser and bind each command to its composition function."""
     parser = argparse.ArgumentParser(prog="tw-daytrade")
@@ -131,6 +195,13 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--output")
     build.add_argument("--limit", type=int, default=80)
     build.set_defaults(func=cmd_candidates_build)
+    persist_candidates = candidate_sub.add_parser("persist")
+    persist_candidates.add_argument("--date", required=True)
+    persist_candidates.add_argument("--input", required=True)
+    persist_candidates.add_argument("--run-id")
+    persist_candidates.add_argument("--source", default="cli")
+    persist_candidates.add_argument("--status", default="generated")
+    persist_candidates.set_defaults(func=cmd_candidates_persist)
 
     report = subparsers.add_parser("report")
     report_sub = report.add_subparsers(required=True)
@@ -158,6 +229,20 @@ def build_parser() -> argparse.ArgumentParser:
     old_logs_import.add_argument("--output")
     old_logs_import.add_argument("--report-output")
     old_logs_import.set_defaults(func=cmd_old_logs_import)
+
+    db = subparsers.add_parser("db")
+    db_sub = db.add_subparsers(required=True)
+    db_init = db_sub.add_parser("init")
+    db_init.add_argument("--schema", default="sql/001_init.sql")
+    db_init.set_defaults(func=cmd_db_init)
+
+    samples = subparsers.add_parser("samples")
+    samples_sub = samples.add_subparsers(required=True)
+    samples_persist = samples_sub.add_parser("persist")
+    samples_persist.add_argument("--input", required=True)
+    samples_persist.set_defaults(func=cmd_samples_persist)
+    samples_summary = samples_sub.add_parser("summary")
+    samples_summary.set_defaults(func=cmd_samples_summary)
 
     return parser
 

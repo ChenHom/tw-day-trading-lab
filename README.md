@@ -46,6 +46,10 @@ python3 -m tw_day_trading_lab.cli old-logs import \
   --input examples/old-log.sample.csv \
   --output reports/old-log-sample-samples.json \
   --report-output reports/old-log-sample-failure.md
+python3 -m tw_day_trading_lab.cli db init --schema sql/001_init.sql
+python3 -m tw_day_trading_lab.cli samples persist \
+  --input reports/old-log-sample-samples.json
+python3 -m tw_day_trading_lab.cli samples summary
 ```
 
 如果沒有安裝 package，先加上 `PYTHONPATH=src`：
@@ -61,6 +65,7 @@ src/tw_day_trading_lab/
   candidate_engine.py   # 候選排序與 next_day_actionable 初版規則
   ledger.py             # paper / simulation idempotency 與部位生命週期骨架
   reports.py            # Markdown / HTML 報告
+  storage.py            # repository ports + TiDB/SQLite adapters
   cli.py                # MVP CLI
 sql/
   001_init.sql          # TiDB schema
@@ -70,6 +75,7 @@ docs/
   mvp-roadmap.md        # 第一階段工作順序
   development-work.md   # 開發工作拆解與驗收標準
   old-log-importer.md   # P1 舊 log / CSV importer 說明
+  tidb-integration.md   # P2 TiDB repository / CLI 說明
 ```
 
 ## Current Decision

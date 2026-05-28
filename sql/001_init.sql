@@ -58,7 +58,10 @@ CREATE TABLE IF NOT EXISTS valid_samples (
   realized_r_net DECIMAL(10, 4) NULL,
   validity VARCHAR(32) NOT NULL,
   exclusion_reason VARCHAR(128) NULL,
-  UNIQUE KEY uniq_sample_idempotency (idempotency_key)
+  position_id VARCHAR(96) NULL,
+  event_count INT NOT NULL DEFAULT 0,
+  warnings JSON NULL,
+  KEY idx_sample_idempotency (idempotency_key)
 );
 
 CREATE TABLE IF NOT EXISTS order_intents (
@@ -71,4 +74,3 @@ CREATE TABLE IF NOT EXISTS order_intents (
   status VARCHAR(32) NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-

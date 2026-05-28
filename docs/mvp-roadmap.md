@@ -18,11 +18,14 @@
 
 ## Phase 2: Candidate DB
 
+目前狀態：TiDB repository MVP 已完成；FinMind / Shioaji ingestion 尚未開始。
+
 - FinMind nightly ingestion。
 - Shioaji scanner / snapshot ingest。
 - fetch ledger / API quota ledger。
 - Parquet raw data storage。
-- TiDB candidate metadata。
+- TiDB candidate metadata：已可保存 candidate runs / items。
+- TiDB classified samples：已可保存 valid / excluded / needs_review，並保留 duplicate ENTER evidence。
 
 ## Phase 3: Candidate Engine
 

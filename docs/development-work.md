@@ -116,6 +116,8 @@
 
 ### P2. TiDB Integration
 
+目前狀態：已完成 MVP。
+
 目標：讓 metadata / sample / quota ledger 可保存與查詢。
 
 工作項目：
@@ -130,6 +132,32 @@
 - TiDB schema 可重複執行。
 - sample valid/excluded/needs_review 可寫入與讀回。
 - DB 失敗不讓策略核心吞錯；要明確回報。
+
+實際產出：
+
+- `src/tw_day_trading_lab/storage.py`
+- `tests/test_storage.py`
+- `docs/tidb-integration.md`
+- CLI：`tw-daytrade db init`
+- CLI：`tw-daytrade samples persist`
+- CLI：`tw-daytrade samples summary`
+- CLI：`tw-daytrade candidates persist`
+
+設計結果：
+
+- `SampleRepository` / `CandidateRepository` protocol 是核心可依賴的 port。
+- `DatabaseStorage` 是 DB-API adapter；unit tests 用 SQLite，runtime 用 TiDB。
+- `connect_tidb` 只在 adapter / CLI 邊界使用，importer / classifier 不依賴 DB client。
+- `valid_samples.idempotency_key` 改為非唯一 index，以保留 duplicate ENTER 反例；真正的防重複下單仍由 `order_intents.idempotency_key` primary key 負責。
+
+驗證結果：
+
+- `PYTHONPATH=src python3 -m unittest discover -s tests -v`：15 tests OK。
+- `PYTHONPATH=src python3 -m compileall -q src tests`：OK。
+- `tw-daytrade db init` 連續執行兩次均成功。
+- TiDB sample persist / summary：valid / excluded / needs_review = 1 / 3 / 1。
+- TiDB duplicate evidence：同一 idempotency key 保留 2 rows。
+- TiDB candidate persist：`p2-smoke-2026-05-28` item_count 3，actionable_count 2。
 
 ### P3. FinMind Nightly Ingestion
 
@@ -206,23 +234,24 @@
 
 ## 4. Immediate Next Sprint
 
-推薦下一個 sprint：P2 TiDB Integration。
+推薦下一個 sprint：P3 FinMind Nightly Ingestion。
 
 任務切分：
 
-1. 建立最小 DB port / repository protocol。
-2. 實作 TiDB adapter，但讓核心邏輯只依賴 protocol。
-3. 套用 `sql/001_init.sql`。
-4. 寫入 P1 產生的 valid samples。
-5. 讀回 summary，確認 report 可重現。
-6. 補 TiDB smoke 文件與 adapter tests。
+1. 建立 `fetch_ledger` repository method，先可記錄 dataset/date/stock/source/status/request_count。
+2. 讀取 FinMind token，但無 token 時不可 crash，要回報 setup/auth 缺口。
+3. 實作 planned calls estimator，保守上限 540/hr。
+4. 先做小 universe fixture，測同一 dataset/date/stock 重跑會 skip。
+5. 輸出 ingestion summary：planned / actual / skipped / failed。
+6. 補 FinMind ingestion 文件與 tests。
 7. commit。
 
 完成標準：
 
-- TiDB schema 可重複套用。
-- sample valid/excluded/needs_review 可寫入與讀回。
-- DB adapter 不滲進 importer / classifier 核心邏輯。
+- 無 token 時不 crash，錯誤可讀。
+- 有 token 時可查 quota 或最小 dataset smoke。
+- 重跑同一 dataset/date/stock 不重複打 API。
+- planned calls 不超過 540/hr。
 - tests 通過。
 
 ## 5. Working Commands
@@ -233,6 +262,10 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli candidates build --date 2026-05
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli report daily --date 2026-05-28 --input reports/2026-05-28-candidates.json --format md
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli notify telegram --date 2026-05-28 --report reports/2026-05-28-daily.md --dry-run
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli old-logs import --date 2026-03-25 --input examples/old-log.sample.csv --output reports/old-log-sample-samples.json --report-output reports/old-log-sample-failure.md
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli db init --schema sql/001_init.sql
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli samples persist --input reports/old-log-sample-samples.json
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli samples summary
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli candidates persist --date 2026-05-28 --input reports/2026-05-28-candidates.json --run-id p2-smoke-2026-05-28 --source sample-fixture --status generated
 ```
 
 ## 6. Backlog

@@ -47,6 +47,35 @@
 
 策略 expectancy 只能使用 `validity = valid` 的樣本。
 
+## Persisted Strategy Samples
+
+TiDB `valid_samples` table 目前保存 classified strategy samples。雖然沿用 `valid_samples` 名稱，實際內容包含：
+
+- `valid`
+- `excluded`
+- `needs_review`
+
+`idempotency_key` 在 sample table 是非唯一 index，因為舊 log 反例需要保留 duplicate ENTER 的污染證據。真正防止重複下單的唯一約束放在 `order_intents.idempotency_key`。
+
+新增欄位：
+
+| 欄位 | 說明 |
+|---|---|
+| `position_id` | 舊 log position lifecycle id |
+| `event_count` | entry + exits event 數 |
+| `warnings` | sample 級警告 JSON |
+
+## Candidate Persistence
+
+TiDB candidate tables：
+
+| Table | 說明 |
+|---|---|
+| `candidate_runs` | 每次候選產生的 run metadata |
+| `candidate_items` | 每個 run 內的 ranked candidates |
+
+`candidate_items` 使用 `(run_id, symbol)` 作為 primary key，重跑同一 run 會更新同一批候選，不會重複插入。
+
 ## Old Log Import Output
 
 `tw-daytrade old-logs import` 會輸出：
