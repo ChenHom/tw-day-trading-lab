@@ -1,6 +1,10 @@
 # MVP Roadmap
 
-## Phase 0: Repo Bootstrap
+本文件的 Phase 命名必須和 `docs/development-work.md` 的 P0-P6 保持一致。若實作狀態改變，優先同步這兩份既有文件，不另開新的 phase 狀態文件。
+
+## P0: Repo Bootstrap
+
+目前狀態：已完成。
 
 - 建立乾淨 repo。
 - 預設分支使用 `master`。
@@ -8,7 +12,9 @@
 - 放入 sample candidate fixture。
 - 測試候選排序、報告輸出、ledger idempotency。
 
-## Phase 1: Old Log / CSV Importer
+## P1: Old Log / CSV Importer
+
+目前狀態：已完成 MVP。
 
 - 匯入舊交易 log / CSV。
 - 將樣本分成 `valid`、`excluded`、`needs_review`。
@@ -16,18 +22,27 @@
 - 產生第一版 failure replay report。
 - 驗證 paper ledger 的 `idempotency_key` 能重現並擋住雙 `ENTER`。
 
-## Phase 2: Candidate DB
+## P2: TiDB Integration
 
-目前狀態：TiDB repository MVP 已完成；FinMind ingestion cache MVP 已完成；Shioaji ingestion 尚未開始。
+目前狀態：已完成 MVP。
 
-- FinMind nightly ingestion：已完成 fetch ledger + raw JSONL cache MVP。
-- Shioaji scanner / snapshot ingest。
-- fetch ledger / API quota ledger。
-- Parquet raw data storage。
 - TiDB candidate metadata：已可保存 candidate runs / items。
 - TiDB classified samples：已可保存 valid / excluded / needs_review，並保留 duplicate ENTER evidence。
+- `fetch_ledger` schema 已存在，供 P3 API cache 使用。
+- `order_intents.idempotency_key` 是真正的下單冪等性邊界。
 
-## Phase 3: Candidate Engine
+## P3: FinMind Nightly Ingestion
+
+目前狀態：已完成 cache / ledger MVP。
+
+- FinMind nightly ingestion：已完成 fetch ledger + raw JSONL cache MVP。
+- 同一 dataset/date/stock/source 重跑可 skip，避免重複打 API。
+- planned calls 預設上限 540/hr。
+- 無 token 不 crash，回報 `auth_missing`。
+- 真實 FinMind smoke 已確認第一次 actual=1、第二次 skipped=1。
+- 下一步需把單日擷取擴成 20-50 日窗口。
+
+## P4: Candidate Engine v1
 
 目前狀態：raw JSONL candidate builder MVP 已完成；資料 enrichment 尚未開始。
 
@@ -38,23 +53,29 @@
 - `next_day_actionable` 初版 label。
 - FinMind price raw cache 轉候選：已完成。
 - daily report source summary / data gaps：已完成。
+- P4b 是 P4 的資料強化，不是獨立大 phase：接 20-50 日窗口、`TaiwanStockInfo`、法人、融資融券。
 
-## Phase 4: Report Loop
+## P5: Replay / Paper Ledger
 
-- 每日日報。
-- Telegram 摘要 dry-run。
-- 前一日候選驗證。
-- valid / excluded / needs_review 樣本統計。
-
-## Phase 5: Replay / Paper Ledger
+目前狀態：尚未開始；P0 已有 paper ledger 骨架。
 
 - historical replay。
 - paper ledger。
 - 成本、滑價、R 值計算。
 - 同一 setup 不重複開倉。
+- replay expectancy 只使用 `validity = valid`。
 
-## Phase 6: Shioaji Simulation
+## P6: Shioaji Simulation
+
+目前狀態：尚未開始。
 
 - `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition`。
 - 委託回報與重啟同步。
 - simulation 樣本與 replay 樣本分開統計。
+
+## Later: Report Loop / Notification
+
+- 每日日報。
+- Telegram 摘要 dry-run。
+- 前一日候選驗證。
+- valid / excluded / needs_review 樣本統計。

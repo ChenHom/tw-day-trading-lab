@@ -1,8 +1,24 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：開發工作基線  
+狀態：P0-P4 MVP 已完成；下一步 P4b 資料強化
 預設分支：`master`
+
+## Phase 對照
+
+本文件採用 P0-P6 作為唯一開發 phase 命名。`docs/mvp-roadmap.md` 必須與本文件保持一致。
+
+| Phase | 名稱 | 目前狀態 | 對應 commit |
+|---|---|---|---|
+| P0 | Bootstrap 固化 | 已完成 | `4aab4e8` |
+| P1 | Old Log / CSV Importer | 已完成 MVP | `579efec` |
+| P2 | TiDB Integration | 已完成 MVP | `f614228` |
+| P3 | FinMind Nightly Ingestion | 已完成 cache / ledger MVP | `49a917b` |
+| P4 | Candidate Engine v1 | 已完成 raw cache candidate builder MVP | `fbdff38` |
+| P5 | Replay / Paper Ledger | 尚未開始；已有 ledger 骨架 | - |
+| P6 | Shioaji Simulation Adapter | 尚未開始 | - |
+
+`P4b Candidate Engine Data Enrichment` 是 P4 的下一個強化 sprint，不是獨立大 phase。
 
 ## 0. Grill-me 結論
 
@@ -204,6 +220,8 @@
 
 - `tests/test_finmind_ingestion.py` 覆蓋無 token、cache skip、missing cache refetch、quota block、client error ledger。
 - `PYTHONPATH=src python3 -m unittest discover -s tests -v`：20 tests OK。
+- 真實 FinMind smoke：第一次 planned / actual / skipped / failed = 1 / 1 / 0 / 0；第二次同 request = 0 / 0 / 1 / 0。
+- key 來源確認：舊專案 `quantitative-trading-decision-system/.env` 只有 placeholder；實際可用 key 來自 `/home/hom/services/stocks-db/.env` 的 `FINMIND_API_KEY`，未寫入本 repo。
 
 ### P4. Candidate Engine v1
 
@@ -246,6 +264,30 @@
 - `tests/test_candidate_builder.py` 覆蓋 raw cache 建候選、低流動性過濾、degraded data、malformed data gap。
 - `tests/test_reports.py` 補 daily report source summary 測試。
 - 真實 FinMind P3 smoke 取得 `2330` 2026-05-28 raw cache 後，`candidates build-from-raw` 可產出 1 筆 degraded candidate；日報會列出資料來源 summary。
+
+### P4b. Candidate Engine Data Enrichment
+
+目前狀態：下一個 sprint；尚未開始。
+
+定位：P4 的資料強化，不是新的大 phase。
+
+目標：讓 candidate engine 不只吃單日 price raw cache，而是能用足夠歷史窗口與基本 universe / chip 資料產生更可靠的隔日候選。
+
+工作項目：
+
+- P3 ingestion 改抓 20-50 日窗口，而不是單日，讓 volume expansion / structure 更可靠。
+- 接 `TaiwanStockInfo` 做 ETF / 權證 / 特別股排除。
+- 接法人與融資融券資料，缺資料時降權而不是 crash。
+- 將 cache summary 與 fetch ledger summary 更完整帶入 report。
+- 建立 Top 30-80 fixture 與 regression report。
+
+驗收：
+
+- 候選名單仍不是買進名單。
+- 每檔候選都有 score、archetype、reasons、downgrade_reasons。
+- 報告可追溯資料缺口與 API/cache 用量。
+- 缺 chip / margin 資料時標記 degraded，不中斷流程。
+- tests 通過。
 
 ### P5. Replay / Paper Ledger
 
@@ -315,6 +357,9 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli db init --schema sql/001_init.s
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli samples persist --input reports/old-log-sample-samples.json
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli samples summary
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli candidates persist --date 2026-05-28 --input reports/2026-05-28-candidates.json --run-id p2-smoke-2026-05-28 --source sample-fixture --status generated
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli ingest finmind --date 2026-05-28 --requests examples/finmind.requests.sample.json --cache-dir data/raw
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli candidates build-from-raw --date 2026-05-28 --cache-dir data/raw --output reports/2026-05-28-candidates-from-raw.json
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli report daily --date 2026-05-28 --input reports/2026-05-28-candidates-from-raw.json --format md --output reports/2026-05-28-daily-from-raw.md
 ```
 
 ## 6. Backlog
