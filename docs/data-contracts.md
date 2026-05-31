@@ -76,6 +76,38 @@ TiDB candidate tables：
 
 `candidate_items` 使用 `(run_id, symbol)` 作為 primary key，重跑同一 run 會更新同一批候選，不會重複插入。
 
+## FinMind Fetch Ledger
+
+TiDB `fetch_ledger` 是 API cache 的 control layer。它不保存 raw data，只保存是否已經抓過、狀態與錯誤。
+
+Primary key：
+
+- `dataset`
+- `trading_date`
+- `stock_id`
+- `source`
+
+欄位：
+
+| 欄位 | 說明 |
+|---|---|
+| `dataset` | FinMind dataset 名稱，例如 `TaiwanStockPrice` |
+| `trading_date` | 資料日期 |
+| `stock_id` | 股票代號；市場級資料可用 `market` |
+| `source` | 預設 `finmind` |
+| `status` | `success` / `failed` |
+| `request_count` | 該 ledger row 對應的 API request 次數 |
+| `error_message` | failed 時保存錯誤原因 |
+| `fetched_at` | 最後寫入時間 |
+
+raw cache 放在：
+
+```text
+data/raw/finmind/{dataset}/{trading_date}/{stock_id}.jsonl
+```
+
+skip 條件必須同時滿足 `fetch_ledger.status = success` 與 raw cache 檔案存在。
+
 ## Old Log Import Output
 
 `tw-daytrade old-logs import` 會輸出：

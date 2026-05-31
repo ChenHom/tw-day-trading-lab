@@ -161,6 +161,8 @@
 
 ### P3. FinMind Nightly Ingestion
 
+目前狀態：已完成 cache / ledger MVP。
+
 目標：建立隔日候選名單的夜間資料來源。
 
 工作項目：
@@ -177,6 +179,31 @@
 - 有 token 時能查 `user_info` 或等價 quota 狀態。
 - 同一 dataset/date/stock 重跑不重複打 API。
 - ingestion summary 顯示 planned / actual / skipped / failed calls。
+
+實際產出：
+
+- `src/tw_day_trading_lab/finmind_ingestion.py`
+- `tests/test_finmind_ingestion.py`
+- `docs/finmind-ingestion.md`
+- `examples/finmind.requests.sample.json`
+- CLI：`tw-daytrade ingest finmind`
+- `FetchLedgerRepository` port
+- `DatabaseStorage.fetch_fetch_record`
+- `DatabaseStorage.save_fetch_record`
+
+設計結果：
+
+- P3 API cache 拆成 control layer 與 raw data layer。
+- control layer 使用 TiDB `fetch_ledger` 判斷同一 `dataset / trading_date / stock_id / source` 是否已成功。
+- raw data layer 先用 JSONL：`data/raw/finmind/{dataset}/{date}/{stock_id}.jsonl`。
+- skip 必須同時滿足 ledger success 與 raw cache 存在。
+- ledger success 但 raw cache 遺失時會重新抓取，summary 標記 `refetched_missing_cache`。
+- FinMind SDK adapter 只在 composition boundary；核心 ingestion 依賴 `FinMindClient` protocol 與 `FetchLedgerRepository` protocol。
+
+驗證結果：
+
+- `tests/test_finmind_ingestion.py` 覆蓋無 token、cache skip、missing cache refetch、quota block、client error ledger。
+- `PYTHONPATH=src python3 -m unittest discover -s tests -v`：20 tests OK。
 
 ### P4. Candidate Engine v1
 
@@ -234,24 +261,23 @@
 
 ## 4. Immediate Next Sprint
 
-推薦下一個 sprint：P3 FinMind Nightly Ingestion。
+推薦下一個 sprint：P4 Candidate Engine v1。
 
 任務切分：
 
-1. 建立 `fetch_ledger` repository method，先可記錄 dataset/date/stock/source/status/request_count。
-2. 讀取 FinMind token，但無 token 時不可 crash，要回報 setup/auth 缺口。
-3. 實作 planned calls estimator，保守上限 540/hr。
-4. 先做小 universe fixture，測同一 dataset/date/stock 重跑會 skip。
-5. 輸出 ingestion summary：planned / actual / skipped / failed。
-6. 補 FinMind ingestion 文件與 tests。
+1. 將 P3 raw JSONL 轉成 P4 candidate input。
+2. 建立 universe filter 與 broad pool first。
+3. 加入資料缺口追蹤，缺 chip data 時降權而不是 crash。
+4. 產出 Top 30-80 report。
+5. 將 API 用量與 cache summary 帶入報告。
+6. 補 Candidate Engine v1 文件與 tests。
 7. commit。
 
 完成標準：
 
-- 無 token 時不 crash，錯誤可讀。
-- 有 token 時可查 quota 或最小 dataset smoke。
-- 重跑同一 dataset/date/stock 不重複打 API。
-- planned calls 不超過 540/hr。
+- 候選名單不是買進名單。
+- 每檔候選都有 score、archetype、reasons、downgrade_reasons。
+- 報告可追溯資料缺口與 API/cache 用量。
 - tests 通過。
 
 ## 5. Working Commands

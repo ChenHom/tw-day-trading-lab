@@ -50,6 +50,16 @@ CANDIDATE_ITEM_COLUMNS = (
     "downgrade_reasons",
 )
 
+FETCH_LEDGER_COLUMNS = (
+    "dataset",
+    "trading_date",
+    "stock_id",
+    "source",
+    "status",
+    "request_count",
+    "error_message",
+)
+
 
 class StorageError(RuntimeError):
     """Raised when a repository operation fails instead of swallowing DB errors."""
@@ -82,6 +92,33 @@ class CandidateRepository(Protocol):
 
     def fetch_candidate_run_summary(self, run_id: str) -> dict[str, Any]:
         """Read item counts for one candidate run."""
+
+
+class FetchLedgerRepository(Protocol):
+    """Port for tracking external data fetches and avoiding duplicate API calls."""
+
+    def fetch_fetch_record(
+        self,
+        *,
+        dataset: str,
+        trading_date: str,
+        stock_id: str,
+        source: str,
+    ) -> dict[str, Any] | None:
+        """Read one fetch ledger row by its natural key."""
+
+    def save_fetch_record(
+        self,
+        *,
+        dataset: str,
+        trading_date: str,
+        stock_id: str,
+        source: str,
+        status: str,
+        request_count: int,
+        error_message: str | None = None,
+    ) -> None:
+        """Persist one fetch ledger row."""
 
 
 @dataclass(frozen=True)
@@ -224,6 +261,18 @@ def create_sqlite_schema(connection: Any) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_sample_idempotency
           ON valid_samples (idempotency_key);
+
+        CREATE TABLE IF NOT EXISTS fetch_ledger (
+          dataset TEXT NOT NULL,
+          trading_date TEXT NOT NULL,
+          stock_id TEXT NOT NULL,
+          source TEXT NOT NULL,
+          status TEXT NOT NULL,
+          request_count INTEGER NOT NULL DEFAULT 1,
+          error_message TEXT NULL,
+          fetched_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (dataset, trading_date, stock_id, source)
+        );
         """
     )
     connection.commit()
@@ -334,6 +383,76 @@ class DatabaseStorage:
             "item_count": int(row[0] or 0),
             "actionable_count": int(row[1] or 0),
         }
+
+    def fetch_fetch_record(
+        self,
+        *,
+        dataset: str,
+        trading_date: str,
+        stock_id: str,
+        source: str,
+    ) -> dict[str, Any] | None:
+        """Return one fetch ledger record if it exists."""
+        sql = (
+            "SELECT dataset, trading_date, stock_id, source, status, request_count, error_message "
+            "FROM fetch_ledger "
+            f"WHERE dataset = {self.placeholder} "
+            f"AND trading_date = {self.placeholder} "
+            f"AND stock_id = {self.placeholder} "
+            f"AND source = {self.placeholder}"
+        )
+        cursor = None
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute(sql, (dataset, trading_date, stock_id, source))
+            row = cursor.fetchone()
+        except Exception as exc:
+            raise StorageError(f"fetch_fetch_record failed: {exc}") from exc
+        finally:
+            if cursor is not None:
+                cursor.close()
+        if row is None:
+            return None
+        return {
+            "dataset": row[0],
+            "trading_date": str(row[1]),
+            "stock_id": row[2],
+            "source": row[3],
+            "status": row[4],
+            "request_count": int(row[5] or 0),
+            "error_message": row[6],
+        }
+
+    def save_fetch_record(
+        self,
+        *,
+        dataset: str,
+        trading_date: str,
+        stock_id: str,
+        source: str,
+        status: str,
+        request_count: int,
+        error_message: str | None = None,
+    ) -> None:
+        """Upsert one fetch ledger record."""
+        row = {
+            "dataset": dataset,
+            "trading_date": trading_date,
+            "stock_id": stock_id,
+            "source": source,
+            "status": status,
+            "request_count": int(request_count),
+            "error_message": error_message,
+        }
+        self._execute_many(
+            self._upsert_sql(
+                "fetch_ledger",
+                FETCH_LEDGER_COLUMNS,
+                "dataset,trading_date,stock_id,source",
+            ),
+            [tuple(row[column] for column in FETCH_LEDGER_COLUMNS)],
+            "save_fetch_record",
+        )
 
     def _execute_many(self, sql: str, rows: Sequence[tuple[Any, ...]], operation: str) -> None:
         cursor = None

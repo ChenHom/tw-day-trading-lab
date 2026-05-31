@@ -18,9 +18,9 @@
 
 ## Phase 2: Candidate DB
 
-目前狀態：TiDB repository MVP 已完成；FinMind / Shioaji ingestion 尚未開始。
+目前狀態：TiDB repository MVP 已完成；FinMind ingestion cache MVP 已完成；Shioaji ingestion 尚未開始。
 
-- FinMind nightly ingestion。
+- FinMind nightly ingestion：已完成 fetch ledger + raw JSONL cache MVP。
 - Shioaji scanner / snapshot ingest。
 - fetch ledger / API quota ledger。
 - Parquet raw data storage。

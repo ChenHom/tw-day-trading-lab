@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from .candidate_engine import rank_candidates
+from .finmind_ingestion import (
+    FinMindDataLoaderClient,
+    build_single_request,
+    ingest_finmind_requests,
+    read_request_file,
+)
 from .models import CandidateInput, CandidateScore
 from .old_log_importer import import_trade_log_csv, render_failure_replay_markdown
 from .reports import render_html, render_markdown
@@ -182,6 +189,42 @@ def cmd_samples_summary(args: argparse.Namespace) -> None:
         connection.close()
 
 
+def cmd_ingest_finmind(args: argparse.Namespace) -> None:
+    """Run FinMind nightly ingestion with ledger-backed raw cache."""
+    token = args.token or os.getenv("FINMIND_TOKEN")
+    if args.requests:
+        requests = read_request_file(Path(args.requests))
+    else:
+        requests = [
+            build_single_request(
+                dataset=args.dataset,
+                trading_date=args.date,
+                stock_id=args.stock_id or "market",
+            )
+        ]
+    config = TiDBConfig.from_env()
+    connection = connect_tidb(config, use_database=True)
+    try:
+        storage = DatabaseStorage(connection, dialect="tidb")
+        client = FinMindDataLoaderClient(token) if token else _TokenMissingFinMindClient()
+        summary = ingest_finmind_requests(
+            repository=storage,
+            cache_dir=Path(args.cache_dir),
+            client=client,
+            requests=requests,
+            token=token,
+            quota_limit=args.quota_limit,
+        )
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    finally:
+        connection.close()
+
+
+class _TokenMissingFinMindClient:
+    def fetch_dataset(self, request):
+        raise RuntimeError("FinMind token is required")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create the CLI parser and bind each command to its composition function."""
     parser = argparse.ArgumentParser(prog="tw-daytrade")
@@ -243,6 +286,18 @@ def build_parser() -> argparse.ArgumentParser:
     samples_persist.set_defaults(func=cmd_samples_persist)
     samples_summary = samples_sub.add_parser("summary")
     samples_summary.set_defaults(func=cmd_samples_summary)
+
+    ingest = subparsers.add_parser("ingest")
+    ingest_sub = ingest.add_subparsers(required=True)
+    finmind = ingest_sub.add_parser("finmind")
+    finmind.add_argument("--date", required=True)
+    finmind.add_argument("--dataset", default="TaiwanStockPrice")
+    finmind.add_argument("--stock-id", default="market")
+    finmind.add_argument("--requests")
+    finmind.add_argument("--cache-dir", default="data/raw")
+    finmind.add_argument("--quota-limit", type=int, default=540)
+    finmind.add_argument("--token")
+    finmind.set_defaults(func=cmd_ingest_finmind)
 
     return parser
 

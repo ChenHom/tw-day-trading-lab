@@ -50,6 +50,10 @@ python3 -m tw_day_trading_lab.cli db init --schema sql/001_init.sql
 python3 -m tw_day_trading_lab.cli samples persist \
   --input reports/old-log-sample-samples.json
 python3 -m tw_day_trading_lab.cli samples summary
+python3 -m tw_day_trading_lab.cli ingest finmind \
+  --date 2026-05-28 \
+  --requests examples/finmind.requests.sample.json \
+  --cache-dir data/raw
 ```
 
 如果沒有安裝 package，先加上 `PYTHONPATH=src`：
@@ -66,6 +70,7 @@ src/tw_day_trading_lab/
   ledger.py             # paper / simulation idempotency 與部位生命週期骨架
   reports.py            # Markdown / HTML 報告
   storage.py            # repository ports + TiDB/SQLite adapters
+  finmind_ingestion.py  # P3 FinMind fetch ledger + raw cache ingestion
   cli.py                # MVP CLI
 sql/
   001_init.sql          # TiDB schema
@@ -76,6 +81,7 @@ docs/
   development-work.md   # 開發工作拆解與驗收標準
   old-log-importer.md   # P1 舊 log / CSV importer 說明
   tidb-integration.md   # P2 TiDB repository / CLI 說明
+  finmind-ingestion.md  # P3 FinMind ingestion / cache 說明
 ```
 
 ## Current Decision
