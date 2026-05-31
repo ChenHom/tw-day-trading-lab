@@ -54,6 +54,10 @@ python3 -m tw_day_trading_lab.cli ingest finmind \
   --date 2026-05-28 \
   --requests examples/finmind.requests.sample.json \
   --cache-dir data/raw
+python3 -m tw_day_trading_lab.cli candidates build-from-raw \
+  --date 2026-05-28 \
+  --cache-dir data/raw \
+  --output reports/2026-05-28-candidates-from-raw.json
 ```
 
 如果沒有安裝 package，先加上 `PYTHONPATH=src`：
@@ -67,6 +71,7 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli candidates build --date 2026-05
 ```text
 src/tw_day_trading_lab/
   candidate_engine.py   # 候選排序與 next_day_actionable 初版規則
+  candidate_builder.py  # P4 raw JSONL -> candidate input / ranked candidates
   ledger.py             # paper / simulation idempotency 與部位生命週期骨架
   reports.py            # Markdown / HTML 報告
   storage.py            # repository ports + TiDB/SQLite adapters
@@ -82,6 +87,7 @@ docs/
   old-log-importer.md   # P1 舊 log / CSV importer 說明
   tidb-integration.md   # P2 TiDB repository / CLI 說明
   finmind-ingestion.md  # P3 FinMind ingestion / cache 說明
+  candidate-engine-v1.md # P4 raw cache 轉候選與資料缺口說明
 ```
 
 ## Current Decision

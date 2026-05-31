@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from .candidate_engine import rank_candidates
+from .candidate_builder import build_candidates_from_raw_cache
 from .finmind_ingestion import (
     FinMindDataLoaderClient,
     build_single_request,
@@ -58,6 +59,14 @@ def load_candidate_scores(path: Path) -> list[CandidateScore]:
         )
         for item in raw
     ]
+
+
+def load_candidate_source_summary(path: Path) -> dict[str, object] | None:
+    """Load optional source summary from candidate JSON payload."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, dict) and isinstance(raw.get("summary"), dict):
+        return raw["summary"]
+    return None
 
 
 def write_text(path: Path, content: str) -> None:
@@ -115,15 +124,40 @@ def cmd_candidates_persist(args: argparse.Namespace) -> None:
         connection.close()
 
 
+def cmd_candidates_build_from_raw(args: argparse.Namespace) -> None:
+    """Build ranked candidates from FinMind raw JSONL cache."""
+    result = build_candidates_from_raw_cache(
+        cache_dir=Path(args.cache_dir),
+        trading_date=args.date,
+        limit=args.limit,
+        min_trading_money=args.min_trading_money,
+    )
+    output = Path(args.output) if args.output else Path("reports") / f"{args.date}-candidates.json"
+    write_json(output, result.to_payload())
+    print(output)
+
+
 def cmd_report_daily(args: argparse.Namespace) -> None:
     """Build the daily candidate report, optionally including sample counts."""
-    candidates = load_candidate_scores(Path(args.input))
+    input_path = Path(args.input)
+    candidates = load_candidate_scores(input_path)
+    source_summary = load_candidate_source_summary(input_path)
     sample_summary = load_sample_summary(Path(args.samples)) if args.samples else None
     if args.format == "html":
-        content = render_html(args.date, candidates, sample_summary=sample_summary)
+        content = render_html(
+            args.date,
+            candidates,
+            sample_summary=sample_summary,
+            source_summary=source_summary,
+        )
         default_suffix = "html"
     else:
-        content = render_markdown(args.date, candidates, sample_summary=sample_summary)
+        content = render_markdown(
+            args.date,
+            candidates,
+            sample_summary=sample_summary,
+            source_summary=source_summary,
+        )
         default_suffix = "md"
     output = Path(args.output) if args.output else Path("reports") / f"{args.date}-daily.{default_suffix}"
     write_text(output, content)
@@ -238,6 +272,13 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--output")
     build.add_argument("--limit", type=int, default=80)
     build.set_defaults(func=cmd_candidates_build)
+    build_from_raw = candidate_sub.add_parser("build-from-raw")
+    build_from_raw.add_argument("--date", required=True)
+    build_from_raw.add_argument("--cache-dir", default="data/raw")
+    build_from_raw.add_argument("--output")
+    build_from_raw.add_argument("--limit", type=int, default=80)
+    build_from_raw.add_argument("--min-trading-money", type=float, default=80_000_000)
+    build_from_raw.set_defaults(func=cmd_candidates_build_from_raw)
     persist_candidates = candidate_sub.add_parser("persist")
     persist_candidates.add_argument("--date", required=True)
     persist_candidates.add_argument("--input", required=True)

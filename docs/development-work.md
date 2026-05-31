@@ -207,6 +207,8 @@
 
 ### P4. Candidate Engine v1
 
+目前狀態：已完成 raw cache candidate builder MVP。
+
 目標：把夜間資料轉成隔日監控排序。
 
 工作項目：
@@ -223,6 +225,27 @@
 - 候選名單不是買進名單。
 - 每檔候選都有 score、archetype、reasons、downgrade_reasons。
 - 報告可追溯資料缺口與 API 用量。
+
+實際產出：
+
+- `src/tw_day_trading_lab/candidate_builder.py`
+- `tests/test_candidate_builder.py`
+- `docs/candidate-engine-v1.md`
+- CLI：`tw-daytrade candidates build-from-raw`
+- Daily report source summary：資料來源、input files、built candidates、degraded candidates、data gap files、低流動性過濾數。
+
+設計結果：
+
+- P4 先從 `TaiwanStockPrice` raw JSONL 建立最小可行候選，不直接接買賣訊號。
+- `build_candidates_from_raw_cache` 是 orchestration；讀 raw cache、做 liquidity filter、轉 `CandidateInput`、呼叫既有 `rank_candidates`。
+- 單日資料不足時標 `data_quality = degraded`，讓候選保留可追溯性但不會被標成 `next_day_actionable`。
+- malformed raw file 不 crash，summary 記入 `data_gap_files`。
+
+驗證結果：
+
+- `tests/test_candidate_builder.py` 覆蓋 raw cache 建候選、低流動性過濾、degraded data、malformed data gap。
+- `tests/test_reports.py` 補 daily report source summary 測試。
+- 真實 FinMind P3 smoke 取得 `2330` 2026-05-28 raw cache 後，`candidates build-from-raw` 可產出 1 筆 degraded candidate；日報會列出資料來源 summary。
 
 ### P5. Replay / Paper Ledger
 
@@ -261,15 +284,15 @@
 
 ## 4. Immediate Next Sprint
 
-推薦下一個 sprint：P4 Candidate Engine v1。
+推薦下一個 sprint：P4b Candidate Engine Data Enrichment。
 
 任務切分：
 
-1. 將 P3 raw JSONL 轉成 P4 candidate input。
-2. 建立 universe filter 與 broad pool first。
-3. 加入資料缺口追蹤，缺 chip data 時降權而不是 crash。
-4. 產出 Top 30-80 report。
-5. 將 API 用量與 cache summary 帶入報告。
+1. P3 ingestion 改抓 20-50 日窗口，而不是單日，讓 volume expansion / structure 更可靠。
+2. 接 `TaiwanStockInfo` 做 ETF / 權證 / 特別股排除。
+3. 接法人與融資融券資料，缺資料時降權而不是 crash。
+4. 將 cache summary 與 fetch ledger summary 更完整帶入 report。
+5. 建立 Top 30-80 fixture 與 regression report。
 6. 補 Candidate Engine v1 文件與 tests。
 7. commit。
 

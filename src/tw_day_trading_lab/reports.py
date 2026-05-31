@@ -10,6 +10,7 @@ def render_markdown(
     trading_date: str,
     candidates: list[CandidateScore],
     sample_summary: dict[str, Any] | None = None,
+    source_summary: dict[str, Any] | None = None,
 ) -> str:
     """Render the daily candidate report as Markdown."""
     actionable = [item for item in candidates if item.next_day_actionable]
@@ -33,6 +34,15 @@ def render_markdown(
             f"| {item.rank} | {item.symbol} | {item.name} | {item.archetype} | "
             f"{item.total_score:.2f} | {item.next_day_actionable} | {downgrade} |"
         )
+    if source_summary:
+        lines.extend(
+            [
+                "",
+                "## 資料來源",
+                "",
+                _format_source_summary_markdown(source_summary),
+            ]
+        )
     lines.extend(
         [
             "",
@@ -49,6 +59,7 @@ def render_html(
     trading_date: str,
     candidates: list[CandidateScore],
     sample_summary: dict[str, Any] | None = None,
+    source_summary: dict[str, Any] | None = None,
 ) -> str:
     """Render the daily candidate report as a small standalone HTML page."""
     rows = []
@@ -81,6 +92,7 @@ def render_html(
 <body>
   <h1>台股當沖日報 {escape(trading_date)}</h1>
   <p>第一階段只允許 replay / paper / simulation 驗證，禁止真實自動下單。</p>
+  <p>{escape(_format_source_summary_text(source_summary))}</p>
   <p>{escape(_format_sample_summary_text(sample_summary))}</p>
   <table>
     <thead>
@@ -107,6 +119,33 @@ def _format_sample_summary_markdown(sample_summary: dict[str, Any] | None) -> st
         f"{sample_summary.get('valid', 0)} / "
         f"{sample_summary.get('excluded', 0)} / "
         f"{sample_summary.get('needs_review', 0)}"
+    )
+
+
+def _format_source_summary_markdown(source_summary: dict[str, Any]) -> str:
+    """Format candidate source and data gap counts for Markdown."""
+    return "\n".join(
+        [
+            f"- 來源：{source_summary.get('source', 'unknown')}",
+            f"- input files：{source_summary.get('input_files', 0)}",
+            f"- built candidates：{source_summary.get('built_candidates', 0)}",
+            f"- degraded candidates：{source_summary.get('degraded_candidates', 0)}",
+            f"- 資料缺口檔案：{source_summary.get('data_gap_files', 0)}",
+            f"- 低流動性過濾：{source_summary.get('filtered_low_liquidity', 0)}",
+        ]
+    )
+
+
+def _format_source_summary_text(source_summary: dict[str, Any] | None) -> str:
+    """Format candidate source summary for compact HTML text."""
+    if not source_summary:
+        return "候選資料來源：未提供 source summary"
+    return (
+        f"候選資料來源：{source_summary.get('source', 'unknown')}；"
+        f"input files {source_summary.get('input_files', 0)}；"
+        f"built {source_summary.get('built_candidates', 0)}；"
+        f"degraded {source_summary.get('degraded_candidates', 0)}；"
+        f"data gaps {source_summary.get('data_gap_files', 0)}"
     )
 
 

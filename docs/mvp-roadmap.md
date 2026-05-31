@@ -29,11 +29,15 @@
 
 ## Phase 3: Candidate Engine
 
+目前狀態：raw JSONL candidate builder MVP 已完成；資料 enrichment 尚未開始。
+
 - universe 過濾。
 - broad pool first。
 - archetype 分類。
 - 多維排序。
 - `next_day_actionable` 初版 label。
+- FinMind price raw cache 轉候選：已完成。
+- daily report source summary / data gaps：已完成。
 
 ## Phase 4: Report Loop
 
