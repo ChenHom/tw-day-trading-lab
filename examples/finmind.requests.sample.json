@@ -1,6 +1,24 @@
 [
   {
     "dataset": "TaiwanStockPrice",
+    "start_date": "2026-04-08",
+    "trading_date": "2026-05-28",
+    "stock_id": "2330"
+  },
+  {
+    "dataset": "TaiwanStockInfo",
+    "trading_date": "2026-05-28",
+    "stock_id": "market"
+  },
+  {
+    "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
+    "start_date": "2026-04-08",
+    "trading_date": "2026-05-28",
+    "stock_id": "2330"
+  },
+  {
+    "dataset": "TaiwanStockMarginPurchaseShortSale",
+    "start_date": "2026-04-08",
     "trading_date": "2026-05-28",
     "stock_id": "2330"
   }

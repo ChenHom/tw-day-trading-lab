@@ -108,3 +108,9 @@ docs/
 - 更快建立「不要再做什麼」的規則，這比一開始接新資料更快產生價值。
 
 FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的候選資料來源，而不是用來回答舊系統到底壞在哪裡。
+
+## Current Implementation Status
+
+- P0-P4b MVP 已完成。
+- 下一步是 P5 Replay / Paper Ledger。
+- P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。

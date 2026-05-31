@@ -41,12 +41,18 @@ class ReportTest(unittest.TestCase):
                 "degraded_candidates": 1,
                 "data_gap_files": 1,
                 "filtered_low_liquidity": 1,
+                "filtered_non_common_stock": 1,
+                "missing_chip_files": 2,
+                "missing_margin_files": 3,
             },
         )
 
         self.assertIn("## 資料來源", report)
         self.assertIn("finmind_raw_cache", report)
         self.assertIn("資料缺口檔案：1", report)
+        self.assertIn("非普通股過濾：1", report)
+        self.assertIn("缺法人資料：2", report)
+        self.assertIn("缺融資融券資料：3", report)
 
 
 if __name__ == "__main__":

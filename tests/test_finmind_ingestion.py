@@ -172,6 +172,58 @@ class FinMindIngestionTest(unittest.TestCase):
         self.assertEqual(record["status"], "failed")
         self.assertIn("quota exceeded", record["error_message"])
 
+    def test_window_request_keeps_start_date_for_client_fetch(self):
+        request = FetchRequest(
+            dataset="TaiwanStockPrice",
+            trading_date="2026-05-28",
+            stock_id="2330",
+            start_date="2026-04-08",
+        )
+        client = FakeFinMindClient()
+
+        summary = ingest_finmind_requests(
+            repository=self.storage,
+            cache_dir=self.cache_dir,
+            client=client,
+            requests=[request],
+            token="token",
+        )
+
+        self.assertEqual(summary["actual"], 1)
+        self.assertEqual(client.calls[0].start_date, "2026-04-08")
+
+    def test_window_request_refetches_when_existing_cache_is_too_short(self):
+        request = FetchRequest(
+            dataset="TaiwanStockPrice",
+            trading_date="2026-05-28",
+            stock_id="2330",
+            start_date="2026-04-08",
+        )
+        cache_path = raw_cache_path(self.cache_dir, request)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text('{"date":"2026-05-28","stock_id":"2330"}\n', encoding="utf-8")
+        self.storage.save_fetch_record(
+            dataset=request.dataset,
+            trading_date=request.trading_date,
+            stock_id=request.stock_id,
+            source=request.source,
+            status="success",
+            request_count=1,
+        )
+        client = FakeFinMindClient(rows=[{"date": "2026-04-08", "stock_id": "2330"}])
+
+        summary = ingest_finmind_requests(
+            repository=self.storage,
+            cache_dir=self.cache_dir,
+            client=client,
+            requests=[request],
+            token="token",
+        )
+
+        self.assertEqual(summary["actual"], 1)
+        self.assertEqual(summary["refetched_incomplete_window"], 1)
+        self.assertEqual(len(client.calls), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

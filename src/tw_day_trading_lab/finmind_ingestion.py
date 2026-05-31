@@ -26,6 +26,7 @@ class FetchRequest:
     dataset: str
     trading_date: str
     stock_id: str
+    start_date: str | None = None
     source: str = "finmind"
 
 
@@ -52,6 +53,7 @@ def read_request_file(path: Path, *, default_source: str = "finmind") -> list[Fe
             dataset=str(item["dataset"]),
             trading_date=str(item["trading_date"]),
             stock_id=str(item.get("stock_id") or "market"),
+            start_date=str(item["start_date"]) if item.get("start_date") else None,
             source=str(item.get("source") or default_source),
         )
         for item in raw
@@ -63,6 +65,7 @@ def build_single_request(
     dataset: str,
     trading_date: str,
     stock_id: str,
+    start_date: str | None = None,
     source: str = "finmind",
 ) -> FetchRequest:
     """Build a single CLI request without exposing dataclass details to argparse."""
@@ -70,6 +73,7 @@ def build_single_request(
         dataset=dataset,
         trading_date=trading_date,
         stock_id=stock_id or "market",
+        start_date=start_date,
         source=source,
     )
 
@@ -92,9 +96,10 @@ def ingest_finmind_requests(
         "skipped": 0,
         "failed": 0,
         "refetched_missing_cache": 0,
+        "refetched_incomplete_window": 0,
         "errors": [],
     }
-    requests_to_fetch: list[tuple[FetchRequest, bool]] = []
+    requests_to_fetch: list[tuple[FetchRequest, str | None]] = []
     for request in requests:
         record = repository.fetch_fetch_record(
             dataset=request.dataset,
@@ -103,11 +108,15 @@ def ingest_finmind_requests(
             source=request.source,
         )
         cache_path = raw_cache_path(cache_dir, request)
-        if record and record.get("status") == "success" and cache_path.exists():
+        cache_exists = cache_path.exists()
+        cache_complete = cache_satisfies_request(cache_path, request) if cache_exists else False
+        if record and record.get("status") == "success" and cache_complete:
             summary["skipped"] += 1
             continue
-        missing_cache_refetch = bool(record and record.get("status") == "success")
-        requests_to_fetch.append((request, missing_cache_refetch))
+        refetch_reason = None
+        if record and record.get("status") == "success":
+            refetch_reason = "missing_cache" if not cache_exists else "incomplete_window"
+        requests_to_fetch.append((request, refetch_reason))
 
     summary["planned"] = len(requests_to_fetch)
     if summary["planned"] > quota_limit:
@@ -120,7 +129,7 @@ def ingest_finmind_requests(
         summary["errors"].append("FinMind token is required for uncached requests")
         return summary
 
-    for request, missing_cache_refetch in requests_to_fetch:
+    for request, refetch_reason in requests_to_fetch:
         try:
             rows = client.fetch_dataset(request)
             write_jsonl(raw_cache_path(cache_dir, request), rows)
@@ -133,8 +142,10 @@ def ingest_finmind_requests(
                 request_count=1,
             )
             summary["actual"] += 1
-            if missing_cache_refetch:
+            if refetch_reason == "missing_cache":
                 summary["refetched_missing_cache"] += 1
+            if refetch_reason == "incomplete_window":
+                summary["refetched_incomplete_window"] += 1
         except Exception as exc:
             repository.save_fetch_record(
                 dataset=request.dataset,
@@ -157,6 +168,27 @@ def ingest_finmind_requests(
     if summary["failed"]:
         summary["status"] = "partial_failed" if summary["actual"] else "failed"
     return summary
+
+
+def cache_satisfies_request(path: Path, request: FetchRequest) -> bool:
+    """Return whether an existing raw cache file covers the requested date window."""
+    if not path.exists():
+        return False
+    if not request.start_date:
+        return True
+    dates: list[str] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("date"):
+                dates.append(str(row["date"]))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not dates:
+        return False
+    return min(dates) <= request.start_date and max(dates) >= request.trading_date
 
 
 class FinMindDataLoaderClient:
@@ -187,7 +219,7 @@ class FinMindDataLoaderClient:
         if request.stock_id != "market" and request.dataset != "TaiwanStockInfo":
             kwargs["stock_id"] = request.stock_id
         if request.dataset != "TaiwanStockInfo":
-            kwargs["start_date"] = request.trading_date
+            kwargs["start_date"] = request.start_date or request.trading_date
             kwargs["end_date"] = request.trading_date
         frame = method(**kwargs)
         if hasattr(frame, "to_dict"):

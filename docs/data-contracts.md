@@ -107,6 +107,7 @@ data/raw/finmind/{dataset}/{trading_date}/{stock_id}.jsonl
 ```
 
 skip 條件必須同時滿足 `fetch_ledger.status = success` 與 raw cache 檔案存在。
+若 request 帶 `start_date`，raw cache 還必須覆蓋 `start_date -> trading_date` 的日期窗口；舊單日 cache 不可直接視為完整窗口。
 
 ## Old Log Import Output
 

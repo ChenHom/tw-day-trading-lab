@@ -1,7 +1,7 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P4 MVP 已完成；下一步 P4b 資料強化
+狀態：P0-P4b MVP 已完成；下一步 P5 Replay / Paper Ledger
 預設分支：`master`
 
 ## Phase 對照
@@ -15,10 +15,11 @@
 | P2 | TiDB Integration | 已完成 MVP | `f614228` |
 | P3 | FinMind Nightly Ingestion | 已完成 cache / ledger MVP | `49a917b` |
 | P4 | Candidate Engine v1 | 已完成 raw cache candidate builder MVP | `fbdff38` |
+| P4b | Candidate Engine Data Enrichment | 已完成 MVP | 本次 commit |
 | P5 | Replay / Paper Ledger | 尚未開始；已有 ledger 骨架 | - |
 | P6 | Shioaji Simulation Adapter | 尚未開始 | - |
 
-`P4b Candidate Engine Data Enrichment` 是 P4 的下一個強化 sprint，不是獨立大 phase。
+`P4b Candidate Engine Data Enrichment` 是 P4 的資料強化 sprint，不是獨立大 phase。
 
 ## 0. Grill-me 結論
 
@@ -267,7 +268,7 @@
 
 ### P4b. Candidate Engine Data Enrichment
 
-目前狀態：下一個 sprint；尚未開始。
+目前狀態：已完成 MVP。
 
 定位：P4 的資料強化，不是新的大 phase。
 
@@ -275,11 +276,11 @@
 
 工作項目：
 
-- P3 ingestion 改抓 20-50 日窗口，而不是單日，讓 volume expansion / structure 更可靠。
-- 接 `TaiwanStockInfo` 做 ETF / 權證 / 特別股排除。
-- 接法人與融資融券資料，缺資料時降權而不是 crash。
-- 將 cache summary 與 fetch ledger summary 更完整帶入 report。
-- 建立 Top 30-80 fixture 與 regression report。
+- P3 ingestion 改抓 20-50 日窗口，而不是單日，讓 volume expansion / structure 更可靠：已完成 `start_date`。
+- 接 `TaiwanStockInfo` 做 ETF / 權證 / 特別股排除：已完成 MVP。
+- 接法人與融資融券資料，缺資料時降權而不是 crash：已完成 MVP。
+- 將 cache summary 與 fetch ledger summary 更完整帶入 report：已完成 candidate source summary；fetch ledger summary 後續再做 aggregate。
+- 建立 Top 30-80 fixture 與 regression report：尚未完成，留到後續 broad universe sprint。
 
 驗收：
 
@@ -288,6 +289,22 @@
 - 報告可追溯資料缺口與 API/cache 用量。
 - 缺 chip / margin 資料時標記 degraded，不中斷流程。
 - tests 通過。
+
+實際產出：
+
+- `FetchRequest.start_date`
+- `cache_satisfies_request`
+- `tw-daytrade ingest finmind --start-date ...`
+- `examples/finmind.requests.sample.json` 更新為 price / stock info / institutional / margin 四筆 request。
+- `candidate_builder` 讀取 `TaiwanStockInfo`、`TaiwanStockInstitutionalInvestorsBuySell`、`TaiwanStockMarginPurchaseShortSale`。
+- daily report source summary 新增非普通股過濾、缺法人資料、缺融資融券資料。
+
+驗證結果：
+
+- `tests/test_finmind_ingestion.py` 補歷史窗口與舊 cache 太短時重抓測試。
+- `tests/test_candidate_builder.py` 補 ETF 排除、法人/融資融券 enrichment、缺 enrichment 降權測試。
+- 真實 FinMind smoke：四筆 request 第一次 planned / actual / skipped / failed = 4 / 4 / 0 / 0；第二次 = 0 / 0 / 4 / 0。
+- 真實 raw cache candidate：`2330` / 台積電，degraded candidates 0，缺法人 / 缺融資融券皆為 0。
 
 ### P5. Replay / Paper Ledger
 
@@ -326,23 +343,23 @@
 
 ## 4. Immediate Next Sprint
 
-推薦下一個 sprint：P4b Candidate Engine Data Enrichment。
+推薦下一個 sprint：P5 Replay / Paper Ledger。
 
 任務切分：
 
-1. P3 ingestion 改抓 20-50 日窗口，而不是單日，讓 volume expansion / structure 更可靠。
-2. 接 `TaiwanStockInfo` 做 ETF / 權證 / 特別股排除。
-3. 接法人與融資融券資料，缺資料時降權而不是 crash。
-4. 將 cache summary 與 fetch ledger summary 更完整帶入 report。
-5. 建立 Top 30-80 fixture 與 regression report。
-6. 補 Candidate Engine v1 文件與 tests。
+1. 建立 replay runner，讀取 normalized samples 或 candidate output。
+2. 計算 MFE / MAE / realized R。
+3. 加入成本與滑價 assumptions。
+4. 確保 expectancy 只使用 `validity = valid`。
+5. 報表分開列示 gross / cost / net R。
+6. 補 Replay / Paper Ledger 文件與 tests。
 7. commit。
 
 完成標準：
 
-- 候選名單不是買進名單。
-- 每檔候選都有 score、archetype、reasons、downgrade_reasons。
-- 報告可追溯資料缺口與 API/cache 用量。
+- 同一 `idempotency_key` 不會重複開倉。
+- replay expectancy 只使用 `validity = valid`。
+- 報表分開列示 gross / cost / net R。
 - tests 通過。
 
 ## 5. Working Commands

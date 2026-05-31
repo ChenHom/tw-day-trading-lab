@@ -64,14 +64,19 @@ def build_candidates_from_raw_cache(
 ) -> CandidateBuildResult:
     """Build ranked candidates from FinMind price raw cache."""
     price_dir = cache_dir / "finmind" / "TaiwanStockPrice" / trading_date
+    stock_info_by_id = load_stock_info(cache_dir, trading_date=trading_date)
     summary: dict[str, Any] = {
         "source": "finmind_raw_cache",
         "trading_date": trading_date,
         "input_files": 0,
         "built_candidates": 0,
         "filtered_low_liquidity": 0,
+        "filtered_non_common_stock": 0,
         "degraded_candidates": 0,
         "data_gap_files": 0,
+        "missing_stock_info": 0,
+        "missing_chip_files": 0,
+        "missing_margin_files": 0,
     }
     candidates: list[CandidateInput] = []
     for path in sorted(price_dir.glob("*.jsonl")) if price_dir.exists() else []:
@@ -85,6 +90,29 @@ def build_candidates_from_raw_cache(
         if candidate.trading_money < min_trading_money:
             summary["filtered_low_liquidity"] += 1
             continue
+        stock_info = stock_info_by_id.get(candidate.symbol)
+        if stock_info and is_non_common_stock(stock_info):
+            summary["filtered_non_common_stock"] += 1
+            continue
+        if not stock_info:
+            summary["missing_stock_info"] += 1
+        chip_rows = load_raw_dataset_rows(
+            cache_dir,
+            dataset="TaiwanStockInstitutionalInvestorsBuySell",
+            trading_date=trading_date,
+            stock_id=candidate.symbol,
+        )
+        margin_rows = load_raw_dataset_rows(
+            cache_dir,
+            dataset="TaiwanStockMarginPurchaseShortSale",
+            trading_date=trading_date,
+            stock_id=candidate.symbol,
+        )
+        if not chip_rows:
+            summary["missing_chip_files"] += 1
+        if not margin_rows:
+            summary["missing_margin_files"] += 1
+        candidate = enrich_candidate(candidate, stock_info, chip_rows, margin_rows)
         candidates.append(candidate)
         if candidate.data_quality != "ok":
             summary["degraded_candidates"] += 1
@@ -97,6 +125,89 @@ def build_candidates_from_raw_cache(
         candidates=candidates,
         ranked=ranked,
         summary=summary,
+    )
+
+
+def load_raw_dataset_rows(
+    cache_dir: Path,
+    *,
+    dataset: str,
+    trading_date: str,
+    stock_id: str,
+) -> list[dict[str, Any]]:
+    """Load optional dataset rows for one stock from raw cache."""
+    path = cache_dir / "finmind" / dataset / trading_date / f"{stock_id}.jsonl"
+    if not path.exists():
+        return []
+    return read_jsonl(path)
+
+
+def load_stock_info(cache_dir: Path, *, trading_date: str) -> dict[str, dict[str, Any]]:
+    """Load stock info rows from the market-level raw cache."""
+    info_dir = cache_dir / "finmind" / "TaiwanStockInfo" / trading_date
+    rows: list[dict[str, Any]] = []
+    if info_dir.exists():
+        for path in sorted(info_dir.glob("*.jsonl")):
+            rows.extend(read_jsonl(path))
+    return {
+        str(row["stock_id"]): row
+        for row in rows
+        if row.get("stock_id") not in {None, ""}
+    }
+
+
+def is_non_common_stock(stock_info: Mapping[str, Any]) -> bool:
+    """Return True for ETF, ETN, warrants, and other non-common instruments."""
+    text = " ".join(
+        str(stock_info.get(key) or "")
+        for key in ("security_type", "type", "industry_category", "stock_name", "name")
+    ).lower()
+    blocked_terms = (
+        "etf",
+        "etn",
+        "權證",
+        "認購",
+        "認售",
+        "指數投資證券",
+        "受益證券",
+        "存託憑證",
+    )
+    return any(term.lower() in text for term in blocked_terms)
+
+
+def enrich_candidate(
+    candidate: CandidateInput,
+    stock_info: Mapping[str, Any] | None,
+    chip_rows: Sequence[Mapping[str, Any]],
+    margin_rows: Sequence[Mapping[str, Any]],
+) -> CandidateInput:
+    """Apply stock info and chip/margin hints while degrading missing data."""
+    data_quality = candidate.data_quality
+    if not chip_rows or not margin_rows:
+        data_quality = "degraded"
+    net_buy = sum(float(row.get("buy", 0) or 0) - float(row.get("sell", 0) or 0) for row in chip_rows)
+    margin_delta = sum(_margin_delta(row) for row in margin_rows)
+    theme_strength = clamp(candidate.theme_strength + clamp(net_buy / 5000, -0.2, 0.25))
+    crowding_risk = clamp(candidate.crowding_risk + clamp(margin_delta / 10000, -0.15, 0.2))
+    name = candidate.name
+    if stock_info:
+        name = str(
+            stock_info.get("stock_name")
+            or stock_info.get("name")
+            or stock_info.get("stock_id")
+            or candidate.name
+        )
+    return CandidateInput(
+        symbol=candidate.symbol,
+        name=name,
+        trading_money=candidate.trading_money,
+        change_pct=candidate.change_pct,
+        intraday_range_pct=candidate.intraday_range_pct,
+        volume_expansion=candidate.volume_expansion,
+        theme_strength=round(theme_strength, 4),
+        structure_quality=candidate.structure_quality,
+        crowding_risk=round(crowding_risk, 4),
+        data_quality=data_quality,
     )
 
 
@@ -143,6 +254,18 @@ def candidate_from_price_rows(
         crowding_risk=round(min(abs(change_pct) / 10, 1), 4),
         data_quality=data_quality,
     )
+
+
+def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
+    return max(low, min(high, value))
+
+
+def _margin_delta(row: Mapping[str, Any]) -> float:
+    current = row.get("MarginPurchaseTodayBalance")
+    previous = row.get("MarginPurchaseYesterdayBalance")
+    if current in {None, ""} or previous in {None, ""}:
+        return 0
+    return float(current) - float(previous)
 
 
 def _previous_close(current: Mapping[str, Any], previous: Mapping[str, Any] | None) -> float:

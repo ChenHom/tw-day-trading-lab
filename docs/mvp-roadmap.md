@@ -44,7 +44,7 @@
 
 ## P4: Candidate Engine v1
 
-目前狀態：raw JSONL candidate builder MVP 已完成；資料 enrichment 尚未開始。
+目前狀態：raw JSONL candidate builder MVP 與 P4b enrichment MVP 已完成。
 
 - universe 過濾。
 - broad pool first。
@@ -53,11 +53,11 @@
 - `next_day_actionable` 初版 label。
 - FinMind price raw cache 轉候選：已完成。
 - daily report source summary / data gaps：已完成。
-- P4b 是 P4 的資料強化，不是獨立大 phase：接 20-50 日窗口、`TaiwanStockInfo`、法人、融資融券。
+- P4b 是 P4 的資料強化，不是獨立大 phase：20-50 日窗口、`TaiwanStockInfo`、法人、融資融券 MVP 已完成。
 
 ## P5: Replay / Paper Ledger
 
-目前狀態：尚未開始；P0 已有 paper ledger 骨架。
+目前狀態：下一個 sprint；P0 已有 paper ledger 骨架。
 
 - historical replay。
 - paper ledger。

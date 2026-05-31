@@ -234,6 +234,7 @@ def cmd_ingest_finmind(args: argparse.Namespace) -> None:
                 dataset=args.dataset,
                 trading_date=args.date,
                 stock_id=args.stock_id or "market",
+                start_date=args.start_date,
             )
         ]
     config = TiDBConfig.from_env()
@@ -334,6 +335,7 @@ def build_parser() -> argparse.ArgumentParser:
     finmind.add_argument("--date", required=True)
     finmind.add_argument("--dataset", default="TaiwanStockPrice")
     finmind.add_argument("--stock-id", default="market")
+    finmind.add_argument("--start-date")
     finmind.add_argument("--requests")
     finmind.add_argument("--cache-dir", default="data/raw")
     finmind.add_argument("--quota-limit", type=int, default=540)

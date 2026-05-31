@@ -132,6 +132,9 @@ def _format_source_summary_markdown(source_summary: dict[str, Any]) -> str:
             f"- degraded candidates：{source_summary.get('degraded_candidates', 0)}",
             f"- 資料缺口檔案：{source_summary.get('data_gap_files', 0)}",
             f"- 低流動性過濾：{source_summary.get('filtered_low_liquidity', 0)}",
+            f"- 非普通股過濾：{source_summary.get('filtered_non_common_stock', 0)}",
+            f"- 缺法人資料：{source_summary.get('missing_chip_files', 0)}",
+            f"- 缺融資融券資料：{source_summary.get('missing_margin_files', 0)}",
         ]
     )
 
@@ -145,7 +148,9 @@ def _format_source_summary_text(source_summary: dict[str, Any] | None) -> str:
         f"input files {source_summary.get('input_files', 0)}；"
         f"built {source_summary.get('built_candidates', 0)}；"
         f"degraded {source_summary.get('degraded_candidates', 0)}；"
-        f"data gaps {source_summary.get('data_gap_files', 0)}"
+        f"data gaps {source_summary.get('data_gap_files', 0)}；"
+        f"missing chip {source_summary.get('missing_chip_files', 0)}；"
+        f"missing margin {source_summary.get('missing_margin_files', 0)}"
     )
 
 
