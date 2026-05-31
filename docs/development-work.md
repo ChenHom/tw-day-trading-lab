@@ -16,7 +16,7 @@
 | P3 | FinMind Nightly Ingestion | 已完成 cache / ledger MVP | `49a917b` |
 | P4 | Candidate Engine v1 | 已完成 raw cache candidate builder MVP | `fbdff38` |
 | P4b | Candidate Engine Data Enrichment | 已完成 MVP | `2b56adf` |
-| P5 | Replay / Paper Ledger | 已完成 MVP | `7b04f7b` |
+| P5 | Replay / Paper Ledger | 已完成 MVP | `3c998be` |
 | P6 | Shioaji Simulation Adapter | 尚未開始 | - |
 
 `P4b Candidate Engine Data Enrichment` 是 P4 的資料強化 sprint，不是獨立大 phase。
