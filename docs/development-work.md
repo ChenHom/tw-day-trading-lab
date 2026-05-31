@@ -1,7 +1,7 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P5 MVP 已完成；下一步 P6 Shioaji Simulation Adapter
+狀態：P0-P6 MVP 已完成；下一步 Report Loop / Notification
 預設分支：`master`
 
 ## Phase 對照
@@ -17,7 +17,7 @@
 | P4 | Candidate Engine v1 | 已完成 raw cache candidate builder MVP | `fbdff38` |
 | P4b | Candidate Engine Data Enrichment | 已完成 MVP | `2b56adf` |
 | P5 | Replay / Paper Ledger | 已完成 MVP | `3c998be` |
-| P6 | Shioaji Simulation Adapter | 尚未開始 | - |
+| P6 | Shioaji Simulation Adapter | 已完成 dry-run adapter MVP | `a475843` |
 
 `P4b Candidate Engine Data Enrichment` 是 P4 的資料強化 sprint，不是獨立大 phase。
 
@@ -364,25 +364,47 @@
 - 重送同一 intent 不會重複開倉。
 - broker state 與 ledger 不一致時標為 `needs_review`，不得自動算入 expectancy。
 
+目前狀態：已完成 dry-run adapter MVP。
+
+實際產出：
+
+- `src/tw_day_trading_lab/simulation.py`
+- `tests/test_simulation.py`
+- `examples/simulation-plan.sample.json`
+- CLI：`tw-daytrade simulate run`
+
+設計結果：
+
+- `ShioajiSimulationAdapter` 依賴 `SimulationBroker` protocol 與 `PaperLedger`，核心不 import Shioaji SDK。
+- P6 MVP 使用 `DryRunSimulationBroker` 驗證 simulation login / place order chain。
+- `SignalIntent` 轉 `OrderIntent` 後先經 ledger 註冊，duplicate intent 會在 broker order 前被拒絕。
+- `BrokerTrade` status 會 normalize，未知 status 進 `needs_review`。
+- `reconcile_broker_trades` 會檢查 broker trade 是否存在對應 ledger open intent；不一致時輸出 `validity=needs_review` 且 `expectancy_eligible=false`。
+- simulation result 的 `sample_type=simulation`，不與 replay output 混用。
+
+驗證結果：
+
+- `tests/test_simulation.py` 覆蓋 approved signal dry-run、duplicate intent、risk rejected、broker / ledger mismatch、status normalization、CLI output 與 Markdown report。
+- sample smoke：`examples/simulation-plan.sample.json` 產出 2 筆 simulation results，其中 1 筆 simulated、1 筆 duplicate，`expectancy_eligible=0`。
+
 ## 4. Immediate Next Sprint
 
-推薦下一個 sprint：P6 Shioaji Simulation Adapter。
+推薦下一個 sprint：Report Loop / Notification。
 
 任務切分：
 
-1. 建立 `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition` simulation adapter。
-2. 接 Shioaji simulation login / place order dry-run wrapper。
-3. 正規化 broker callback / order status。
-4. 重送同一 intent 不可重複開倉。
-5. broker state 與 ledger 不一致時標 `needs_review`，不得自動算入 expectancy。
-6. 補 Shioaji Simulation 文件與 tests。
-7. commit。
+1. 將 candidate report、replay report、simulation report 組成單日 close report。
+2. Telegram summary 仍先維持 dry-run gate，不做真實發送。
+3. 報告固定列出 candidate source summary、sample validity、replay expectancy、simulation status summary。
+4. 將 broker / ledger `needs_review` 顯示在每日報告，不讓它被 expectancy 吞掉。
+5. 補 report loop tests。
+6. commit。
 
 完成標準：
 
-- simulation 樣本與 replay 樣本分開統計。
-- 重送同一 intent 不會重複開倉。
-- broker state 與 ledger 不一致時標為 `needs_review`，不得自動算入 expectancy。
+- 單日報告可同時讀 candidate / replay / simulation outputs。
+- 報告中明確分離 strategy expectancy 與 execution-chain simulation。
+- `needs_review` 顯示清楚，不能被當成 valid 成果。
 - tests 通過。
 
 ## 5. Working Commands
@@ -401,6 +423,7 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli ingest finmind --date 2026-05-2
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli candidates build-from-raw --date 2026-05-28 --cache-dir data/raw --output reports/2026-05-28-candidates-from-raw.json
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli report daily --date 2026-05-28 --input reports/2026-05-28-candidates-from-raw.json --format md --output reports/2026-05-28-daily-from-raw.md
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli replay samples --date 2026-03-25 --input reports/old-log-sample-samples.json --output reports/2026-03-25-replay.json --report-output reports/2026-03-25-replay.md --cost-r 0.1
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate run --date 2026-05-28 --input examples/simulation-plan.sample.json --output reports/2026-05-28-simulation.json --report-output reports/2026-05-28-simulation.md
 ```
 
 ## 6. Backlog
@@ -410,4 +433,5 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli replay samples --date 2026-03-2
 - 設計 TiDB schema migration 流程。
 - 決定 raw data 儲存先用 JSONL 還是直接導入 Parquet library。
 - 設計 Telegram 正式發送 gate。
-- 建立 Shioaji simulation secrets / config 邊界。
+- 接真正 Shioaji SDK simulation login / callback streaming。
+- 建立 execution sync persistence，用於 restart 後比對 broker open state 與 ledger state。

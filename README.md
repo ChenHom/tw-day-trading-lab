@@ -16,6 +16,7 @@
 - `candidate-engine`
 - `replay-harness`
 - `paper-ledger`
+- `shioaji simulation dry-run`
 - `daily report`
 - `Telegram summary dry-run`
 - TiDB metadata + Parquet raw data layout
@@ -64,6 +65,11 @@ python3 -m tw_day_trading_lab.cli replay samples \
   --output reports/2026-03-25-replay.json \
   --report-output reports/2026-03-25-replay.md \
   --cost-r 0.1
+python3 -m tw_day_trading_lab.cli simulate run \
+  --date 2026-05-28 \
+  --input examples/simulation-plan.sample.json \
+  --output reports/2026-05-28-simulation.json \
+  --report-output reports/2026-05-28-simulation.md
 ```
 
 如果沒有安裝 package，先加上 `PYTHONPATH=src`：
@@ -81,6 +87,7 @@ src/tw_day_trading_lab/
   ledger.py             # paper / simulation idempotency 與部位生命週期骨架
   reports.py            # Markdown / HTML 報告
   replay.py             # P5 valid-only replay expectancy / R metrics
+  simulation.py         # P6 Shioaji simulation dry-run adapter
   storage.py            # repository ports + TiDB/SQLite adapters
   finmind_ingestion.py  # P3 FinMind fetch ledger + raw cache ingestion
   cli.py                # MVP CLI
@@ -118,7 +125,8 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 
 ## Current Implementation Status
 
-- P0-P5 MVP 已完成。
-- 下一步是 P6 Shioaji Simulation Adapter。
+- P0-P6 MVP 已完成。
+- 下一步是 report loop / notification 與更完整的 execution sync。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。
+- P6 已支援 `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition` dry-run，simulation sample 與 replay expectancy 分開，重送同一 intent 不會重複開倉。

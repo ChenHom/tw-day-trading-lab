@@ -75,6 +75,58 @@ Replay trade row：
 | `mfe_r` | 最大有利幅度 R |
 | `mae_r` | 最大不利幅度 R |
 
+## Simulation Input
+
+`tw-daytrade simulate run` 的輸入可為 list，或 `{items: [...]}` / `{signals: [...]}` wrapper。
+每個 item 可包含 `signal` 與 `risk_decision`：
+
+`signal` 必要欄位：
+
+| 欄位 | 說明 |
+|---|---|
+| `trading_date` | 交易日 |
+| `strategy_id` | 策略 id |
+| `symbol` | 股票代號 |
+| `setup_id` | setup / entry lifecycle id |
+| `side` | `buy` / `sell` |
+| `quantity` | 模擬委託股數 |
+| `price` | 模擬委託價，可為 null |
+
+`risk_decision` 欄位：
+
+| 欄位 | 說明 |
+|---|---|
+| `approved` | 是否通過風控 |
+| `reason` | 風控理由 |
+| `quantity` | 風控後股數，可省略 |
+| `price` | 風控後價格，可省略 |
+
+## Simulation Output
+
+simulation output 必須和 replay output 分開。`sample_type` 固定為 `simulation`，且目前 `expectancy_eligible=false`，不得自動併入 replay expectancy。
+
+| 欄位 | 說明 |
+|---|---|
+| `summary.total` | simulation item 總數 |
+| `summary.expectancy_eligible` | 可納入 expectancy 的數量；P6 MVP 固定為 0 |
+| `results[].signal` | 原始 `SignalIntent` |
+| `results[].risk_decision` | 風控決策 |
+| `results[].order_intent` | 由 signal 轉出的 `OrderIntent` |
+| `results[].broker_trade` | broker dry-run 回報 |
+| `results[].ledger_position` | ledger open position snapshot |
+| `results[].status` | `simulated` / `duplicate` / `risk_rejected` / `broker_rejected` / `needs_review` |
+| `results[].review_reason` | duplicate 或 mismatch 等審查原因 |
+
+Broker / ledger reconciliation output：
+
+| 欄位 | 說明 |
+|---|---|
+| `checked` | 檢查的 broker trade 數 |
+| `matched` | broker trade 與 ledger open intent 一致的數量 |
+| `needs_review` | 狀態不一致或未知 broker status 的數量 |
+| `samples[].validity` | `valid` 或 `needs_review` |
+| `samples[].expectancy_eligible` | 固定為 false，避免 simulation 污染策略統計 |
+
 ## Persisted Strategy Samples
 
 TiDB `valid_samples` table 目前保存 classified strategy samples。雖然沿用 `valid_samples` 名稱，實際內容包含：
