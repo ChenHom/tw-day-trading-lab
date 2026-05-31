@@ -13,10 +13,19 @@ from .finmind_ingestion import (
     ingest_finmind_requests,
     read_request_file,
 )
+from .ledger import PaperLedger
 from .models import CandidateInput, CandidateScore
 from .old_log_importer import import_trade_log_csv, render_failure_replay_markdown
 from .replay import ReplayAssumptions, render_replay_markdown, replay_samples
 from .reports import render_html, render_markdown
+from .simulation import (
+    DryRunSimulationBroker,
+    RiskDecision,
+    ShioajiSimulationAdapter,
+    SimulationResult,
+    SignalIntent,
+    render_simulation_markdown,
+)
 from .storage import (
     DatabaseStorage,
     TiDBConfig,
@@ -100,6 +109,37 @@ def load_replay_samples(path: Path) -> list[dict[str, object]]:
     if not isinstance(raw, list):
         raise ValueError("replay input must be a sample list or {samples: [...]}")
     return [dict(item) for item in raw]
+
+
+def load_simulation_plan(path: Path) -> list[tuple[SignalIntent, RiskDecision]]:
+    """Load simulation signals and risk decisions from JSON."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, dict):
+        raw = raw.get("items", raw.get("signals", []))
+    if not isinstance(raw, list):
+        raise ValueError("simulation input must be a list or {items: [...]}")
+
+    plan: list[tuple[SignalIntent, RiskDecision]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("simulation item must be an object")
+        signal_data = item.get("signal", item)
+        decision_data = item.get("risk_decision", {"approved": True, "reason": "default_approved"})
+        if not isinstance(signal_data, dict) or not isinstance(decision_data, dict):
+            raise ValueError("simulation item requires object signal and risk_decision")
+        plan.append((SignalIntent.from_dict(signal_data), RiskDecision.from_dict(decision_data)))
+    return plan
+
+
+def summarize_simulation_results(results: list[SimulationResult]) -> dict[str, int]:
+    """Build status counts for simulation output without mixing replay expectancy."""
+    summary: dict[str, int] = {
+        "total": len(results),
+        "expectancy_eligible": sum(1 for result in results if result.expectancy_eligible),
+    }
+    for result in results:
+        summary[result.status] = summary.get(result.status, 0) + 1
+    return summary
 
 
 def cmd_candidates_build(args: argparse.Namespace) -> None:
@@ -249,6 +289,31 @@ def cmd_replay_samples(args: argparse.Namespace) -> None:
         print(report_output)
 
 
+def cmd_simulate_run(args: argparse.Namespace) -> None:
+    """Run the dry-run Shioaji simulation adapter and write separate simulation output."""
+    adapter = ShioajiSimulationAdapter(
+        broker=DryRunSimulationBroker(),
+        ledger=PaperLedger(),
+    )
+    results = [
+        adapter.execute(signal, decision)
+        for signal, decision in load_simulation_plan(Path(args.input))
+    ]
+    output = Path(args.output) if args.output else Path("reports") / f"{args.date}-simulation.json"
+    payload = {
+        "trading_date": args.date,
+        "sample_type": "simulation",
+        "summary": summarize_simulation_results(results),
+        "results": [result.to_dict() for result in results],
+    }
+    write_json(output, payload)
+    print(output)
+    if args.report_output:
+        report_output = Path(args.report_output)
+        write_text(report_output, render_simulation_markdown(args.date, results))
+        print(report_output)
+
+
 def cmd_ingest_finmind(args: argparse.Namespace) -> None:
     """Run FinMind nightly ingestion with ledger-backed raw cache."""
     token = args.token or os.getenv("FINMIND_TOKEN")
@@ -364,6 +429,15 @@ def build_parser() -> argparse.ArgumentParser:
     replay_samples_parser.add_argument("--report-output")
     replay_samples_parser.add_argument("--cost-r", type=float, default=0.0)
     replay_samples_parser.set_defaults(func=cmd_replay_samples)
+
+    simulate = subparsers.add_parser("simulate")
+    simulate_sub = simulate.add_subparsers(required=True)
+    simulate_run = simulate_sub.add_parser("run")
+    simulate_run.add_argument("--date", required=True)
+    simulate_run.add_argument("--input", required=True)
+    simulate_run.add_argument("--output")
+    simulate_run.add_argument("--report-output")
+    simulate_run.set_defaults(func=cmd_simulate_run)
 
     ingest = subparsers.add_parser("ingest")
     ingest_sub = ingest.add_subparsers(required=True)

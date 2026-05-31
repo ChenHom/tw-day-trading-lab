@@ -1,0 +1,34 @@
+[
+  {
+    "signal": {
+      "trading_date": "2026-05-28",
+      "strategy_id": "mvp",
+      "symbol": "2330",
+      "setup_id": "vwap-breakout",
+      "side": "buy",
+      "quantity": 1000,
+      "price": 900.0
+    },
+    "risk_decision": {
+      "approved": true,
+      "reason": "risk_ok",
+      "quantity": 1000
+    }
+  },
+  {
+    "signal": {
+      "trading_date": "2026-05-28",
+      "strategy_id": "mvp",
+      "symbol": "2330",
+      "setup_id": "vwap-breakout",
+      "side": "buy",
+      "quantity": 1000,
+      "price": 900.0
+    },
+    "risk_decision": {
+      "approved": true,
+      "reason": "risk_ok",
+      "quantity": 1000
+    }
+  }
+]

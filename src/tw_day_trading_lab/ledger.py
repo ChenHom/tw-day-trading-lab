@@ -54,3 +54,5 @@ class PaperLedger:
             (intent.trading_date, intent.strategy_id, intent.symbol, intent.setup_id)
         )
 
+    def has_open_key(self, idempotency_key: str) -> bool:
+        return idempotency_key in self._open_keys
