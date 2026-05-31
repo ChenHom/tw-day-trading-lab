@@ -1,7 +1,7 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P4b MVP 已完成；下一步 P5 Replay / Paper Ledger
+狀態：P0-P5 MVP 已完成；下一步 P6 Shioaji Simulation Adapter
 預設分支：`master`
 
 ## Phase 對照
@@ -15,8 +15,8 @@
 | P2 | TiDB Integration | 已完成 MVP | `f614228` |
 | P3 | FinMind Nightly Ingestion | 已完成 cache / ledger MVP | `49a917b` |
 | P4 | Candidate Engine v1 | 已完成 raw cache candidate builder MVP | `fbdff38` |
-| P4b | Candidate Engine Data Enrichment | 已完成 MVP | 本次 commit |
-| P5 | Replay / Paper Ledger | 尚未開始；已有 ledger 骨架 | - |
+| P4b | Candidate Engine Data Enrichment | 已完成 MVP | `2b56adf` |
+| P5 | Replay / Paper Ledger | 已完成 MVP | `7b04f7b` |
 | P6 | Shioaji Simulation Adapter | 尚未開始 | - |
 
 `P4b Candidate Engine Data Enrichment` 是 P4 的資料強化 sprint，不是獨立大 phase。
@@ -308,6 +308,8 @@
 
 ### P5. Replay / Paper Ledger
 
+目前狀態：已完成 MVP。
+
 目標：用歷史資料與 normalized samples 驗證策略生命週期。
 
 工作項目：
@@ -323,6 +325,27 @@
 - 同一 `idempotency_key` 不會重複開倉。
 - replay expectancy 只使用 `validity = valid`。
 - 報表分開列示 gross / cost / net R。
+
+實際產出：
+
+- `src/tw_day_trading_lab/replay.py`
+- `tests/test_replay.py`
+- CLI：`tw-daytrade replay samples`
+- Markdown replay report：`render_replay_markdown`
+
+設計結果：
+
+- `replay_samples` 只把 `validity = valid` 納入 expectancy。
+- `excluded` / `needs_review` 樣本只列入 skipped summary，不進策略期望值。
+- 同一 `idempotency_key` 的 valid sample 只 replay 第一筆，後續標為 duplicate skip。
+- 若 sample 已有 `realized_r_gross`，直接沿用；若沒有，使用 `entry_price / exit_price / stop_price` 計算 gross R。
+- 若提供 price bars，使用 high / low 計算 MFE / MAE。
+- cost / slippage 先以 `ReplayAssumptions.cost_r` 表示，報表分開列示 gross / cost / net R。
+
+驗證結果：
+
+- `tests/test_replay.py` 覆蓋 valid-only expectancy、MFE / MAE / net R、duplicate idempotency skip、gross / cost / net 報表。
+- 舊 sample smoke：`reports/old-log-sample-samples.json` 共 5 samples；replayed 1、skipped excluded 3、skipped needs_review 1；cost_r 0.1 後 net expectancy = -1.3R。
 
 ### P6. Shioaji Simulation Adapter
 
@@ -343,23 +366,23 @@
 
 ## 4. Immediate Next Sprint
 
-推薦下一個 sprint：P5 Replay / Paper Ledger。
+推薦下一個 sprint：P6 Shioaji Simulation Adapter。
 
 任務切分：
 
-1. 建立 replay runner，讀取 normalized samples 或 candidate output。
-2. 計算 MFE / MAE / realized R。
-3. 加入成本與滑價 assumptions。
-4. 確保 expectancy 只使用 `validity = valid`。
-5. 報表分開列示 gross / cost / net R。
-6. 補 Replay / Paper Ledger 文件與 tests。
+1. 建立 `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition` simulation adapter。
+2. 接 Shioaji simulation login / place order dry-run wrapper。
+3. 正規化 broker callback / order status。
+4. 重送同一 intent 不可重複開倉。
+5. broker state 與 ledger 不一致時標 `needs_review`，不得自動算入 expectancy。
+6. 補 Shioaji Simulation 文件與 tests。
 7. commit。
 
 完成標準：
 
-- 同一 `idempotency_key` 不會重複開倉。
-- replay expectancy 只使用 `validity = valid`。
-- 報表分開列示 gross / cost / net R。
+- simulation 樣本與 replay 樣本分開統計。
+- 重送同一 intent 不會重複開倉。
+- broker state 與 ledger 不一致時標為 `needs_review`，不得自動算入 expectancy。
 - tests 通過。
 
 ## 5. Working Commands
@@ -377,6 +400,7 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli candidates persist --date 2026-
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli ingest finmind --date 2026-05-28 --requests examples/finmind.requests.sample.json --cache-dir data/raw
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli candidates build-from-raw --date 2026-05-28 --cache-dir data/raw --output reports/2026-05-28-candidates-from-raw.json
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli report daily --date 2026-05-28 --input reports/2026-05-28-candidates-from-raw.json --format md --output reports/2026-05-28-daily-from-raw.md
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli replay samples --date 2026-03-25 --input reports/old-log-sample-samples.json --output reports/2026-03-25-replay.json --report-output reports/2026-03-25-replay.md --cost-r 0.1
 ```
 
 ## 6. Backlog

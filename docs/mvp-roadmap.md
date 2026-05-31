@@ -57,17 +57,18 @@
 
 ## P5: Replay / Paper Ledger
 
-目前狀態：下一個 sprint；P0 已有 paper ledger 骨架。
+目前狀態：已完成 MVP。
 
 - historical replay。
-- paper ledger。
-- 成本、滑價、R 值計算。
-- 同一 setup 不重複開倉。
-- replay expectancy 只使用 `validity = valid`。
+- paper ledger：P0 骨架已完成。
+- 成本、滑價、R 值計算：已完成 MVP，以 `cost_r` 假設表示。
+- 同一 setup 不重複開倉：ledger 已有；replay 另會 skip duplicate idempotency。
+- replay expectancy 只使用 `validity = valid`：已完成。
+- gross / cost / net R 分開報表：已完成。
 
 ## P6: Shioaji Simulation
 
-目前狀態：尚未開始。
+目前狀態：下一個 sprint；尚未開始。
 
 - `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition`。
 - 委託回報與重啟同步。

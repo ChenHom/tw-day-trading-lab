@@ -15,6 +15,7 @@ from .finmind_ingestion import (
 )
 from .models import CandidateInput, CandidateScore
 from .old_log_importer import import_trade_log_csv, render_failure_replay_markdown
+from .replay import ReplayAssumptions, render_replay_markdown, replay_samples
 from .reports import render_html, render_markdown
 from .storage import (
     DatabaseStorage,
@@ -89,6 +90,16 @@ def load_sample_summary(path: Path | None) -> dict[str, object] | None:
     if isinstance(raw, dict) and isinstance(raw.get("summary"), dict):
         return raw["summary"]
     return None
+
+
+def load_replay_samples(path: Path) -> list[dict[str, object]]:
+    """Load replay samples from old-log import output or a plain sample list."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, dict):
+        raw = raw.get("samples", [])
+    if not isinstance(raw, list):
+        raise ValueError("replay input must be a sample list or {samples: [...]}")
+    return [dict(item) for item in raw]
 
 
 def cmd_candidates_build(args: argparse.Namespace) -> None:
@@ -223,6 +234,21 @@ def cmd_samples_summary(args: argparse.Namespace) -> None:
         connection.close()
 
 
+def cmd_replay_samples(args: argparse.Namespace) -> None:
+    """Replay classified samples and write JSON plus an optional Markdown report."""
+    result = replay_samples(
+        load_replay_samples(Path(args.input)),
+        assumptions=ReplayAssumptions(cost_r=args.cost_r),
+    )
+    output = Path(args.output) if args.output else Path("reports") / f"{args.date}-replay.json"
+    write_json(output, result.to_dict())
+    print(output)
+    if args.report_output:
+        report_output = Path(args.report_output)
+        write_text(report_output, render_replay_markdown(args.date, result))
+        print(report_output)
+
+
 def cmd_ingest_finmind(args: argparse.Namespace) -> None:
     """Run FinMind nightly ingestion with ledger-backed raw cache."""
     token = args.token or os.getenv("FINMIND_TOKEN")
@@ -328,6 +354,16 @@ def build_parser() -> argparse.ArgumentParser:
     samples_persist.set_defaults(func=cmd_samples_persist)
     samples_summary = samples_sub.add_parser("summary")
     samples_summary.set_defaults(func=cmd_samples_summary)
+
+    replay = subparsers.add_parser("replay")
+    replay_sub = replay.add_subparsers(required=True)
+    replay_samples_parser = replay_sub.add_parser("samples")
+    replay_samples_parser.add_argument("--date", required=True)
+    replay_samples_parser.add_argument("--input", required=True)
+    replay_samples_parser.add_argument("--output")
+    replay_samples_parser.add_argument("--report-output")
+    replay_samples_parser.add_argument("--cost-r", type=float, default=0.0)
+    replay_samples_parser.set_defaults(func=cmd_replay_samples)
 
     ingest = subparsers.add_parser("ingest")
     ingest_sub = ingest.add_subparsers(required=True)

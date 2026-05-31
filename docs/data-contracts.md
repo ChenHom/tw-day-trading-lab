@@ -47,6 +47,34 @@
 
 策略 expectancy 只能使用 `validity = valid` 的樣本。
 
+## Replay Output
+
+`tw-daytrade replay samples` 會輸出：
+
+| 欄位 | 說明 |
+|---|---|
+| `summary.total_samples` | 輸入 sample 總數 |
+| `summary.replayed` | 實際納入 replay 的 `valid` 樣本數 |
+| `summary.skipped_excluded` | 跳過的 excluded 樣本數 |
+| `summary.skipped_needs_review` | 跳過的 needs_review 樣本數 |
+| `summary.skipped_duplicate_idempotency` | 因同一 `idempotency_key` 重複而跳過的 valid 樣本數 |
+| `summary.expectancy_gross_r` | 只用 replayed trades 計算的 gross R 平均 |
+| `summary.average_cost_r` | replayed trades 的平均 cost R |
+| `summary.expectancy_net_r` | gross R 扣除 cost R 後的平均 |
+
+Replay trade row：
+
+| 欄位 | 說明 |
+|---|---|
+| `sample_id` | 來源 sample id |
+| `symbol` | 股票代號 |
+| `idempotency_key` | replay 去重 key |
+| `realized_r_gross` | 成本前 R |
+| `estimated_cost_r` | 成本 / 滑價假設 R |
+| `realized_r_net` | 成本後 R |
+| `mfe_r` | 最大有利幅度 R |
+| `mae_r` | 最大不利幅度 R |
+
 ## Persisted Strategy Samples
 
 TiDB `valid_samples` table 目前保存 classified strategy samples。雖然沿用 `valid_samples` 名稱，實際內容包含：
