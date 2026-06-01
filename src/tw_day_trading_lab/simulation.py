@@ -127,6 +127,20 @@ class ExecutionCallbackEvent:
 
 
 @dataclass(frozen=True)
+class ExecutionLifecycleDecision:
+    idempotency_key: str
+    broker_order_id: str
+    normalized_status: str
+    ledger_effect: str
+    action: str
+    needs_review: bool
+    review_reason: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class LedgerPosition:
     position_id: str
     idempotency_key: str
@@ -567,6 +581,59 @@ def reconcile_broker_trades(trades: list[BrokerTrade], ledger: PaperLedger) -> d
     }
 
 
+def classify_execution_lifecycle(event: ExecutionCallbackEvent) -> ExecutionLifecycleDecision:
+    """Classify how a callback should affect ledger lifecycle state."""
+    base = {
+        "idempotency_key": event.idempotency_key,
+        "broker_order_id": event.broker_order_id,
+        "normalized_status": event.normalized_status,
+    }
+    if event.review_reason or event.normalized_status == "needs_review":
+        return ExecutionLifecycleDecision(
+            **base,
+            ledger_effect="hold_for_review",
+            action="callback_needs_review",
+            needs_review=True,
+            review_reason=event.review_reason or "callback_status_needs_review",
+        )
+    if event.normalized_status == "filled":
+        return ExecutionLifecycleDecision(
+            **base,
+            ledger_effect="open_position",
+            action="confirm_open_position",
+            needs_review=False,
+        )
+    if event.normalized_status == "partial_filled":
+        return ExecutionLifecycleDecision(
+            **base,
+            ledger_effect="hold_for_review",
+            action="partial_fill_manual_reconciliation",
+            needs_review=True,
+            review_reason="partial_fill_requires_policy",
+        )
+    if event.normalized_status in {"cancelled", "rejected"}:
+        return ExecutionLifecycleDecision(
+            **base,
+            ledger_effect="close_intent",
+            action=f"{event.normalized_status}_release_intent",
+            needs_review=False,
+        )
+    if event.normalized_status == "submitted":
+        return ExecutionLifecycleDecision(
+            **base,
+            ledger_effect="none",
+            action="keep_pending_order",
+            needs_review=False,
+        )
+    return ExecutionLifecycleDecision(
+        **base,
+        ledger_effect="hold_for_review",
+        action="unknown_status_manual_reconciliation",
+        needs_review=True,
+        review_reason="unknown_lifecycle_status",
+    )
+
+
 class FileExecutionSyncStore:
     """Persist simulation execution state for restart reconciliation."""
 
@@ -584,6 +651,7 @@ class FileExecutionSyncStore:
             "open_positions": list(raw.get("open_positions", [])),
             "results": list(raw.get("results", [])),
             "callback_events": list(raw.get("callback_events", [])),
+            "lifecycle_decisions": list(raw.get("lifecycle_decisions", [])),
             "custom_field_map": dict(raw.get("custom_field_map", {})),
         }
 
@@ -607,6 +675,7 @@ class FileExecutionSyncStore:
     def record_callback_event(self, event: ExecutionCallbackEvent) -> None:
         snapshot = self.load_snapshot()
         snapshot["callback_events"].append(event.to_dict())
+        snapshot["lifecycle_decisions"].append(classify_execution_lifecycle(event).to_dict())
         trade = event.to_broker_trade()
         if trade:
             snapshot["broker_trades"].append(trade.to_dict())
@@ -791,6 +860,7 @@ def _empty_execution_sync_snapshot() -> dict[str, Any]:
         "open_positions": [],
         "results": [],
         "callback_events": [],
+        "lifecycle_decisions": [],
         "custom_field_map": {},
     }
 

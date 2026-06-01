@@ -139,6 +139,8 @@ Top-level 欄位：
 | `open_positions` | ledger open position snapshot |
 | `results` | simulation result payload |
 | `callback_events` | normalized Shioaji callback events |
+| `lifecycle_decisions` | callback 對 ledger lifecycle 的決策紀錄 |
+| `custom_field_map` | Shioaji 短 `custom_field` token 到完整 `idempotency_key` 的 mapping |
 
 `tw-daytrade simulate restart-sync --store ...` 會讀取 execution sync store，重建 `PaperLedger` open keys，並比對 broker trades 與 ledger open positions。
 
@@ -212,6 +214,19 @@ Normalization 規則：
 - 缺 `idempotency_key`、短 `custom_field` 無法還原、缺 `broker_order_id` 或缺 `symbol` 會標為 `needs_review`。
 - 未知 broker status 會標為 `broker_status_needs_review`。
 - callback-only event 若沒有對應 ledger open position，restart-sync 會輸出 `ledger_missing_open_intent`。
+
+Lifecycle policy：
+
+| callback status | ledger effect | action |
+|---|---|---|
+| `submitted` | `none` | `keep_pending_order` |
+| `filled` | `open_position` | `confirm_open_position` |
+| `partial_filled` | `hold_for_review` | `partial_fill_manual_reconciliation` |
+| `cancelled` | `close_intent` | `cancelled_release_intent` |
+| `rejected` | `close_intent` | `rejected_release_intent` |
+| `needs_review` | `hold_for_review` | `callback_needs_review` |
+
+目前 MVP 只記錄 lifecycle decision，不自動改寫 `open_positions`；partial fill / cancel / reject 的實際 position mutation 留到後續明確策略化。
 
 ## Persisted Strategy Samples
 

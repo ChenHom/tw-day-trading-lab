@@ -1,7 +1,7 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；Shioaji order custom field token mapping、SDK-shaped gateway、callback stream MVP 已完成；下一步 partial fill / cancel / retry lifecycle policy
+狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；Shioaji order custom field token mapping、SDK-shaped gateway、callback stream、execution lifecycle policy MVP 已完成；下一步 duplicate callback 去重 / ordering / store locking
 預設分支：`master`
 
 ## Phase 對照
@@ -641,6 +641,46 @@ Grill-me review：
 - 剩餘風險：目前 stream 只保存 callback event，尚未定義 partial fill / cancel / reject 如何改 ledger position lifecycle。
 - 剩餘風險：尚未處理 callback replay ordering、duplicate callback event 去重與多進程 store locking。
 - 下一步應先定義 execution lifecycle policy，再接更長時間的 gated simulation smoke。
+
+### Execution Lifecycle Policy MVP
+
+目前狀態：已完成 MVP。
+
+目標：先把 Shioaji callback status 對 ledger lifecycle 的影響固定成可測 contract，避免後續 callback stream 進來後直接亂改 open positions。
+
+實際產出：
+
+- `ExecutionLifecycleDecision`
+- `classify_execution_lifecycle`
+- `FileExecutionSyncStore.lifecycle_decisions`
+
+設計結果：
+
+- `submitted`：`ledger_effect=none`，action=`keep_pending_order`。
+- `filled`：`ledger_effect=open_position`，action=`confirm_open_position`。
+- `partial_filled`：`ledger_effect=hold_for_review`，action=`partial_fill_manual_reconciliation`，reason=`partial_fill_requires_policy`。
+- `cancelled` / `rejected`：`ledger_effect=close_intent`，action=`cancelled_release_intent` / `rejected_release_intent`。
+- `needs_review` 或 callback 本身有 review reason：`ledger_effect=hold_for_review`，不自動修改 ledger。
+- MVP 只記錄 lifecycle decision，不自動 mutation `open_positions`。
+
+驗證結果：
+
+- TDD red：新增 lifecycle policy 測試後，因缺 `ExecutionLifecycleDecision` import 失敗。
+- `tests/test_simulation.py` 新增 filled / partial_filled / cancelled / rejected lifecycle tests。
+- focused tests：4 tests OK。
+- full unittest：66 tests OK。
+- compile check：OK。
+- diff check：OK。
+- smoke：submitted / filled / partial_filled / cancelled / rejected 皆輸出預期 ledger effect 與 action。
+
+Grill-me review：
+
+- 方向正確：先把狀態決策寫成 pure policy 與可追蹤紀錄，避免直接把 callback 寫成不可逆 ledger mutation。
+- must-fix 已處理：partial fill 不會被當成完整開倉，先進人工檢查。
+- must-fix 已處理：cancelled / rejected 明確釋放 intent，但目前只記錄 decision，不直接刪 position。
+- 剩餘風險：尚未做 duplicate callback 去重；同一 broker order 重複 callback 會重複記錄。
+- 剩餘風險：尚未處理 callback ordering，例如 submitted 晚於 filled 到達。
+- 剩餘風險：JSON file store 仍沒有 locking / transaction，多進程 callback 寫入可能競態。
 
 ## 5. Working Commands
 

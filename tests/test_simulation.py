@@ -16,6 +16,7 @@ from tw_day_trading_lab.simulation import (
     BrokerTrade,
     DryRunSimulationBroker,
     ExecutionCallbackEvent,
+    ExecutionLifecycleDecision,
     FileExecutionSyncStore,
     LedgerPosition,
     RiskDecision,
@@ -28,6 +29,7 @@ from tw_day_trading_lab.simulation import (
     build_shioaji_order_request,
     build_shioaji_custom_field,
     build_restart_sync_report,
+    classify_execution_lifecycle,
     normalize_shioaji_order_callback,
     normalize_broker_status,
     order_intent_from_idempotency_key,
@@ -560,6 +562,8 @@ class SimulationAdapterTest(unittest.TestCase):
             self.assertEqual(len(snapshot["callback_events"]), 1)
             self.assertEqual(len(snapshot["broker_trades"]), 1)
             self.assertEqual(snapshot["broker_trades"][0]["broker_order_id"], "broker-1")
+            self.assertEqual(len(snapshot["lifecycle_decisions"]), 1)
+            self.assertEqual(snapshot["lifecycle_decisions"][0]["ledger_effect"], "open_position")
 
     def test_cli_ingest_callback_normalizes_and_records_store(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -717,6 +721,76 @@ class SimulationAdapterTest(unittest.TestCase):
                     store=store,
                     trading_date="2026-05-28",
                 )
+
+    def test_execution_lifecycle_policy_for_filled_callback(self):
+        event = ExecutionCallbackEvent(
+            stat="OrderState.Filled",
+            broker_order_id="broker-1",
+            idempotency_key="2026-05-28:mvp:2330:vwap-breakout:buy",
+            trading_date="2026-05-28",
+            symbol="2330",
+            side="buy",
+            quantity=1000,
+            price=900.0,
+            normalized_status="filled",
+            raw_status="Filled",
+            review_reason="",
+            raw={"source": "unit-test"},
+        )
+
+        decision = classify_execution_lifecycle(event)
+
+        self.assertIsInstance(decision, ExecutionLifecycleDecision)
+        self.assertEqual(decision.ledger_effect, "open_position")
+        self.assertEqual(decision.action, "confirm_open_position")
+        self.assertFalse(decision.needs_review)
+
+    def test_execution_lifecycle_policy_marks_partial_fill_for_review(self):
+        event = ExecutionCallbackEvent(
+            stat="OrderState.PartFilled",
+            broker_order_id="broker-1",
+            idempotency_key="2026-05-28:mvp:2330:vwap-breakout:buy",
+            trading_date="2026-05-28",
+            symbol="2330",
+            side="buy",
+            quantity=500,
+            price=900.0,
+            normalized_status="partial_filled",
+            raw_status="PartFilled",
+            review_reason="",
+            raw={"source": "unit-test"},
+        )
+
+        decision = classify_execution_lifecycle(event)
+
+        self.assertEqual(decision.ledger_effect, "hold_for_review")
+        self.assertEqual(decision.action, "partial_fill_manual_reconciliation")
+        self.assertTrue(decision.needs_review)
+        self.assertEqual(decision.review_reason, "partial_fill_requires_policy")
+
+    def test_execution_lifecycle_policy_for_cancelled_or_rejected_callback(self):
+        for status in ("cancelled", "rejected"):
+            with self.subTest(status=status):
+                event = ExecutionCallbackEvent(
+                    stat=f"OrderState.{status}",
+                    broker_order_id="broker-1",
+                    idempotency_key="2026-05-28:mvp:2330:vwap-breakout:buy",
+                    trading_date="2026-05-28",
+                    symbol="2330",
+                    side="buy",
+                    quantity=1000,
+                    price=900.0,
+                    normalized_status=status,
+                    raw_status=status,
+                    review_reason="",
+                    raw={"source": "unit-test"},
+                )
+
+                decision = classify_execution_lifecycle(event)
+
+                self.assertEqual(decision.ledger_effect, "close_intent")
+                self.assertEqual(decision.action, f"{status}_release_intent")
+                self.assertFalse(decision.needs_review)
 
 
 if __name__ == "__main__":
