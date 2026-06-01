@@ -10,7 +10,7 @@ __pycache__/
 data/raw/*
 data/processed/*
 reports/*
+shioaji.log
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !reports/.gitkeep
-

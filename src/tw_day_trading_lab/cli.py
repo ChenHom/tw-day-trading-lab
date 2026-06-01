@@ -412,12 +412,14 @@ def cmd_simulate_ingest_callback(args: argparse.Namespace) -> None:
     raw = json.loads(Path(args.input).read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("callback input must be a JSON object")
+    store = FileExecutionSyncStore(Path(args.store))
+    snapshot = store.load_snapshot()
     event = normalize_shioaji_order_callback(
         raw.get("stat", ""),
         raw.get("msg", {}),
         trading_date=args.date,
+        custom_field_map=snapshot["custom_field_map"],
     )
-    store = FileExecutionSyncStore(Path(args.store))
     store.record_callback_event(event)
     output = Path(args.output) if args.output else Path("reports") / f"{args.date}-callback-event.json"
     write_json(output, event.to_dict())

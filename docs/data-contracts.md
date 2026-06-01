@@ -174,14 +174,18 @@ Order request 欄位：
 | `side` | `buy` / `sell` |
 | `quantity` | 風控後股數，若未覆寫則使用 signal quantity |
 | `price` | 風控後價格，若未覆寫則使用 signal price |
-| `custom_field` | 必須等於 `OrderIntent.idempotency_key` |
+| `idempotency_key` | 完整 `OrderIntent.idempotency_key`，保存在本地 contract |
+| `custom_field` | 由 `idempotency_key` 產生的 6 字元 Shioaji token |
+| `price_type` | `LMT` 或 `MKT` |
+| `order_type` | 預設 `ROD` |
 
 規則：
 
 - `build_shioaji_order_request` 是唯一把 `OrderIntent` 轉成 Shioaji order request 的邊界。
-- `custom_field` 必須寫入 `idempotency_key`，讓後續 Shioaji callback 可穩定回連 ledger intent。
+- Shioaji SDK `custom_field` 最長 6 字元，因此不能直接寫入完整 `idempotency_key`；系統用穩定 6 字元 token 寫入 `custom_field`，並把 `custom_field -> idempotency_key` mapping 存在 execution sync store。
 - `ShioajiOrderRequestBroker` 只依賴 gateway protocol，可用 fake gateway 驗證 request contract；真實 SDK adapter 必須遵守同一 contract。
-- 若後續 callback 缺 `custom_field`，仍會由 callback normalization 標為 `missing_idempotency_key`。
+- `ShioajiSdkSimulationGateway` 已可用 fake SDK 驗證 login / `api.Order` / `api.place_order` 的 SDK-shaped 邊界，不會在測試中登入真實帳號或送真實委託。
+- 若後續 callback 的短 `custom_field` 找不到 mapping，callback normalization 會標為 `unresolved_custom_field`。
 
 Callback event 欄位：
 
@@ -189,7 +193,7 @@ Callback event 欄位：
 |---|---|
 | `stat` | Shioaji callback 的 stat |
 | `broker_order_id` | broker order id |
-| `idempotency_key` | 由 Shioaji order `custom_field` 或 callback payload 提供 |
+| `idempotency_key` | 由 callback payload 明示欄位，或由短 `custom_field` mapping 還原 |
 | `trading_date` | CLI 提供的交易日 |
 | `symbol` | 股票代號 |
 | `side` | `buy` / `sell` |
@@ -202,7 +206,7 @@ Callback event 欄位：
 
 Normalization 規則：
 
-- 缺 `idempotency_key`、`broker_order_id` 或 `symbol` 會標為 `needs_review`。
+- 缺 `idempotency_key`、短 `custom_field` 無法還原、缺 `broker_order_id` 或缺 `symbol` 會標為 `needs_review`。
 - 未知 broker status 會標為 `broker_status_needs_review`。
 - callback-only event 若沒有對應 ledger open position，restart-sync 會輸出 `ledger_missing_open_intent`。
 

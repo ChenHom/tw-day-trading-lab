@@ -1,7 +1,7 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；Shioaji order custom field contract 已完成；下一步真正 Shioaji SDK simulation adapter / callback streaming
+狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；Shioaji order custom field token mapping 與 SDK-shaped gateway MVP 已完成；下一步真正 Shioaji SDK callback streaming
 預設分支：`master`
 
 ## Phase 對照
@@ -560,43 +560,50 @@ Grill-me review：
 - 剩餘風險：`custom_field` 如何在真正 place order 時填入 idempotency key，下一 sprint 必須接上，否則 callback 無法穩定對應 ledger intent。
 - 剩餘風險：partial fill / cancelled / rejected 的 position lifecycle policy 尚未定義，只先 normalize status。
 
-### Shioaji Order Custom Field Contract
+### Shioaji Order Custom Field Contract / SDK Gateway MVP
 
 目前狀態：已完成 MVP。
 
-目標：補上 place order 前的 adapter contract，確保 `OrderIntent.idempotency_key` 會寫入 Shioaji order `custom_field`，讓 callback normalization 能穩定回連 ledger intent。
+目標：補上 place order 前的 adapter contract，並對齊真實 Shioaji SDK 的 `custom_field` 限制，讓 callback normalization 能穩定回連 ledger intent。
 
 實際產出：
 
 - `ShioajiOrderRequest`
+- `build_shioaji_custom_field`
 - `build_shioaji_order_request`
 - `ShioajiOrderGateway` protocol
 - `ShioajiOrderRequestBroker`
+- `ShioajiSdkSimulationGateway`
 
 設計結果：
 
 - `build_shioaji_order_request` 是 `OrderIntent -> ShioajiOrderRequest` 的唯一轉換邊界。
-- request 的 `custom_field` 必須等於 `OrderIntent.idempotency_key`。
+- 已確認本機 Shioaji 1.3.2 `Order.custom_field` 最長 6 字元，不能直接放完整 `idempotency_key`。
+- request 保留完整 `idempotency_key`，但實際寫入 SDK order 的 `custom_field` 是穩定 6 字元 token。
+- execution sync store 會保存 `custom_field -> idempotency_key` mapping，callback normalization 透過 mapping 還原完整 intent。
+- 無法還原的短 `custom_field` 會標 `unresolved_custom_field`，不會被當成正常 trade。
 - `quantity` / `price` 優先使用 `RiskDecision` 覆寫值，未覆寫才使用 `SignalIntent`。
 - `ShioajiOrderRequestBroker` 只依賴 gateway protocol，可用 fake gateway 驗證，不匯入 SDK、不登入真實帳號、不送出真實委託。
-- fake gateway request 可透過 callback normalization round trip 回同一個 idempotency key。
+- `ShioajiSdkSimulationGateway` 可用 fake SDK 驗證 `login`、`api.Order`、`api.place_order` 邊界；測試不登入真實帳號、不送真實委託。
 
 驗證結果：
 
 - TDD red：新增測試後，因缺 `ShioajiOrderRequest` import 失敗。
-- `tests/test_simulation.py` 新增 order request builder 與 fake gateway broker 測試。
-- simulation unittest：19 tests OK。
-- full unittest：57 tests OK。
+- TDD red：新增 SDK gateway 測試後，因缺 `ShioajiSdkSimulationGateway` import 失敗。
+- `tests/test_simulation.py` 新增 order request builder、短 token unresolved review、store mapping callback restore、fake SDK gateway 測試。
+- simulation unittest：22 tests OK。
+- full unittest：60 tests OK。
 - compile check：OK。
 - diff check：OK。
+- smoke：`simulate run --execution-sync-store` 後 ingest 短 `custom_field` callback sample，再跑 restart-sync，callback 正確還原完整 `idempotency_key`，`needs_review=0`。
 
 Grill-me review：
 
-- 方向正確：先補 order request contract，再接真正 SDK adapter，避免 callback normalization 已有但 place order 沒有寫入 `custom_field` 的斷鏈。
-- must-fix 已處理：`custom_field` 來源固定為 `OrderIntent.idempotency_key`，不是由 broker response 事後猜測。
+- 方向正確：先補 SDK-shaped gateway 與短 token mapping，再接真正 SDK callback streaming，避免 callback normalization 已有但 place order 無法符合 SDK 限制。
+- must-fix 已處理：沒有硬塞完整 `idempotency_key` 進 `custom_field`；改用 6 字元 token + 本地 mapping。
 - must-fix 已處理：仍維持 fake gateway / dry-run，沒有真實 Shioaji login 或 order side effect。
-- 剩餘風險：尚未用真實 Shioaji SDK order object 做 smoke，下一 sprint 必須對照 SDK 欄位名稱與 enum。
-- 剩餘風險：目前 request contract 只含 symbol、side、quantity、price、custom_field；真正 SDK adapter 還要明確定義 order type、price type、account、session 與盤中/盤後限制。
+- 剩餘風險：尚未用真實 Shioaji simulation credentials 做 login / order smoke；下一 sprint 必須加明確人工 gate。
+- 剩餘風險：目前 SDK gateway 只覆蓋股票 `Contracts.Stocks`、`Action`、`StockPriceType`、`OrderType.ROD` 與 account；盤中/盤後限制、現股/融券條件、委託 lot 尚未策略化。
 - 剩餘風險：partial fill / cancelled / rejected 的 ledger lifecycle policy 尚未定義，接 streaming 前要補狀態轉移表。
 
 ## 5. Working Commands

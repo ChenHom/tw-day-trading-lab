@@ -21,9 +21,11 @@ from tw_day_trading_lab.simulation import (
     RiskDecision,
     ShioajiOrderRequest,
     ShioajiOrderRequestBroker,
+    ShioajiSdkSimulationGateway,
     ShioajiSimulationAdapter,
     SignalIntent,
     build_shioaji_order_request,
+    build_shioaji_custom_field,
     build_restart_sync_report,
     normalize_shioaji_order_callback,
     normalize_broker_status,
@@ -134,11 +136,10 @@ class SimulationAdapterTest(unittest.TestCase):
         self.assertEqual(request.side, "buy")
         self.assertEqual(request.quantity, 2000)
         self.assertEqual(request.price, 901.5)
-        self.assertEqual(request.custom_field, intent.idempotency_key)
-        self.assertEqual(
-            request.to_dict()["custom_field"],
-            "2026-05-28:mvp:2330:vwap-breakout:buy",
-        )
+        self.assertEqual(request.idempotency_key, intent.idempotency_key)
+        self.assertEqual(request.custom_field, build_shioaji_custom_field(intent.idempotency_key))
+        self.assertLessEqual(len(request.custom_field), 6)
+        self.assertRegex(request.custom_field, r"^[A-Z2-7]{6}$")
 
     def test_shioaji_order_request_broker_sends_custom_field_to_gateway(self):
         class RecordingGateway:
@@ -173,7 +174,8 @@ class SimulationAdapterTest(unittest.TestCase):
 
         self.assertEqual(result.status, "simulated")
         self.assertEqual(len(gateway.requests), 1)
-        self.assertEqual(gateway.requests[0].custom_field, result.order_intent.idempotency_key)
+        self.assertEqual(gateway.requests[0].idempotency_key, result.order_intent.idempotency_key)
+        self.assertLessEqual(len(gateway.requests[0].custom_field), 6)
         event = normalize_shioaji_order_callback(
             "OrderState.Submitted",
             {
@@ -188,9 +190,85 @@ class SimulationAdapterTest(unittest.TestCase):
                 "status": {"status": "Submitted"},
             },
             trading_date=gateway.requests[0].trading_date,
+            custom_field_map={
+                gateway.requests[0].custom_field: result.order_intent.idempotency_key,
+            },
         )
         self.assertEqual(event.idempotency_key, result.order_intent.idempotency_key)
         self.assertEqual(event.review_reason, "")
+
+    def test_unmapped_short_custom_field_requires_review(self):
+        event = normalize_shioaji_order_callback(
+            "OrderState.Submitted",
+            {
+                "order": {
+                    "id": "broker-1",
+                    "custom_field": "ABC123",
+                    "action": "Buy",
+                    "price": 900.0,
+                    "quantity": 1000,
+                },
+                "contract": {"code": "2330"},
+                "status": {"status": "Submitted"},
+            },
+            trading_date="2026-05-28",
+        )
+
+        self.assertEqual(event.idempotency_key, "")
+        self.assertEqual(event.normalized_status, "needs_review")
+        self.assertEqual(event.review_reason, "unresolved_custom_field")
+
+    def test_shioaji_sdk_gateway_builds_sdk_order_without_real_login(self):
+        class FakeContracts:
+            Stocks = {"2330": {"code": "2330"}}
+
+        class FakeApi:
+            def __init__(self) -> None:
+                self.Contracts = FakeContracts()
+                self.stock_account = "stock-account"
+                self.login_calls: list[dict[str, object]] = []
+                self.orders: list[object] = []
+                self.place_order_calls: list[tuple[object, object]] = []
+
+            def login(self, **kwargs):
+                self.login_calls.append(kwargs)
+                return ["stock-account"]
+
+            def Order(self, **kwargs):
+                self.orders.append(kwargs)
+                return kwargs
+
+            def place_order(self, contract, order):
+                self.place_order_calls.append((contract, order))
+                return {
+                    "order": {
+                        "id": "broker-1",
+                        "custom_field": order["custom_field"],
+                    },
+                    "status": {"status": "Submitted"},
+                }
+
+        api = FakeApi()
+        gateway = ShioajiSdkSimulationGateway(
+            api=api,
+            api_key="test-key",
+            secret_key="test-secret",
+        )
+        request = build_shioaji_order_request(
+            self.make_signal().to_order_intent(),
+            self.make_signal(),
+            RiskDecision(approved=True, reason="risk_ok", quantity=1000, price=900.0),
+        )
+
+        session = gateway.login()
+        response = gateway.place_order(session, request)
+
+        self.assertEqual(api.login_calls[0]["api_key"], "test-key")
+        self.assertTrue(api.login_calls[0]["fetch_contract"])
+        self.assertEqual(api.orders[0]["custom_field"], request.custom_field)
+        self.assertEqual(api.orders[0]["account"], "stock-account")
+        self.assertEqual(response["custom_field"], request.custom_field)
+        self.assertEqual(response["broker_order_id"], "broker-1")
 
     def test_markdown_report_separates_simulation_from_replay_expectancy(self):
         broker = DryRunSimulationBroker()
@@ -315,6 +393,10 @@ class SimulationAdapterTest(unittest.TestCase):
             self.assertEqual(
                 snapshot["open_positions"][0]["idempotency_key"],
                 "2026-05-28:mvp:2330:vwap-breakout:buy",
+            )
+            self.assertEqual(
+                snapshot["custom_field_map"][build_shioaji_custom_field(result.order_intent.idempotency_key)],
+                result.order_intent.idempotency_key,
             )
 
     def test_restart_sync_restores_ledger_and_matches_broker_state(self):
@@ -507,6 +589,56 @@ class SimulationAdapterTest(unittest.TestCase):
             self.assertEqual(event["normalized_status"], "filled")
             self.assertEqual(len(snapshot["callback_events"]), 1)
             self.assertEqual(len(snapshot["broker_trades"]), 1)
+
+    def test_cli_ingest_callback_resolves_short_custom_field_from_store(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            callback_path = tmpdir / "callback.json"
+            store_path = tmpdir / "execution-sync.json"
+            output_path = tmpdir / "callback-event.json"
+            store = FileExecutionSyncStore(store_path)
+            broker = DryRunSimulationBroker()
+            adapter = ShioajiSimulationAdapter(broker=broker, ledger=PaperLedger())
+            result = adapter.execute(
+                self.make_signal(),
+                RiskDecision(approved=True, reason="risk_ok", quantity=1000),
+            )
+            store.record_result(result)
+            short_custom_field = build_shioaji_custom_field(result.order_intent.idempotency_key)
+            callback_path.write_text(
+                json.dumps(
+                    {
+                        "stat": "OrderState.Filled",
+                        "msg": {
+                            "order": {
+                                "id": "broker-1",
+                                "custom_field": short_custom_field,
+                                "action": "Buy",
+                                "price": 900.0,
+                                "quantity": 1000,
+                            },
+                            "contract": {"code": "2330"},
+                            "status": {"status": "Filled"},
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with redirect_stdout(StringIO()):
+                cmd_simulate_ingest_callback(
+                    Namespace(
+                        date="2026-05-28",
+                        input=str(callback_path),
+                        store=str(store_path),
+                        output=str(output_path),
+                    )
+                )
+
+            event = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(event["idempotency_key"], result.order_intent.idempotency_key)
+            self.assertEqual(event["review_reason"], "")
 
 
 if __name__ == "__main__":

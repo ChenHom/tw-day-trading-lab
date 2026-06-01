@@ -72,7 +72,7 @@
 
 ## P6: Shioaji Simulation
 
-目前狀態：dry-run adapter MVP、execution sync MVP、callback normalization MVP、order custom field contract 已完成。
+目前狀態：dry-run adapter MVP、execution sync MVP、callback normalization MVP、order custom field token mapping、SDK-shaped gateway MVP 已完成。
 
 - `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition`：已完成 dry-run chain。
 - duplicate intent 會在 broker order 前被 ledger 擋下。
@@ -81,8 +81,9 @@
 - simulation 樣本與 replay 樣本分開統計，simulation 不納入 replay expectancy。
 - execution sync store 可保存 dry-run broker trades / open positions，restart-sync 可重建 ledger open state 並比對 broker / ledger 一致性。
 - callback normalization 可將 Shioaji `{stat, msg}` payload 轉成穩定內部 event，缺 key / 缺欄位會進 `needs_review`。
-- order request contract 會把 `OrderIntent.idempotency_key` 寫入 Shioaji order `custom_field`，並用 fake gateway 測試 request / callback round trip。
-- 真正 Shioaji SDK login / callback streaming 留到後續 sprint。
+- order request contract 會把 `OrderIntent.idempotency_key` 轉成 6 字元 `custom_field` token，並透過 execution sync store mapping 還原 callback intent。
+- `ShioajiSdkSimulationGateway` 已用 fake SDK 測試 login / `api.Order` / `api.place_order` 邊界；真實登入與真實委託仍未啟用。
+- 真正 Shioaji SDK callback streaming 留到後續 sprint。
 
 ## Later: Report Loop / Notification
 

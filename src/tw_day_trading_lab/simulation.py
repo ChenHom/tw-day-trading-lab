@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -81,7 +83,10 @@ class ShioajiOrderRequest:
     side: str
     quantity: int
     price: float | None
+    idempotency_key: str
     custom_field: str
+    price_type: str = "LMT"
+    order_type: str = "ROD"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -242,7 +247,9 @@ class ShioajiOrderRequestBroker:
         response = self._gateway.place_order(session, request)
         raw_status = str(_first_non_empty(response.get("raw_status"), response.get("status")) or "")
         return BrokerTrade(
-            idempotency_key=str(_first_non_empty(response.get("custom_field"), request.custom_field) or ""),
+            idempotency_key=str(
+                _first_non_empty(response.get("idempotency_key"), request.idempotency_key) or ""
+            ),
             broker_order_id=str(
                 _first_non_empty(
                     response.get("broker_order_id"),
@@ -261,6 +268,63 @@ class ShioajiOrderRequestBroker:
         )
 
 
+class ShioajiSdkSimulationGateway:
+    """Small Shioaji SDK boundary that can be tested with a fake API object."""
+
+    def __init__(
+        self,
+        api: Any,
+        api_key: str,
+        secret_key: str,
+        *,
+        account: Any = None,
+    ) -> None:
+        self._api = api
+        self._api_key = api_key
+        self._secret_key = secret_key
+        self._account = account
+
+    def login(self) -> dict[str, str]:
+        accounts = self._api.login(
+            api_key=self._api_key,
+            secret_key=self._secret_key,
+            fetch_contract=True,
+            subscribe_trade=True,
+        )
+        if self._account is None:
+            self._account = getattr(self._api, "stock_account", None)
+            if self._account is None and accounts:
+                self._account = accounts[0]
+        return {"mode": "simulation", "session_id": "shioaji-sdk"}
+
+    def place_order(
+        self,
+        session: dict[str, str],
+        request: ShioajiOrderRequest,
+    ) -> dict[str, Any]:
+        contract = self._api.Contracts.Stocks[request.symbol]
+        order = self._api.Order(
+            price=request.price if request.price is not None else 0,
+            quantity=request.quantity,
+            action=self._resolve_sdk_value("Action", request.side.capitalize()),
+            price_type=self._resolve_sdk_value("StockPriceType", request.price_type),
+            order_type=self._resolve_sdk_value("OrderType", request.order_type),
+            account=self._account,
+            custom_field=request.custom_field,
+        )
+        raw_trade = self._api.place_order(contract, order)
+        return _normalize_shioaji_place_order_response(raw_trade, request)
+
+    def _resolve_sdk_value(self, enum_name: str, member_name: str) -> Any:
+        try:
+            import shioaji as sj  # type: ignore
+
+            enum_cls = getattr(sj.constant, enum_name)
+            return getattr(enum_cls, member_name)
+        except Exception:
+            return member_name
+
+
 def build_shioaji_order_request(
     intent: OrderIntent,
     signal: SignalIntent,
@@ -275,8 +339,64 @@ def build_shioaji_order_request(
         side=intent.side,
         quantity=quantity,
         price=price,
-        custom_field=intent.idempotency_key,
+        idempotency_key=intent.idempotency_key,
+        custom_field=build_shioaji_custom_field(intent.idempotency_key),
+        price_type="LMT" if price is not None else "MKT",
+        order_type="ROD",
     )
+
+
+def build_shioaji_custom_field(idempotency_key: str) -> str:
+    """Build a stable 6-char Shioaji custom_field token for an idempotency key."""
+    digest = hashlib.blake2s(idempotency_key.encode("utf-8"), digest_size=5).digest()
+    return base64.b32encode(digest).decode("ascii").rstrip("=")[:6]
+
+
+def _normalize_shioaji_place_order_response(
+    raw_trade: Any,
+    request: ShioajiOrderRequest,
+) -> dict[str, Any]:
+    payload = _to_plain_mapping(raw_trade)
+    order = _to_plain_mapping(payload.get("order", {}))
+    status = _to_plain_mapping(payload.get("status", {}))
+    return {
+        "broker_order_id": str(
+            _first_non_empty(
+                order.get("id"),
+                order.get("ordno"),
+                payload.get("id"),
+                payload.get("order_id"),
+            )
+            or ""
+        ),
+        "custom_field": str(
+            _first_non_empty(
+                order.get("custom_field"),
+                order.get("customField"),
+                payload.get("custom_field"),
+                request.custom_field,
+            )
+            or ""
+        ),
+        "status": str(
+            _first_non_empty(
+                status.get("status"),
+                payload.get("status"),
+                "submitted",
+            )
+            or ""
+        ),
+        "raw_status": str(
+            _first_non_empty(
+                status.get("status"),
+                payload.get("raw_status"),
+                payload.get("status"),
+                "submitted",
+            )
+            or ""
+        ),
+        "raw": payload,
+    }
 
 
 def normalize_broker_status(raw_status: str) -> str:
@@ -430,12 +550,17 @@ class FileExecutionSyncStore:
             "open_positions": list(raw.get("open_positions", [])),
             "results": list(raw.get("results", [])),
             "callback_events": list(raw.get("callback_events", [])),
+            "custom_field_map": dict(raw.get("custom_field_map", {})),
         }
 
     def record_result(self, result: SimulationResult) -> None:
         snapshot = self.load_snapshot()
         result_payload = result.to_dict()
         snapshot["results"].append(result_payload)
+        if result.order_intent:
+            snapshot["custom_field_map"][
+                build_shioaji_custom_field(result.order_intent.idempotency_key)
+            ] = result.order_intent.idempotency_key
         if result.trade:
             snapshot["broker_trades"].append(result.trade.to_dict())
         if result.position:
@@ -548,6 +673,7 @@ def normalize_shioaji_order_callback(
     msg: Any,
     *,
     trading_date: str,
+    custom_field_map: dict[str, str] | None = None,
 ) -> ExecutionCallbackEvent:
     """Normalize a Shioaji order callback payload into the lab execution contract."""
     payload = _to_plain_mapping(msg)
@@ -564,14 +690,17 @@ def normalize_shioaji_order_callback(
         )
         or ""
     )
-    idempotency_key = str(
-        _first_non_empty(
-            order.get("custom_field"),
-            order.get("customField"),
-            order.get("idempotency_key"),
-            payload.get("idempotency_key"),
-        )
+    custom_field = str(
+        _first_non_empty(order.get("custom_field"), order.get("customField"))
         or ""
+    )
+    explicit_idempotency_key = str(
+        _first_non_empty(order.get("idempotency_key"), payload.get("idempotency_key")) or ""
+    )
+    idempotency_key = _resolve_callback_idempotency_key(
+        explicit_idempotency_key,
+        custom_field,
+        custom_field_map or {},
     )
     broker_order_id = str(
         _first_non_empty(
@@ -593,7 +722,9 @@ def normalize_shioaji_order_callback(
     )
     normalized_status = normalize_broker_status(raw_status)
     review_reasons: list[str] = []
-    if not idempotency_key:
+    if not idempotency_key and custom_field:
+        review_reasons.append("unresolved_custom_field")
+    elif not idempotency_key:
         review_reasons.append("missing_idempotency_key")
     if not broker_order_id:
         review_reasons.append("missing_broker_order_id")
@@ -621,7 +752,13 @@ def normalize_shioaji_order_callback(
 
 
 def _empty_execution_sync_snapshot() -> dict[str, Any]:
-    return {"broker_trades": [], "open_positions": [], "results": [], "callback_events": []}
+    return {
+        "broker_trades": [],
+        "open_positions": [],
+        "results": [],
+        "callback_events": [],
+        "custom_field_map": {},
+    }
 
 
 def _to_plain_mapping(value: Any) -> dict[str, Any]:
@@ -637,6 +774,20 @@ def _first_non_empty(*values: Any) -> Any:
         if value not in {None, ""}:
             return value
     return None
+
+
+def _resolve_callback_idempotency_key(
+    explicit_idempotency_key: str,
+    custom_field: str,
+    custom_field_map: dict[str, str],
+) -> str:
+    if explicit_idempotency_key:
+        return explicit_idempotency_key
+    if custom_field in custom_field_map:
+        return custom_field_map[custom_field]
+    if ":" in custom_field:
+        return custom_field
+    return ""
 
 
 def _normalize_side(value: Any) -> str:

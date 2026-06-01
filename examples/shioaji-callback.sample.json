@@ -3,7 +3,7 @@
   "msg": {
     "order": {
       "id": "broker-1",
-      "custom_field": "2026-05-28:mvp:2330:vwap-breakout:buy",
+      "custom_field": "RMB4CF",
       "action": "Buy",
       "price": 900.0,
       "quantity": 1000
