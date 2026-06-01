@@ -21,6 +21,7 @@ from tw_day_trading_lab.simulation import (
     RiskDecision,
     ShioajiOrderRequest,
     ShioajiOrderRequestBroker,
+    ShioajiCallbackStream,
     ShioajiSdkSimulationGateway,
     ShioajiSimulationAdapter,
     SignalIntent,
@@ -652,6 +653,70 @@ class SimulationAdapterTest(unittest.TestCase):
             event = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(event["idempotency_key"], result.order_intent.idempotency_key)
             self.assertEqual(event["review_reason"], "")
+
+    def test_shioaji_callback_stream_records_events_from_registered_callback(self):
+        class FakeCallbackApi:
+            simulation = True
+
+            def __init__(self) -> None:
+                self.callback = None
+
+            def set_order_callback(self, callback):
+                self.callback = callback
+
+            def emit(self, stat, msg):
+                self.callback(stat, msg)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FileExecutionSyncStore(Path(tmp) / "execution-sync.json")
+            broker = DryRunSimulationBroker()
+            adapter = ShioajiSimulationAdapter(broker=broker, ledger=PaperLedger())
+            result = adapter.execute(
+                self.make_signal(),
+                RiskDecision(approved=True, reason="risk_ok", quantity=1000),
+            )
+            store.record_result(result)
+            api = FakeCallbackApi()
+            stream = ShioajiCallbackStream(
+                api=api,
+                store=store,
+                trading_date="2026-05-28",
+            )
+
+            stream.start()
+            api.emit(
+                "OrderState.Filled",
+                {
+                    "order": {
+                        "id": "broker-1",
+                        "custom_field": build_shioaji_custom_field(result.order_intent.idempotency_key),
+                        "action": "Buy",
+                        "price": 900.0,
+                        "quantity": 1000,
+                    },
+                    "contract": {"code": "2330"},
+                    "status": {"status": "Filled"},
+                },
+            )
+
+            snapshot = store.load_snapshot()
+            self.assertEqual(stream.callback_count, 1)
+            self.assertEqual(len(snapshot["callback_events"]), 1)
+            self.assertEqual(snapshot["callback_events"][0]["idempotency_key"], result.order_intent.idempotency_key)
+            self.assertEqual(len(snapshot["broker_trades"]), 2)
+
+    def test_shioaji_callback_stream_rejects_non_simulation_api(self):
+        class LiveLikeApi:
+            simulation = False
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FileExecutionSyncStore(Path(tmp) / "execution-sync.json")
+            with self.assertRaisesRegex(ValueError, "simulation=True"):
+                ShioajiCallbackStream(
+                    api=LiveLikeApi(),
+                    store=store,
+                    trading_date="2026-05-28",
+                )
 
 
 if __name__ == "__main__":

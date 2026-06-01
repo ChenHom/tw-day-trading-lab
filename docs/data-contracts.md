@@ -186,6 +186,8 @@ Order request 欄位：
 - `ShioajiOrderRequestBroker` 只依賴 gateway protocol，可用 fake gateway 驗證 request contract；真實 SDK adapter 必須遵守同一 contract。
 - `ShioajiSdkSimulationGateway` 已可用 fake SDK 驗證 login / `api.Order` / `api.place_order` 的 SDK-shaped 邊界，不會在測試中登入真實帳號或送真實委託。
 - `ShioajiSdkSimulationGateway` 只接受 `api.simulation=True` 或沒有該屬性的 fake API；若偵測到 `api.simulation=False` 會直接拒絕。
+- `ShioajiCallbackStream` 可註冊 `api.set_order_callback`，收到 callback 後讀取 execution sync store 的 `custom_field_map`、normalize event、寫回 `callback_events` 與可轉換的 `broker_trades`。
+- `ShioajiCallbackStream` 同樣只接受 `api.simulation=True` 或沒有該屬性的 fake API；若偵測到 `api.simulation=False` 會直接拒絕。
 - 若後續 callback 的短 `custom_field` 找不到 mapping，callback normalization 會標為 `unresolved_custom_field`。
 
 Callback event 欄位：

@@ -327,6 +327,38 @@ class ShioajiSdkSimulationGateway:
             return member_name
 
 
+class ShioajiCallbackStream:
+    """Register a Shioaji order callback and persist normalized simulation events."""
+
+    def __init__(
+        self,
+        api: Any,
+        store: "FileExecutionSyncStore",
+        trading_date: str,
+    ) -> None:
+        if getattr(api, "simulation", True) is not True:
+            raise ValueError("ShioajiCallbackStream requires api.simulation=True")
+        self._api = api
+        self._store = store
+        self._trading_date = trading_date
+        self.callback_count = 0
+
+    def start(self) -> None:
+        self._api.set_order_callback(self.handle_callback)
+
+    def handle_callback(self, stat: Any, msg: Any) -> ExecutionCallbackEvent:
+        snapshot = self._store.load_snapshot()
+        event = normalize_shioaji_order_callback(
+            stat,
+            msg,
+            trading_date=self._trading_date,
+            custom_field_map=snapshot["custom_field_map"],
+        )
+        self._store.record_callback_event(event)
+        self.callback_count += 1
+        return event
+
+
 def build_shioaji_order_request(
     intent: OrderIntent,
     signal: SignalIntent,

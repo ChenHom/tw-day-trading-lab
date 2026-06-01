@@ -1,7 +1,7 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；Shioaji order custom field token mapping 與 SDK-shaped gateway MVP 已完成；下一步真正 Shioaji SDK callback streaming
+狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；Shioaji order custom field token mapping、SDK-shaped gateway、callback stream MVP 已完成；下一步 partial fill / cancel / retry lifecycle policy
 預設分支：`master`
 
 ## Phase 對照
@@ -606,6 +606,41 @@ Grill-me review：
 - 剩餘風險：尚未用真實 Shioaji simulation credentials 做 login / order smoke；下一 sprint 必須加明確人工 gate。
 - 剩餘風險：目前 SDK gateway 只覆蓋股票 `Contracts.Stocks`、`Action`、`StockPriceType`、`OrderType.ROD` 與 account；盤中/盤後限制、現股/融券條件、委託 lot 尚未策略化。
 - 剩餘風險：partial fill / cancelled / rejected 的 ledger lifecycle policy 尚未定義，接 streaming 前要補狀態轉移表。
+
+### Shioaji Callback Stream MVP
+
+目前狀態：已完成 MVP。
+
+目標：把 Shioaji SDK 的 `set_order_callback` 接成可測 event source，收到 callback 後立即 normalize 並寫入 execution sync store；仍只允許 simulation / fake SDK。
+
+實際產出：
+
+- `ShioajiCallbackStream`
+
+設計結果：
+
+- `ShioajiCallbackStream.start()` 會註冊 `api.set_order_callback(self.handle_callback)`。
+- `handle_callback(stat, msg)` 會讀取 store 內的 `custom_field_map`，呼叫 `normalize_shioaji_order_callback`，再透過 `FileExecutionSyncStore.record_callback_event` 寫入 event 與可轉換的 broker trade。
+- callback stream 會累計 `callback_count`，方便 smoke / 測試確認事件有進來。
+- 若 `api.simulation=False`，stream 初始化會直接拒絕，避免開發階段誤接正式區 callback。
+
+驗證結果：
+
+- TDD red：新增測試後，因缺 `ShioajiCallbackStream` import 失敗。
+- `tests/test_simulation.py` 新增 callback stream 註冊 / event persist / 非 simulation API 拒絕測試。
+- callback stream focused tests：2 tests OK。
+- full unittest：63 tests OK。
+- compile check：OK。
+- diff check：OK。
+- smoke：fake callback API emit 一筆 `OrderState.Filled` 後，stream callback count 1、callback event 1、broker trades 2、review reason 空字串。
+
+Grill-me review：
+
+- 方向正確：這輪只接 event source 與 store persistence，沒有做真實 login、真實委託或正式區 callback。
+- must-fix 已處理：stream 與 gateway 一樣拒絕 `api.simulation=False`。
+- 剩餘風險：目前 stream 只保存 callback event，尚未定義 partial fill / cancel / reject 如何改 ledger position lifecycle。
+- 剩餘風險：尚未處理 callback replay ordering、duplicate callback event 去重與多進程 store locking。
+- 下一步應先定義 execution lifecycle policy，再接更長時間的 gated simulation smoke。
 
 ## 5. Working Commands
 
