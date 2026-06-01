@@ -110,6 +110,60 @@ def render_html(
 """
 
 
+def render_close_report_markdown(
+    trading_date: str,
+    candidates: list[CandidateScore],
+    *,
+    candidate_source_summary: dict[str, Any] | None = None,
+    replay_summary: dict[str, Any] | None = None,
+    simulation_summary: dict[str, Any] | None = None,
+) -> str:
+    """Render one close report across candidate, replay, and simulation outputs."""
+    actionable = [item for item in candidates if item.next_day_actionable]
+    lines = [
+        f"# 台股當沖 Close Report {trading_date}",
+        "",
+        "## Summary",
+        "",
+        f"- candidates：{len(candidates)}",
+        f"- next_day_actionable：{len(actionable)}",
+        "- strategy expectancy：只來自 replay 的 `validity = valid` 樣本",
+        "- execution simulation：只驗證執行鏈路，不證明策略 edge",
+        "- 真實下單：禁止，Telegram 只允許 dry-run summary",
+        "",
+        "## Candidate Close",
+        "",
+        _format_source_summary_markdown(candidate_source_summary or {}),
+        "",
+        "| Rank | Symbol | Name | Archetype | Score | Actionable | Downgrade |",
+        "|---:|---|---|---|---:|---|---|",
+    ]
+    for item in candidates:
+        downgrade = ", ".join(item.downgrade_reasons) if item.downgrade_reasons else "-"
+        lines.append(
+            f"| {item.rank} | {item.symbol} | {item.name} | {item.archetype} | "
+            f"{item.total_score:.2f} | {item.next_day_actionable} | {downgrade} |"
+        )
+    if not candidates:
+        lines.append("| - | - | - | - | - | - | - |")
+
+    lines.extend(
+        [
+            "",
+            "## Strategy Replay",
+            "",
+            "- expectancy scope: `validity = valid` only",
+            _format_replay_summary_markdown(replay_summary),
+            "",
+            "## Execution Simulation",
+            "",
+            "- simulation 不納入 replay expectancy",
+            _format_simulation_summary_markdown(simulation_summary),
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
 def _format_sample_summary_markdown(sample_summary: dict[str, Any] | None) -> str:
     """Format validity counts for Markdown while keeping the old fallback text."""
     if not sample_summary:
@@ -163,4 +217,63 @@ def _format_sample_summary_text(sample_summary: dict[str, Any] | None) -> str:
         f"{sample_summary.get('valid', 0)} / "
         f"{sample_summary.get('excluded', 0)} / "
         f"{sample_summary.get('needs_review', 0)}"
+    )
+
+
+def _format_optional_float(value: Any) -> str:
+    if value is None:
+        return "-"
+    try:
+        return f"{float(value):.4f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _format_replay_summary_markdown(replay_summary: dict[str, Any] | None) -> str:
+    if not replay_summary:
+        return "\n".join(
+            [
+                "- replay input：未提供",
+                "- expectancy Gross R：-",
+                "- average Cost R：-",
+                "- expectancy Net R：-",
+            ]
+        )
+    return "\n".join(
+        [
+            f"- total samples：{replay_summary.get('total_samples', 0)}",
+            f"- replayed：{replay_summary.get('replayed', 0)}",
+            "- skipped excluded / needs_review："
+            f"{replay_summary.get('skipped_excluded', 0)} / "
+            f"{replay_summary.get('skipped_needs_review', 0)}",
+            f"- expectancy Gross R：{_format_optional_float(replay_summary.get('expectancy_gross_r'))}",
+            f"- average Cost R：{_format_optional_float(replay_summary.get('average_cost_r'))}",
+            f"- expectancy Net R：{_format_optional_float(replay_summary.get('expectancy_net_r'))}",
+        ]
+    )
+
+
+def _format_simulation_summary_markdown(simulation_summary: dict[str, Any] | None) -> str:
+    if not simulation_summary:
+        return "\n".join(
+            [
+                "- simulation input：未提供",
+                "- expectancy eligible：0",
+                "- needs_review：0",
+            ]
+        )
+    known_keys = {"total", "expectancy_eligible"}
+    status_lines = [
+        f"- {key}：{simulation_summary[key]}"
+        for key in sorted(simulation_summary)
+        if key not in known_keys
+    ]
+    if "needs_review" not in simulation_summary:
+        status_lines.append("- needs_review：0")
+    return "\n".join(
+        [
+            f"- total：{simulation_summary.get('total', 0)}",
+            f"- expectancy eligible：{simulation_summary.get('expectancy_eligible', 0)}",
+            *status_lines,
+        ]
     )

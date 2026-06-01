@@ -70,6 +70,16 @@ python3 -m tw_day_trading_lab.cli simulate run \
   --input examples/simulation-plan.sample.json \
   --output reports/2026-05-28-simulation.json \
   --report-output reports/2026-05-28-simulation.md
+python3 -m tw_day_trading_lab.cli report close \
+  --date 2026-05-28 \
+  --candidates reports/2026-05-28-candidates-from-raw.json \
+  --replay reports/2026-03-25-replay.json \
+  --simulation reports/2026-05-28-simulation.json \
+  --output reports/2026-05-28-close.md
+python3 -m tw_day_trading_lab.cli notify telegram \
+  --date 2026-05-28 \
+  --report reports/2026-05-28-close.md \
+  --dry-run
 ```
 
 如果沒有安裝 package，先加上 `PYTHONPATH=src`：
@@ -85,7 +95,7 @@ src/tw_day_trading_lab/
   candidate_engine.py   # 候選排序與 next_day_actionable 初版規則
   candidate_builder.py  # P4 raw JSONL -> candidate input / ranked candidates
   ledger.py             # paper / simulation idempotency 與部位生命週期骨架
-  reports.py            # Markdown / HTML 報告
+  reports.py            # Markdown / HTML 報告與 daily close report
   replay.py             # P5 valid-only replay expectancy / R metrics
   simulation.py         # P6 Shioaji simulation dry-run adapter
   storage.py            # repository ports + TiDB/SQLite adapters
@@ -126,7 +136,8 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 ## Current Implementation Status
 
 - P0-P6 MVP 已完成。
-- 下一步是 report loop / notification 與更完整的 execution sync。
+- Report Loop / Notification MVP 已完成：`report close` 可聚合 candidate / replay / simulation；Telegram summary 維持 dry-run gate。
+- 下一步是更完整的 execution sync。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。
 - P6 已支援 `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition` dry-run，simulation sample 與 replay expectancy 分開，重送同一 intent 不會重複開倉。

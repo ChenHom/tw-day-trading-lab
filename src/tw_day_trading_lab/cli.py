@@ -17,7 +17,7 @@ from .ledger import PaperLedger
 from .models import CandidateInput, CandidateScore
 from .old_log_importer import import_trade_log_csv, render_failure_replay_markdown
 from .replay import ReplayAssumptions, render_replay_markdown, replay_samples
-from .reports import render_html, render_markdown
+from .reports import render_close_report_markdown, render_html, render_markdown
 from .simulation import (
     DryRunSimulationBroker,
     RiskDecision,
@@ -93,6 +93,16 @@ def write_json(path: Path, payload: object) -> None:
 
 def load_sample_summary(path: Path | None) -> dict[str, object] | None:
     """Load sample classification counts from an old-log import JSON file."""
+    if path is None:
+        return None
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, dict) and isinstance(raw.get("summary"), dict):
+        return raw["summary"]
+    return None
+
+
+def load_payload_summary(path: Path | None) -> dict[str, object] | None:
+    """Load a top-level summary object from a JSON payload."""
     if path is None:
         return None
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -211,6 +221,22 @@ def cmd_report_daily(args: argparse.Namespace) -> None:
         )
         default_suffix = "md"
     output = Path(args.output) if args.output else Path("reports") / f"{args.date}-daily.{default_suffix}"
+    write_text(output, content)
+    print(output)
+
+
+def cmd_report_close(args: argparse.Namespace) -> None:
+    """Build the daily close report from candidate, replay, and simulation outputs."""
+    candidate_path = Path(args.candidates)
+    candidates = load_candidate_scores(candidate_path)
+    content = render_close_report_markdown(
+        args.date,
+        candidates,
+        candidate_source_summary=load_candidate_source_summary(candidate_path),
+        replay_summary=load_payload_summary(Path(args.replay)) if args.replay else None,
+        simulation_summary=load_payload_summary(Path(args.simulation)) if args.simulation else None,
+    )
+    output = Path(args.output) if args.output else Path("reports") / f"{args.date}-close.md"
     write_text(output, content)
     print(output)
 
@@ -388,6 +414,13 @@ def build_parser() -> argparse.ArgumentParser:
     daily.add_argument("--format", choices=["md", "html"], default="md")
     daily.add_argument("--output")
     daily.set_defaults(func=cmd_report_daily)
+    close = report_sub.add_parser("close")
+    close.add_argument("--date", required=True)
+    close.add_argument("--candidates", required=True)
+    close.add_argument("--replay")
+    close.add_argument("--simulation")
+    close.add_argument("--output")
+    close.set_defaults(func=cmd_report_close)
 
     notify = subparsers.add_parser("notify")
     notify_sub = notify.add_subparsers(required=True)

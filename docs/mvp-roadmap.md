@@ -79,7 +79,11 @@
 
 ## Later: Report Loop / Notification
 
-- 每日日報。
-- Telegram 摘要 dry-run。
+目前狀態：已完成 MVP。
+
+- 每日日報：已完成 candidate daily report。
+- 單日 close report：已完成，可聚合 candidate / replay / simulation output。
+- Telegram 摘要 dry-run：已完成，仍禁止真實發送。
 - 前一日候選驗證。
-- valid / excluded / needs_review 樣本統計。
+- valid / excluded / needs_review 樣本統計：已透過 replay 與 close report 顯示。
+- simulation status summary：已完成，`needs_review` 會明確列出，且 simulation 不納入 replay expectancy。

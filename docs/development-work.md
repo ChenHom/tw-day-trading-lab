@@ -1,7 +1,7 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P6 MVP 已完成；下一步 Report Loop / Notification
+狀態：P0-P6 MVP 已完成；Report Loop / Notification MVP 已完成；下一步 execution sync
 預設分支：`master`
 
 ## Phase 對照
@@ -389,16 +389,16 @@
 
 ## 4. Immediate Next Sprint
 
-推薦下一個 sprint：Report Loop / Notification。
+目前狀態：Report Loop / Notification MVP 已完成。
 
 任務切分：
 
-1. 將 candidate report、replay report、simulation report 組成單日 close report。
-2. Telegram summary 仍先維持 dry-run gate，不做真實發送。
-3. 報告固定列出 candidate source summary、sample validity、replay expectancy、simulation status summary。
-4. 將 broker / ledger `needs_review` 顯示在每日報告，不讓它被 expectancy 吞掉。
-5. 補 report loop tests。
-6. commit。
+1. 將 candidate report、replay report、simulation report 組成單日 close report：已完成。
+2. Telegram summary 仍先維持 dry-run gate，不做真實發送：已完成。
+3. 報告固定列出 candidate source summary、replay expectancy、simulation status summary：已完成。
+4. 將 broker / ledger `needs_review` 顯示在每日報告，不讓它被 expectancy 吞掉：已完成。
+5. 補 report loop tests：已完成。
+6. commit：待本輪收尾。
 
 完成標準：
 
@@ -406,6 +406,23 @@
 - 報告中明確分離 strategy expectancy 與 execution-chain simulation。
 - `needs_review` 顯示清楚，不能被當成 valid 成果。
 - tests 通過。
+
+實際產出：
+
+- `render_close_report_markdown`
+- CLI：`tw-daytrade report close`
+- close report summary 可接 `notify telegram --dry-run`
+- `tests/test_reports.py` report loop regression
+
+驗證結果：
+
+- `tests.test_reports`：3 tests OK。
+- close report smoke：`reports/2026-05-28-close.md` 可由 candidate / replay / simulation JSON 產生。
+- Telegram dry-run smoke：可輸出 close report 前 12 行摘要，未開啟真實發送。
+
+推薦下一個 sprint：execution sync。
+
+目標：接真正 Shioaji SDK simulation login / callback streaming，並建立 restart sync persistence，用於比對 broker open state 與 ledger state。
 
 ## 5. Working Commands
 
@@ -424,6 +441,8 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli candidates build-from-raw --dat
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli report daily --date 2026-05-28 --input reports/2026-05-28-candidates-from-raw.json --format md --output reports/2026-05-28-daily-from-raw.md
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli replay samples --date 2026-03-25 --input reports/old-log-sample-samples.json --output reports/2026-03-25-replay.json --report-output reports/2026-03-25-replay.md --cost-r 0.1
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate run --date 2026-05-28 --input examples/simulation-plan.sample.json --output reports/2026-05-28-simulation.json --report-output reports/2026-05-28-simulation.md
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli report close --date 2026-05-28 --candidates reports/2026-05-28-candidates-from-raw.json --replay reports/2026-03-25-replay.json --simulation reports/2026-05-28-simulation.json --output reports/2026-05-28-close.md
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli notify telegram --date 2026-05-28 --report reports/2026-05-28-close.md --dry-run
 ```
 
 ## 6. Backlog
