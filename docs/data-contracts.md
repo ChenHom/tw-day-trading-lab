@@ -161,6 +161,28 @@ Restart sync report：
 
 `tw-daytrade simulate ingest-callback` 讀取 `{stat, msg}` JSON，轉成標準 callback event，並寫入 execution sync store。
 
+## Shioaji Order Request Contract
+
+Shioaji order request adapter 目前只定義 dry-run / fake gateway contract，不匯入 SDK、不登入真實帳號、不送出真實委託。
+
+Order request 欄位：
+
+| 欄位 | 說明 |
+|---|---|
+| `trading_date` | 交易日 |
+| `symbol` | 股票代號 |
+| `side` | `buy` / `sell` |
+| `quantity` | 風控後股數，若未覆寫則使用 signal quantity |
+| `price` | 風控後價格，若未覆寫則使用 signal price |
+| `custom_field` | 必須等於 `OrderIntent.idempotency_key` |
+
+規則：
+
+- `build_shioaji_order_request` 是唯一把 `OrderIntent` 轉成 Shioaji order request 的邊界。
+- `custom_field` 必須寫入 `idempotency_key`，讓後續 Shioaji callback 可穩定回連 ledger intent。
+- `ShioajiOrderRequestBroker` 只依賴 gateway protocol，可用 fake gateway 驗證 request contract；真實 SDK adapter 必須遵守同一 contract。
+- 若後續 callback 缺 `custom_field`，仍會由 callback normalization 標為 `missing_idempotency_key`。
+
 Callback event 欄位：
 
 | 欄位 | 說明 |

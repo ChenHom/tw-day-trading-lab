@@ -1,7 +1,7 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；下一步 Shioaji callback streaming
+狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；Shioaji order custom field contract 已完成；下一步真正 Shioaji SDK simulation adapter / callback streaming
 預設分支：`master`
 
 ## Phase 對照
@@ -559,6 +559,45 @@ Grill-me review：
 - 剩餘風險：目前只支援 dict / object-like payload 的欄位抽取，尚未用真實 Shioaji callback payload 做 live smoke。
 - 剩餘風險：`custom_field` 如何在真正 place order 時填入 idempotency key，下一 sprint 必須接上，否則 callback 無法穩定對應 ledger intent。
 - 剩餘風險：partial fill / cancelled / rejected 的 position lifecycle policy 尚未定義，只先 normalize status。
+
+### Shioaji Order Custom Field Contract
+
+目前狀態：已完成 MVP。
+
+目標：補上 place order 前的 adapter contract，確保 `OrderIntent.idempotency_key` 會寫入 Shioaji order `custom_field`，讓 callback normalization 能穩定回連 ledger intent。
+
+實際產出：
+
+- `ShioajiOrderRequest`
+- `build_shioaji_order_request`
+- `ShioajiOrderGateway` protocol
+- `ShioajiOrderRequestBroker`
+
+設計結果：
+
+- `build_shioaji_order_request` 是 `OrderIntent -> ShioajiOrderRequest` 的唯一轉換邊界。
+- request 的 `custom_field` 必須等於 `OrderIntent.idempotency_key`。
+- `quantity` / `price` 優先使用 `RiskDecision` 覆寫值，未覆寫才使用 `SignalIntent`。
+- `ShioajiOrderRequestBroker` 只依賴 gateway protocol，可用 fake gateway 驗證，不匯入 SDK、不登入真實帳號、不送出真實委託。
+- fake gateway request 可透過 callback normalization round trip 回同一個 idempotency key。
+
+驗證結果：
+
+- TDD red：新增測試後，因缺 `ShioajiOrderRequest` import 失敗。
+- `tests/test_simulation.py` 新增 order request builder 與 fake gateway broker 測試。
+- simulation unittest：19 tests OK。
+- full unittest：57 tests OK。
+- compile check：OK。
+- diff check：OK。
+
+Grill-me review：
+
+- 方向正確：先補 order request contract，再接真正 SDK adapter，避免 callback normalization 已有但 place order 沒有寫入 `custom_field` 的斷鏈。
+- must-fix 已處理：`custom_field` 來源固定為 `OrderIntent.idempotency_key`，不是由 broker response 事後猜測。
+- must-fix 已處理：仍維持 fake gateway / dry-run，沒有真實 Shioaji login 或 order side effect。
+- 剩餘風險：尚未用真實 Shioaji SDK order object 做 smoke，下一 sprint 必須對照 SDK 欄位名稱與 enum。
+- 剩餘風險：目前 request contract 只含 symbol、side、quantity、price、custom_field；真正 SDK adapter 還要明確定義 order type、price type、account、session 與盤中/盤後限制。
+- 剩餘風險：partial fill / cancelled / rejected 的 ledger lifecycle policy 尚未定義，接 streaming 前要補狀態轉移表。
 
 ## 5. Working Commands
 

@@ -19,8 +19,11 @@ from tw_day_trading_lab.simulation import (
     FileExecutionSyncStore,
     LedgerPosition,
     RiskDecision,
+    ShioajiOrderRequest,
+    ShioajiOrderRequestBroker,
     ShioajiSimulationAdapter,
     SignalIntent,
+    build_shioaji_order_request,
     build_restart_sync_report,
     normalize_shioaji_order_callback,
     normalize_broker_status,
@@ -116,6 +119,78 @@ class SimulationAdapterTest(unittest.TestCase):
         self.assertEqual(normalize_broker_status("PartFilled"), "partial_filled")
         self.assertEqual(normalize_broker_status("Cancelled"), "cancelled")
         self.assertEqual(normalize_broker_status("unknown-new-status"), "needs_review")
+
+    def test_build_shioaji_order_request_uses_idempotency_as_custom_field(self):
+        signal = self.make_signal()
+        intent = signal.to_order_intent()
+
+        request = build_shioaji_order_request(
+            intent,
+            signal,
+            RiskDecision(approved=True, reason="risk_ok", quantity=2000, price=901.5),
+        )
+
+        self.assertEqual(request.symbol, "2330")
+        self.assertEqual(request.side, "buy")
+        self.assertEqual(request.quantity, 2000)
+        self.assertEqual(request.price, 901.5)
+        self.assertEqual(request.custom_field, intent.idempotency_key)
+        self.assertEqual(
+            request.to_dict()["custom_field"],
+            "2026-05-28:mvp:2330:vwap-breakout:buy",
+        )
+
+    def test_shioaji_order_request_broker_sends_custom_field_to_gateway(self):
+        class RecordingGateway:
+            def __init__(self) -> None:
+                self.requests: list[ShioajiOrderRequest] = []
+
+            def login(self) -> dict[str, str]:
+                return {"mode": "simulation", "session_id": "fake-shioaji"}
+
+            def place_order(
+                self,
+                session: dict[str, str],
+                request: ShioajiOrderRequest,
+            ) -> dict[str, object]:
+                self.requests.append(request)
+                return {
+                    "broker_order_id": "broker-1",
+                    "status": "Submitted",
+                    "raw_status": "Submitted",
+                }
+
+        gateway = RecordingGateway()
+        adapter = ShioajiSimulationAdapter(
+            broker=ShioajiOrderRequestBroker(gateway),
+            ledger=PaperLedger(),
+        )
+
+        result = adapter.execute(
+            self.make_signal(),
+            RiskDecision(approved=True, reason="risk_ok", quantity=1000),
+        )
+
+        self.assertEqual(result.status, "simulated")
+        self.assertEqual(len(gateway.requests), 1)
+        self.assertEqual(gateway.requests[0].custom_field, result.order_intent.idempotency_key)
+        event = normalize_shioaji_order_callback(
+            "OrderState.Submitted",
+            {
+                "order": {
+                    "id": "broker-1",
+                    "custom_field": gateway.requests[0].custom_field,
+                    "action": "Buy",
+                    "price": gateway.requests[0].price,
+                    "quantity": gateway.requests[0].quantity,
+                },
+                "contract": {"code": gateway.requests[0].symbol},
+                "status": {"status": "Submitted"},
+            },
+            trading_date=gateway.requests[0].trading_date,
+        )
+        self.assertEqual(event.idempotency_key, result.order_intent.idempotency_key)
+        self.assertEqual(event.review_reason, "")
 
     def test_markdown_report_separates_simulation_from_replay_expectancy(self):
         broker = DryRunSimulationBroker()

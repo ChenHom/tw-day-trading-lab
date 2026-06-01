@@ -75,6 +75,19 @@ class BrokerTrade:
 
 
 @dataclass(frozen=True)
+class ShioajiOrderRequest:
+    trading_date: str
+    symbol: str
+    side: str
+    quantity: int
+    price: float | None
+    custom_field: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class ExecutionCallbackEvent:
     stat: str
     broker_order_id: str
@@ -164,6 +177,18 @@ class SimulationBroker(Protocol):
         """Submit a simulation order and return a normalized broker trade."""
 
 
+class ShioajiOrderGateway(Protocol):
+    def login(self) -> dict[str, str]:
+        """Return a gateway-owned Shioaji simulation session."""
+
+    def place_order(
+        self,
+        session: dict[str, str],
+        request: ShioajiOrderRequest,
+    ) -> dict[str, Any]:
+        """Submit a Shioaji-shaped request and return the raw order response."""
+
+
 class DryRunSimulationBroker:
     def __init__(self, raw_status: str = "Filled") -> None:
         self.raw_status = raw_status
@@ -195,6 +220,63 @@ class DryRunSimulationBroker:
             status=normalize_broker_status(self.raw_status),
             raw_status=self.raw_status,
         )
+
+
+class ShioajiOrderRequestBroker:
+    """Adapt a Shioaji-shaped gateway to the internal simulation broker protocol."""
+
+    def __init__(self, gateway: ShioajiOrderGateway) -> None:
+        self._gateway = gateway
+
+    def login(self) -> dict[str, str]:
+        return self._gateway.login()
+
+    def place_order(
+        self,
+        session: dict[str, str],
+        intent: OrderIntent,
+        signal: SignalIntent,
+        decision: RiskDecision,
+    ) -> BrokerTrade:
+        request = build_shioaji_order_request(intent, signal, decision)
+        response = self._gateway.place_order(session, request)
+        raw_status = str(_first_non_empty(response.get("raw_status"), response.get("status")) or "")
+        return BrokerTrade(
+            idempotency_key=str(_first_non_empty(response.get("custom_field"), request.custom_field) or ""),
+            broker_order_id=str(
+                _first_non_empty(
+                    response.get("broker_order_id"),
+                    response.get("order_id"),
+                    response.get("id"),
+                )
+                or ""
+            ),
+            trading_date=request.trading_date,
+            symbol=request.symbol,
+            side=request.side,
+            quantity=request.quantity,
+            price=request.price,
+            status=normalize_broker_status(raw_status),
+            raw_status=raw_status,
+        )
+
+
+def build_shioaji_order_request(
+    intent: OrderIntent,
+    signal: SignalIntent,
+    decision: RiskDecision,
+) -> ShioajiOrderRequest:
+    """Build the Shioaji order request contract without importing the SDK."""
+    quantity = decision.quantity if decision.quantity is not None else signal.quantity
+    price = decision.price if decision.price is not None else signal.price
+    return ShioajiOrderRequest(
+        trading_date=intent.trading_date,
+        symbol=intent.symbol,
+        side=intent.side,
+        quantity=quantity,
+        price=price,
+        custom_field=intent.idempotency_key,
+    )
 
 
 def normalize_broker_status(raw_status: str) -> str:
