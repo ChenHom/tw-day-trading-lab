@@ -421,6 +421,13 @@
 - close report smoke：`reports/2026-05-28-close.md` 可由 candidate / replay / simulation JSON 產生。
 - Telegram dry-run smoke：可輸出 close report 前 12 行摘要，未開啟真實發送。
 
+Grill-me review：
+
+- 目前設計方向可接受，因為 report loop 只做聚合與揭露，沒有混入新的策略判斷。
+- 剩餘風險 1：close report 目前只顯示 simulation status summary，沒有列出逐筆 `needs_review` 的 review reason；execution sync 前應補。
+- 剩餘風險 2：Telegram dry-run 摘要目前取 report 前 12 個非空行，可能截掉 replay / simulation 重點；正式 notification 前應改成專用 summary renderer。
+- 剩餘風險 3：CLI smoke 覆蓋正常檔案路徑，尚未覆蓋 replay / simulation JSON 欄位缺失或壞檔格式；若要進入日常排程，需補錯誤訊息與測試。
+
 推薦下一個 sprint：execution sync。
 
 目標：接真正 Shioaji SDK simulation login / callback streaming，並建立 restart sync persistence，用於比對 broker open state 與 ledger state。
