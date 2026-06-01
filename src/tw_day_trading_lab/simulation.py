@@ -670,6 +670,11 @@ def callback_status_precedence(normalized_status: str) -> int:
     }.get(normalized_status, 100)
 
 
+def is_terminal_callback_status(normalized_status: str) -> bool:
+    """Return whether a status should not be superseded without manual review."""
+    return normalized_status in {"filled", "cancelled", "rejected"}
+
+
 class FileExecutionSyncStore:
     """Persist simulation execution state for restart reconciliation."""
 
@@ -720,6 +725,22 @@ class FileExecutionSyncStore:
                 return False
             order_key = build_callback_order_key(event)
             current_status = snapshot["callback_status_by_order"].get(order_key)
+            if (
+                current_status
+                and current_status != event.normalized_status
+                and is_terminal_callback_status(current_status)
+                and is_terminal_callback_status(event.normalized_status)
+            ):
+                snapshot["callback_ordering_issues"].append(
+                    {
+                        "reason": "terminal_state_conflict",
+                        "order_key": order_key,
+                        "event_key": event_key,
+                        "incoming_status": event.normalized_status,
+                        "current_status": current_status,
+                    }
+                )
+                return False
             if current_status and callback_status_precedence(
                 event.normalized_status
             ) < callback_status_precedence(current_status):

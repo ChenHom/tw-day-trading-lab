@@ -1,7 +1,7 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；Shioaji order custom field token mapping、SDK-shaped gateway、callback stream、execution lifecycle policy、duplicate callback dedupe、callback status ordering、execution sync store locking MVP 已完成；下一步 terminal-state policy / longer simulation smoke
+狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；Shioaji order custom field token mapping、SDK-shaped gateway、callback stream、execution lifecycle policy、duplicate callback dedupe、callback status ordering、execution sync store locking、terminal-state policy MVP 已完成；下一步 longer simulation smoke
 預設分支：`master`
 
 ## Phase 對照
@@ -782,7 +782,40 @@ Grill-me review：
 - 方向正確：先補本階段 JSON store 的最小可用並發保護，沒有過早引入 DB / queue / event bus。
 - must-fix 已處理：callback / result 的 read-modify-write 都進 lock，JSON 寫入也改成 atomic replace。
 - 剩餘風險：file lock 是單機單檔保護；若之後變成多台機器、NFS 或真正高頻 callback，應升級為 DB-backed repository 或 append-only event log。
-- 剩餘風險：目前沒有 terminal-state policy；`filled` 後的 `cancelled / rejected` 還需要下一輪策略化。
+- 後續已補：terminal-state policy 已攔截 `filled / cancelled / rejected` 之間的終態衝突。
+
+### Terminal-State Policy MVP
+
+目前狀態：已完成 MVP。
+
+目標：避免同一 broker order 已經進入 `filled / cancelled / rejected` 終態後，又收到另一個不同終態時，被當成正常狀態遞進寫入 broker trade 或 lifecycle decision。
+
+實際產出：
+
+- `is_terminal_callback_status`
+- `FileExecutionSyncStore.record_callback_event` terminal-state conflict gate
+- `callback_ordering_issues.reason = terminal_state_conflict`
+
+設計結果：
+
+- terminal callback status：`filled`、`cancelled`、`rejected`。
+- 若同一 broker order 目前狀態已是 terminal，且 incoming status 也是另一個 terminal，則視為 `terminal_state_conflict`。
+- terminal-state conflict 會寫入 `callback_ordering_issues`，`record_callback_event` 回傳 `False`。
+- terminal-state conflict 不會新增 `callback_events`、`broker_trades` 或 `lifecycle_decisions`。
+- `filled -> submitted` 仍維持 stale callback status，不混同為 terminal conflict。
+
+驗證結果：
+
+- TDD red：新增 `filled -> cancelled` 測試後，原本會被接受為正常狀態遞進。
+- focused ordering tests：3 tests OK。
+- full unittest discover：71 tests OK。
+- compile check：OK。
+
+Grill-me review：
+
+- 方向正確：終態衝突先進人工檢查，不自動覆寫 ledger / broker lifecycle。
+- must-fix 已處理：`filled` 後到的 `cancelled` 不再新增 broker trade 或 lifecycle decision。
+- 剩餘風險：目前只處理 callback status contract；真正長時間 simulation smoke 還沒建立，下一步需要用 fake stream 或 gated simulation smoke 驗證多事件序列。
 
 ## 5. Working Commands
 

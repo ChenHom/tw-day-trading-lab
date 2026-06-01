@@ -701,6 +701,66 @@ class SimulationAdapterTest(unittest.TestCase):
                 "filled",
             )
 
+    def test_file_execution_sync_store_flags_terminal_state_conflict_after_filled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FileExecutionSyncStore(Path(tmp) / "execution-sync.json")
+            filled = ExecutionCallbackEvent(
+                stat="OrderState.Filled",
+                broker_order_id="broker-1",
+                idempotency_key="2026-05-28:mvp:2330:vwap-breakout:buy",
+                trading_date="2026-05-28",
+                symbol="2330",
+                side="buy",
+                quantity=1000,
+                price=900.0,
+                normalized_status="filled",
+                raw_status="Filled",
+                review_reason="",
+                raw={"source": "unit-test"},
+            )
+            cancelled = ExecutionCallbackEvent(
+                stat="OrderState.Cancelled",
+                broker_order_id="broker-1",
+                idempotency_key="2026-05-28:mvp:2330:vwap-breakout:buy",
+                trading_date="2026-05-28",
+                symbol="2330",
+                side="buy",
+                quantity=1000,
+                price=900.0,
+                normalized_status="cancelled",
+                raw_status="Cancelled",
+                review_reason="",
+                raw={"source": "unit-test"},
+            )
+
+            self.assertTrue(store.record_callback_event(filled))
+            self.assertFalse(store.record_callback_event(cancelled))
+            snapshot = store.load_snapshot()
+
+            self.assertEqual(len(snapshot["callback_events"]), 1)
+            self.assertEqual(snapshot["callback_events"][0]["normalized_status"], "filled")
+            self.assertEqual(len(snapshot["broker_trades"]), 1)
+            self.assertEqual(len(snapshot["lifecycle_decisions"]), 1)
+            self.assertEqual(len(snapshot["callback_ordering_issues"]), 1)
+            self.assertEqual(
+                snapshot["callback_ordering_issues"][0]["reason"],
+                "terminal_state_conflict",
+            )
+            self.assertEqual(
+                snapshot["callback_ordering_issues"][0]["incoming_status"],
+                "cancelled",
+            )
+            self.assertEqual(
+                snapshot["callback_ordering_issues"][0]["current_status"],
+                "filled",
+            )
+            self.assertEqual(
+                snapshot["callback_status_by_order"][
+                    "2026-05-28|broker-1|2026-05-28:mvp:2330:vwap-breakout:buy"
+                ],
+                "filled",
+            )
+
     def test_file_execution_sync_store_preserves_concurrent_callback_writes(self):
         callback_count = 30
         with tempfile.TemporaryDirectory() as tmp:

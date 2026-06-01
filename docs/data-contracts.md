@@ -244,7 +244,8 @@ Callback 去重：
 - 同一 broker order 另外用 `trading_date | broker_order_id | idempotency_key` 追蹤最後已接受狀態。
 - 狀態 precedence：`submitted < partial_filled < filled < cancelled / rejected < needs_review`。
 - 若後到 callback 的 precedence 小於目前已接受狀態，會寫入 `callback_ordering_issues` 並跳過，不新增 `callback_events`、`broker_trades` 或 `lifecycle_decisions`。
-- 目前 ordering policy 只防止狀態倒退；`filled` 後又出現 `cancelled / rejected` 仍會保留為後續人工或策略檢查資料，不自動改寫 position。
+- `filled`、`cancelled`、`rejected` 視為 terminal callback status；同一 broker order 已接受其中一個終態後，若又收到不同終態，會寫入 `callback_ordering_issues.reason = terminal_state_conflict` 並跳過。
+- terminal-state conflict 不會新增 `callback_events`、`broker_trades` 或 `lifecycle_decisions`，避免把終態衝突當成正常 lifecycle progression。
 
 ## Persisted Strategy Samples
 

@@ -160,7 +160,8 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 - Duplicate callback dedupe MVP 已完成：相同 callback key 不會重複寫入 callback event、broker trade 或 lifecycle decision。
 - Callback status ordering MVP 已完成：同一 broker order 若已記錄較後段狀態，後到的舊狀態會寫入 ordering issue 並跳過，不污染 callback event / broker trade / lifecycle decision。
 - Execution sync store locking MVP 已完成：callback / result 寫入會用 file lock 包住 read-modify-write，並以 atomic replace 更新 JSON store，避免並發 callback 寫入造成 JSONDecodeError 或 lost write。
-- 下一步是 terminal-state policy / longer simulation smoke。
+- Terminal-state policy MVP 已完成：同一 broker order 已進 `filled / cancelled / rejected` 後，若又收到不同終態，會寫入 `terminal_state_conflict` 並跳過，不當成正常 lifecycle progression。
+- 下一步是 longer simulation smoke。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。
 - P6 已支援 `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition` dry-run，simulation sample 與 replay expectancy 分開，重送同一 intent 不會重複開倉。
