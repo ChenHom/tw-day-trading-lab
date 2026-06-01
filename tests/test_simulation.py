@@ -12,6 +12,7 @@ from tw_day_trading_lab.cli import (
     cmd_simulate_ingest_callback,
     cmd_simulate_restart_sync,
     cmd_simulate_run,
+    cmd_simulate_shioaji_smoke,
 )
 from tw_day_trading_lab.ledger import PaperLedger
 from tw_day_trading_lab.simulation import (
@@ -39,6 +40,8 @@ from tw_day_trading_lab.simulation import (
     render_simulation_markdown,
     restore_ledger_from_positions,
     run_callback_sequence_smoke,
+    run_gated_shioaji_callback_stream_smoke,
+    run_gated_shioaji_simulation_login_smoke,
 )
 
 
@@ -1038,6 +1041,106 @@ class SimulationAdapterTest(unittest.TestCase):
             self.assertEqual(payload["summary"]["total"], 1)
             self.assertEqual(payload["summary"]["accepted"], 1)
             self.assertEqual(payload["store_summary"]["callback_events"], 1)
+
+    def test_gated_shioaji_login_smoke_blocks_without_explicit_gate(self):
+        calls: list[bool] = []
+
+        def api_factory(*, simulation):
+            calls.append(simulation)
+            return object()
+
+        report = run_gated_shioaji_simulation_login_smoke(
+            api_factory=api_factory,
+            api_key="test-key",
+            secret_key="test-secret",
+            enabled=False,
+        )
+
+        self.assertEqual(report["status"], "blocked")
+        self.assertEqual(report["review_reason"], "enable_login_smoke_required")
+        self.assertEqual(calls, [])
+
+    def test_gated_shioaji_login_smoke_uses_simulation_api_and_login_flags(self):
+        class FakeApi:
+            simulation = True
+
+            def __init__(self) -> None:
+                self.stock_account = "stock-account"
+                self.login_calls: list[dict[str, object]] = []
+
+            def login(self, **kwargs):
+                self.login_calls.append(kwargs)
+                return ["stock-account"]
+
+        api = FakeApi()
+
+        report = run_gated_shioaji_simulation_login_smoke(
+            api_factory=lambda *, simulation: api,
+            api_key="test-key",
+            secret_key="test-secret",
+            enabled=True,
+            fetch_contract=False,
+            subscribe_trade=False,
+        )
+
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["session"]["mode"], "simulation")
+        self.assertEqual(api.login_calls[0]["api_key"], "test-key")
+        self.assertFalse(api.login_calls[0]["fetch_contract"])
+        self.assertFalse(api.login_calls[0]["subscribe_trade"])
+
+    def test_gated_callback_stream_smoke_registers_without_order(self):
+        class FakeCallbackApi:
+            simulation = True
+
+            def __init__(self) -> None:
+                self.callback = None
+
+            def set_order_callback(self, callback):
+                self.callback = callback
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FileExecutionSyncStore(Path(tmp) / "execution-sync.json")
+            api = FakeCallbackApi()
+
+            report = run_gated_shioaji_callback_stream_smoke(
+                api=api,
+                store=store,
+                trading_date="2026-05-28",
+                enabled=True,
+            )
+
+            self.assertEqual(report["status"], "registered")
+            self.assertIsNotNone(api.callback)
+            self.assertEqual(report["callback_count"], 0)
+            self.assertEqual(report["store_summary"]["callback_events"], 0)
+
+    def test_cli_shioaji_smoke_defaults_to_blocked_report_without_import_or_login(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "shioaji-smoke.json"
+
+            with redirect_stdout(StringIO()):
+                cmd_simulate_shioaji_smoke(
+                    Namespace(
+                        date="2026-05-28",
+                        output=str(output_path),
+                        store=None,
+                        api_key_env="SHIOAJI_API_KEY",
+                        secret_key_env="SHIOAJI_SECRET_KEY",
+                        enable_login_smoke=False,
+                        enable_callback_stream=False,
+                        fetch_contract=False,
+                        subscribe_trade=False,
+                    )
+                )
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["summary"]["blocked"], 2)
+            self.assertEqual(payload["reports"][0]["review_reason"], "enable_login_smoke_required")
+            self.assertEqual(
+                payload["reports"][1]["review_reason"],
+                "enable_callback_stream_required",
+            )
 
     def test_shioaji_callback_stream_records_events_from_registered_callback(self):
         class FakeCallbackApi:

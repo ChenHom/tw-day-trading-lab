@@ -297,6 +297,8 @@ class ShioajiSdkSimulationGateway:
         secret_key: str,
         *,
         account: Any = None,
+        fetch_contract: bool = True,
+        subscribe_trade: bool = True,
     ) -> None:
         if getattr(api, "simulation", True) is not True:
             raise ValueError("ShioajiSdkSimulationGateway requires api.simulation=True")
@@ -304,13 +306,15 @@ class ShioajiSdkSimulationGateway:
         self._api_key = api_key
         self._secret_key = secret_key
         self._account = account
+        self._fetch_contract = fetch_contract
+        self._subscribe_trade = subscribe_trade
 
     def login(self) -> dict[str, str]:
         accounts = self._api.login(
             api_key=self._api_key,
             secret_key=self._secret_key,
-            fetch_contract=True,
-            subscribe_trade=True,
+            fetch_contract=self._fetch_contract,
+            subscribe_trade=self._subscribe_trade,
         )
         if self._account is None:
             self._account = getattr(self._api, "stock_account", None)
@@ -1015,6 +1019,89 @@ def run_callback_sequence_smoke(
             "ordering_issues": len(final_snapshot["callback_ordering_issues"]),
         },
     }
+
+
+def run_gated_shioaji_simulation_login_smoke(
+    *,
+    api_factory: Callable[..., Any],
+    api_key: str | None,
+    secret_key: str | None,
+    enabled: bool,
+    fetch_contract: bool = False,
+    subscribe_trade: bool = False,
+) -> dict[str, Any]:
+    """Run an explicitly gated Shioaji simulation login smoke."""
+    report: dict[str, Any] = {
+        "status": "blocked",
+        "mode": "shioaji_simulation_login",
+        "checks": {
+            "gate_enabled": enabled,
+            "credentials_present": bool(api_key and secret_key),
+            "simulation_only": True,
+            "orders_allowed": False,
+            "fetch_contract": fetch_contract,
+            "subscribe_trade": subscribe_trade,
+        },
+        "side_effects": [],
+        "review_reason": "",
+    }
+    if not enabled:
+        report["review_reason"] = "enable_login_smoke_required"
+        return report
+    if not api_key or not secret_key:
+        report["review_reason"] = "shioaji_credentials_required"
+        return report
+
+    report["side_effects"] = ["login"]
+    api = api_factory(simulation=True)
+    gateway = ShioajiSdkSimulationGateway(
+        api=api,
+        api_key=api_key,
+        secret_key=secret_key,
+        fetch_contract=fetch_contract,
+        subscribe_trade=subscribe_trade,
+    )
+    session = gateway.login()
+    report["status"] = "ok"
+    report["session"] = session
+    return report
+
+
+def run_gated_shioaji_callback_stream_smoke(
+    *,
+    api: Any,
+    store: FileExecutionSyncStore,
+    trading_date: str,
+    enabled: bool,
+) -> dict[str, Any]:
+    """Register the callback stream behind an explicit smoke-test gate."""
+    report: dict[str, Any] = {
+        "status": "blocked",
+        "mode": "shioaji_callback_stream",
+        "trading_date": trading_date,
+        "checks": {
+            "gate_enabled": enabled,
+            "simulation_api": getattr(api, "simulation", None) is True,
+        },
+        "side_effects": ["set_order_callback"] if enabled else [],
+        "review_reason": "",
+    }
+    if not enabled:
+        report["review_reason"] = "enable_callback_stream_required"
+        return report
+
+    stream = ShioajiCallbackStream(api=api, store=store, trading_date=trading_date)
+    stream.start()
+    snapshot = store.load_snapshot()
+    report["status"] = "registered"
+    report["callback_count"] = stream.callback_count
+    report["store_summary"] = {
+        "callback_events": len(snapshot["callback_events"]),
+        "broker_trades": len(snapshot["broker_trades"]),
+        "lifecycle_decisions": len(snapshot["lifecycle_decisions"]),
+        "ordering_issues": len(snapshot["callback_ordering_issues"]),
+    }
+    return report
 
 
 def _empty_execution_sync_snapshot() -> dict[str, Any]:

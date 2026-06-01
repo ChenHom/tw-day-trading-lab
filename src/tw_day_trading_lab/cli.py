@@ -37,6 +37,8 @@ from .simulation import (
     render_simulation_markdown,
     restore_ledger_from_positions,
     run_callback_sequence_smoke,
+    run_gated_shioaji_callback_stream_smoke,
+    run_gated_shioaji_simulation_login_smoke,
 )
 from .storage import (
     DatabaseStorage,
@@ -444,6 +446,84 @@ def cmd_simulate_callback_smoke(args: argparse.Namespace) -> None:
     print(output)
 
 
+def cmd_simulate_shioaji_smoke(args: argparse.Namespace) -> None:
+    """Run explicitly gated Shioaji simulation smoke checks."""
+    reports: list[dict[str, object]] = []
+    api = None
+    store = FileExecutionSyncStore(Path(args.store)) if args.store else None
+
+    if args.enable_login_smoke:
+        try:
+            import shioaji as sj  # type: ignore
+        except Exception as error:
+            reports.append(
+                {
+                    "status": "blocked",
+                    "mode": "shioaji_simulation_login",
+                    "review_reason": "shioaji_import_failed",
+                    "error": str(error),
+                }
+            )
+        else:
+            api_key = os.getenv(args.api_key_env)
+            secret_key = os.getenv(args.secret_key_env)
+            api = sj.Shioaji(simulation=True)
+            reports.append(
+                run_gated_shioaji_simulation_login_smoke(
+                    api_factory=lambda simulation: api,
+                    api_key=api_key,
+                    secret_key=secret_key,
+                    enabled=True,
+                    fetch_contract=args.fetch_contract,
+                    subscribe_trade=args.subscribe_trade,
+                )
+            )
+    else:
+        reports.append(
+            run_gated_shioaji_simulation_login_smoke(
+                api_factory=lambda **_: None,
+                api_key=None,
+                secret_key=None,
+                enabled=False,
+            )
+        )
+
+    if args.enable_callback_stream:
+        if api is None:
+            raise ValueError("callback stream smoke requires --enable-login-smoke first")
+        if store is None:
+            raise ValueError("callback stream smoke requires --store")
+        reports.append(
+            run_gated_shioaji_callback_stream_smoke(
+                api=api,
+                store=store,
+                trading_date=args.date,
+                enabled=True,
+            )
+        )
+    else:
+        reports.append(
+            {
+                "status": "blocked",
+                "mode": "shioaji_callback_stream",
+                "review_reason": "enable_callback_stream_required",
+            }
+        )
+
+    payload = {
+        "trading_date": args.date,
+        "summary": {
+            "total": len(reports),
+            "ok": sum(1 for report in reports if report.get("status") in {"ok", "registered"}),
+            "blocked": sum(1 for report in reports if report.get("status") == "blocked"),
+        },
+        "reports": reports,
+    }
+    output = Path(args.output) if args.output else Path("reports") / f"{args.date}-shioaji-smoke.json"
+    write_json(output, payload)
+    print(output)
+
+
 def cmd_ingest_finmind(args: argparse.Namespace) -> None:
     """Run FinMind nightly ingestion with ledger-backed raw cache."""
     token = args.token or os.getenv("FINMIND_TOKEN")
@@ -593,6 +673,17 @@ def build_parser() -> argparse.ArgumentParser:
     callback_smoke.add_argument("--store", required=True)
     callback_smoke.add_argument("--output")
     callback_smoke.set_defaults(func=cmd_simulate_callback_smoke)
+    shioaji_smoke = simulate_sub.add_parser("shioaji-smoke")
+    shioaji_smoke.add_argument("--date", required=True)
+    shioaji_smoke.add_argument("--output")
+    shioaji_smoke.add_argument("--store")
+    shioaji_smoke.add_argument("--api-key-env", default="SHIOAJI_API_KEY")
+    shioaji_smoke.add_argument("--secret-key-env", default="SHIOAJI_SECRET_KEY")
+    shioaji_smoke.add_argument("--enable-login-smoke", action="store_true")
+    shioaji_smoke.add_argument("--enable-callback-stream", action="store_true")
+    shioaji_smoke.add_argument("--fetch-contract", action="store_true")
+    shioaji_smoke.add_argument("--subscribe-trade", action="store_true")
+    shioaji_smoke.set_defaults(func=cmd_simulate_shioaji_smoke)
 
     ingest = subparsers.add_parser("ingest")
     ingest_sub = ingest.add_subparsers(required=True)

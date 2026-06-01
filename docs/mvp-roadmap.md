@@ -72,7 +72,7 @@
 
 ## P6: Shioaji Simulation
 
-目前狀態：dry-run adapter MVP、execution sync MVP、callback normalization MVP、order custom field token mapping、SDK-shaped gateway MVP、callback stream MVP、execution lifecycle policy MVP、duplicate callback dedupe MVP、callback status ordering MVP、execution sync store locking MVP、terminal-state policy MVP、longer callback smoke MVP 已完成。
+目前狀態：dry-run adapter MVP、execution sync MVP、callback normalization MVP、order custom field token mapping、SDK-shaped gateway MVP、callback stream MVP、execution lifecycle policy MVP、duplicate callback dedupe MVP、callback status ordering MVP、execution sync store locking MVP、terminal-state policy MVP、longer callback smoke MVP、gated Shioaji simulation smoke guard MVP、gated simulation login / callback registration smoke 已完成。
 
 - `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition`：已完成 dry-run chain。
 - duplicate intent 會在 broker order 前被 ledger 擋下。
@@ -90,6 +90,9 @@
 - execution sync store locking 已完成：file lock 包住 read-modify-write，JSON 寫入使用 temp file + atomic replace。
 - terminal-state policy 已完成：`filled / cancelled / rejected` 之間若出現不同終態衝突，會寫入 `terminal_state_conflict` 並跳過。
 - longer callback smoke 已完成：`simulate callback-smoke` 可用 sample callback sequence 驗證 submitted / filled / stale / terminal conflict 多事件序列。
+- gated Shioaji simulation smoke guard 已完成：`simulate shioaji-smoke` 預設 blocked，不 import Shioaji、不登入；明確 gate 後只允許 `sj.Shioaji(simulation=True)` login smoke 與 callback registration smoke，仍不送單。
+- gated simulation login smoke 已實測通過：`simulation_only=true`、`orders_allowed=false`，不 fetch contracts、不 subscribe trade。
+- gated callback registration smoke 已實測通過：`set_order_callback` 可註冊，尚未產生 callback event。
 
 ## Later: Report Loop / Notification
 
@@ -102,4 +105,4 @@
 - valid / excluded / needs_review 樣本統計：已透過 replay 與 close report 顯示。
 - simulation status summary：已完成，`needs_review` 會明確列出，且 simulation 不納入 replay expectancy。
 - hardening：逐筆 `needs_review` reason、專用 Telegram summary renderer、壞檔 / 缺欄位測試已完成第一版。
-- 下一步：gated Shioaji simulation smoke。
+- 下一步：設計 gated simulation order request smoke；必須限制為 simulation、明確標記可能 side effect、使用最小測試委託，並先定義盤中 / 盤後與 cancel/retry 行為。

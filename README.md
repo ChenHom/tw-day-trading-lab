@@ -167,7 +167,11 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 - Execution sync store locking MVP 已完成：callback / result 寫入會用 file lock 包住 read-modify-write，並以 atomic replace 更新 JSON store，避免並發 callback 寫入造成 JSONDecodeError 或 lost write。
 - Terminal-state policy MVP 已完成：同一 broker order 已進 `filled / cancelled / rejected` 後，若又收到不同終態，會寫入 `terminal_state_conflict` 並跳過，不當成正常 lifecycle progression。
 - Longer callback smoke MVP 已完成：`simulate callback-smoke` 可把一串 callback payload 重播進 execution sync store，統計 accepted / skipped 與 ordering issues。
-- 下一步是 gated Shioaji simulation smoke。
+- Gated Shioaji simulation smoke guard 已完成：`simulate shioaji-smoke` 預設只輸出 blocked report，不 import Shioaji、不登入；必須明確帶 `--enable-login-smoke` 才會建立 `sj.Shioaji(simulation=True)` 並嘗試 simulation login。
+- Gated callback stream smoke guard 已完成：必須先通過 login smoke 並帶 `--enable-callback-stream --store ...`，才會註冊 `set_order_callback`；此 smoke 仍不送單。
+- Gated Shioaji simulation login 實測已通：`2026-06-02` 使用舊專案 env credential，`simulation_only=true`、`orders_allowed=false`、`fetch_contract=false`、`subscribe_trade=false`。
+- Gated Shioaji callback registration 實測已通：`set_order_callback` 可註冊，store 初始 callback / broker trade / lifecycle decision 皆為 0。
+- 下一步是 gated Shioaji simulation order request smoke，但必須另加手動 gate、最小委託樣本與盤中/盤後限制。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。
 - P6 已支援 `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition` dry-run，simulation sample 與 replay expectancy 分開，重送同一 intent 不會重複開倉。
