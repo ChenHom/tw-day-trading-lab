@@ -127,6 +127,35 @@ Broker / ledger reconciliation output：
 | `samples[].validity` | `valid` 或 `needs_review` |
 | `samples[].expectancy_eligible` | 固定為 false，避免 simulation 污染策略統計 |
 
+## Execution Sync Store
+
+`tw-daytrade simulate run --execution-sync-store ...` 會保存 dry-run execution state，用於 restart 後同步檢查。這不是策略績效資料，也不得納入 replay expectancy。
+
+Top-level 欄位：
+
+| 欄位 | 說明 |
+|---|---|
+| `broker_trades` | broker 回報的 normalized trades |
+| `open_positions` | ledger open position snapshot |
+| `results` | simulation result payload |
+
+`tw-daytrade simulate restart-sync --store ...` 會讀取 execution sync store，重建 `PaperLedger` open keys，並比對 broker trades 與 ledger open positions。
+
+Restart sync report：
+
+| 欄位 | 說明 |
+|---|---|
+| `checked` | 比對項目數，包含 broker trades 與 ledger-only open positions |
+| `matched` | broker trade 與 ledger open intent 一致的數量 |
+| `needs_review` | 需要人工檢查的數量 |
+| `samples[].review_reason` | `broker_status_needs_review` / `ledger_missing_open_intent` / `ledger_missing_broker_trade` 等原因 |
+
+目前 MVP 邊界：
+
+- 只使用 dry-run simulation output 驗證 restart sync contract。
+- 尚未連接真正 Shioaji SDK callback streaming。
+- 若 broker / ledger 不一致，一律 `needs_review`，不自動修正 state。
+
 ## Persisted Strategy Samples
 
 TiDB `valid_samples` table 目前保存 classified strategy samples。雖然沿用 `valid_samples` 名稱，實際內容包含：

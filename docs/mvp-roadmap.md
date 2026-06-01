@@ -72,14 +72,15 @@
 
 ## P6: Shioaji Simulation
 
-目前狀態：已完成 dry-run adapter MVP。
+目前狀態：dry-run adapter MVP 與 execution sync MVP 已完成。
 
 - `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition`：已完成 dry-run chain。
 - duplicate intent 會在 broker order 前被 ledger 擋下。
 - broker status normalization 已完成 MVP：`Filled`、`PartFilled`、`Cancelled`、`Rejected` 等轉成內部狀態。
 - broker / ledger state mismatch 會被 reconcile 成 `needs_review`，且 `expectancy_eligible=false`。
 - simulation 樣本與 replay 樣本分開統計，simulation 不納入 replay expectancy。
-- 真正 Shioaji SDK login / callback streaming 與 restart sync persistence 留到後續 execution sync sprint。
+- execution sync store 可保存 dry-run broker trades / open positions，restart-sync 可重建 ledger open state 並比對 broker / ledger 一致性。
+- 真正 Shioaji SDK login / callback streaming 留到後續 sprint。
 
 ## Later: Report Loop / Notification
 
@@ -92,4 +93,4 @@
 - valid / excluded / needs_review 樣本統計：已透過 replay 與 close report 顯示。
 - simulation status summary：已完成，`needs_review` 會明確列出，且 simulation 不納入 replay expectancy。
 - hardening：逐筆 `needs_review` reason、專用 Telegram summary renderer、壞檔 / 缺欄位測試已完成第一版。
-- 下一步：execution sync。
+- 下一步：Shioaji callback streaming。

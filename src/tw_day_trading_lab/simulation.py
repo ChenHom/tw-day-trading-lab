@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass, replace
+from pathlib import Path
 from typing import Any, Protocol
 
 from .ledger import DuplicateIntentError, OrderIntent, PaperLedger
@@ -293,6 +295,127 @@ def reconcile_broker_trades(trades: list[BrokerTrade], ledger: PaperLedger) -> d
         "needs_review": needs_review,
         "samples": samples,
     }
+
+
+class FileExecutionSyncStore:
+    """Persist simulation execution state for restart reconciliation."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def load_snapshot(self) -> dict[str, Any]:
+        if not self.path.exists():
+            return {"broker_trades": [], "open_positions": [], "results": []}
+        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("execution sync store must be a JSON object")
+        return {
+            "broker_trades": list(raw.get("broker_trades", [])),
+            "open_positions": list(raw.get("open_positions", [])),
+            "results": list(raw.get("results", [])),
+        }
+
+    def record_result(self, result: SimulationResult) -> None:
+        snapshot = self.load_snapshot()
+        result_payload = result.to_dict()
+        snapshot["results"].append(result_payload)
+        if result.trade:
+            snapshot["broker_trades"].append(result.trade.to_dict())
+        if result.position:
+            snapshot["open_positions"] = _upsert_position_payload(
+                snapshot["open_positions"],
+                result.position.to_dict(),
+            )
+        self._write_snapshot(snapshot)
+
+    def _write_snapshot(self, snapshot: dict[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+
+def restore_ledger_from_positions(positions: list[LedgerPosition]) -> PaperLedger:
+    """Rebuild a paper ledger's open intent keys from persisted open positions."""
+    ledger = PaperLedger()
+    for position in positions:
+        if position.status != "open":
+            continue
+        ledger.register_intent(order_intent_from_idempotency_key(position.idempotency_key))
+    return ledger
+
+
+def build_restart_sync_report(
+    broker_trades: list[BrokerTrade],
+    open_positions: list[LedgerPosition],
+    ledger: PaperLedger,
+) -> dict[str, Any]:
+    """Compare broker trades and persisted ledger positions after a restart."""
+    report = reconcile_broker_trades(broker_trades, ledger)
+    broker_keys = {trade.idempotency_key for trade in broker_trades}
+    samples = list(report["samples"])
+    needs_review = int(report["needs_review"])
+    matched = int(report["matched"])
+    checked = int(report["checked"])
+
+    for position in open_positions:
+        if position.status != "open" or position.idempotency_key in broker_keys:
+            continue
+        checked += 1
+        needs_review += 1
+        matched = max(0, matched)
+        samples.append(
+            {
+                "sample_type": "simulation",
+                "validity": "needs_review",
+                "expectancy_eligible": False,
+                "idempotency_key": position.idempotency_key,
+                "broker_order_id": "",
+                "symbol": position.symbol,
+                "status": "ledger_open_without_broker_trade",
+                "review_reason": "ledger_missing_broker_trade",
+            }
+        )
+
+    return {
+        "checked": checked,
+        "matched": matched,
+        "needs_review": needs_review,
+        "samples": samples,
+    }
+
+
+def broker_trades_from_payload(rows: list[dict[str, Any]]) -> list[BrokerTrade]:
+    return [BrokerTrade(**row) for row in rows]
+
+
+def ledger_positions_from_payload(rows: list[dict[str, Any]]) -> list[LedgerPosition]:
+    return [LedgerPosition(**row) for row in rows]
+
+
+def order_intent_from_idempotency_key(idempotency_key: str) -> OrderIntent:
+    parts = idempotency_key.split(":")
+    if len(parts) != 5:
+        raise ValueError(f"invalid idempotency key: {idempotency_key}")
+    trading_date, strategy_id, symbol, setup_id, side = parts
+    return OrderIntent(
+        trading_date=trading_date,
+        strategy_id=strategy_id,
+        symbol=symbol,
+        setup_id=setup_id,
+        side=side,
+    )
+
+
+def _upsert_position_payload(
+    rows: list[dict[str, Any]],
+    row: dict[str, Any],
+) -> list[dict[str, Any]]:
+    return [
+        *[item for item in rows if item.get("idempotency_key") != row.get("idempotency_key")],
+        row,
+    ]
 
 
 def render_simulation_markdown(trading_date: str, results: list[SimulationResult]) -> str:

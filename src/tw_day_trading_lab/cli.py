@@ -25,11 +25,16 @@ from .reports import (
 )
 from .simulation import (
     DryRunSimulationBroker,
+    FileExecutionSyncStore,
     RiskDecision,
     ShioajiSimulationAdapter,
     SimulationResult,
     SignalIntent,
+    broker_trades_from_payload,
+    build_restart_sync_report,
+    ledger_positions_from_payload,
     render_simulation_markdown,
+    restore_ledger_from_positions,
 )
 from .storage import (
     DatabaseStorage,
@@ -362,10 +367,14 @@ def cmd_simulate_run(args: argparse.Namespace) -> None:
         broker=DryRunSimulationBroker(),
         ledger=PaperLedger(),
     )
+    sync_store = FileExecutionSyncStore(Path(args.execution_sync_store)) if args.execution_sync_store else None
     results = [
         adapter.execute(signal, decision)
         for signal, decision in load_simulation_plan(Path(args.input))
     ]
+    if sync_store:
+        for result in results:
+            sync_store.record_result(result)
     output = Path(args.output) if args.output else Path("reports") / f"{args.date}-simulation.json"
     payload = {
         "trading_date": args.date,
@@ -379,6 +388,22 @@ def cmd_simulate_run(args: argparse.Namespace) -> None:
         report_output = Path(args.report_output)
         write_text(report_output, render_simulation_markdown(args.date, results))
         print(report_output)
+
+
+def cmd_simulate_restart_sync(args: argparse.Namespace) -> None:
+    """Rebuild ledger state from persisted execution sync data and compare broker trades."""
+    store = FileExecutionSyncStore(Path(args.store))
+    snapshot = store.load_snapshot()
+    positions = ledger_positions_from_payload(snapshot["open_positions"])
+    ledger = restore_ledger_from_positions(positions)
+    report = build_restart_sync_report(
+        broker_trades_from_payload(snapshot["broker_trades"]),
+        positions,
+        ledger,
+    )
+    output = Path(args.output) if args.output else Path("reports") / "restart-sync.json"
+    write_json(output, report)
+    print(output)
 
 
 def cmd_ingest_finmind(args: argparse.Namespace) -> None:
@@ -512,7 +537,12 @@ def build_parser() -> argparse.ArgumentParser:
     simulate_run.add_argument("--input", required=True)
     simulate_run.add_argument("--output")
     simulate_run.add_argument("--report-output")
+    simulate_run.add_argument("--execution-sync-store")
     simulate_run.set_defaults(func=cmd_simulate_run)
+    restart_sync = simulate_sub.add_parser("restart-sync")
+    restart_sync.add_argument("--store", required=True)
+    restart_sync.add_argument("--output")
+    restart_sync.set_defaults(func=cmd_simulate_restart_sync)
 
     ingest = subparsers.add_parser("ingest")
     ingest_sub = ingest.add_subparsers(required=True)

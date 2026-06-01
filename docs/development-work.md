@@ -1,7 +1,7 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；下一步 execution sync
+狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；下一步 Shioaji callback streaming
 預設分支：`master`
 
 ## Phase 對照
@@ -479,9 +479,49 @@ Reporting hardening 的主要功能：
 - 後期：Telegram summary 加 action hints，例如「資料缺法人，候選降權」、「broker / ledger mismatch，暫停下一步模擬」。
 - 後期：接 PWA / dashboard，讓 close report 成為 trading ops control panel，而不只是文字輸出。
 
-推薦下一個 sprint：execution sync。
+推薦下一個 sprint：Shioaji callback streaming。
 
 目標：接真正 Shioaji SDK simulation login / callback streaming，並建立 restart sync persistence，用於比對 broker open state 與 ledger state。
+
+### Execution Sync MVP
+
+目前狀態：已完成 MVP。
+
+目標：讓 simulation dry-run 產生可重啟後比對的 execution state，先驗證 broker / ledger 同步 contract，再接真正 Shioaji callback。
+
+實際產出：
+
+- `FileExecutionSyncStore`
+- `restore_ledger_from_positions`
+- `build_restart_sync_report`
+- `order_intent_from_idempotency_key`
+- CLI：`tw-daytrade simulate run --execution-sync-store ...`
+- CLI：`tw-daytrade simulate restart-sync --store ...`
+
+設計結果：
+
+- execution sync store 保存 `broker_trades`、`open_positions`、`results`。
+- restart-sync 會從 persisted open positions 重建 `PaperLedger` open intent keys。
+- broker trade 找不到 ledger open intent 時標 `ledger_missing_open_intent`。
+- ledger open position 找不到 broker trade 時標 `ledger_missing_broker_trade`。
+- 所有 restart sync samples 仍 `expectancy_eligible=false`，不得污染 replay expectancy。
+- 目前不自動修正 broker / ledger state；不一致只輸出 `needs_review`。
+
+驗證結果：
+
+- `tests/test_simulation.py` 覆蓋 file store persistence、ledger restore、matched restart sync、ledger-only missing broker trade、CLI run persistence、CLI restart-sync。
+- full unittest：51 tests OK。
+- compile check：OK。
+- diff check：OK。
+- smoke：`simulate run --execution-sync-store` 後接 `simulate restart-sync --store`，輸出 checked 1、matched 1、needs_review 0。
+
+Grill-me review：
+
+- 方向正確：這輪只做可重啟狀態保存與比對，沒有接真實下單，也沒有把 execution sync 樣本算入 expectancy。
+- must-fix 已處理：restart 後可以重建 ledger open keys，並能同時偵測 broker-only 與 ledger-only mismatch。
+- 剩餘風險：目前 store 是 JSON file，沒有鎖與 transaction；若未來有多進程或 callback 並發寫入，必須改成 DB-backed repository 或加 atomic write。
+- 剩餘風險：真正 Shioaji SDK callback payload 尚未接入，下一 sprint 要先做 callback payload normalization，再接 live-like event streaming。
+- 剩餘風險：restart-sync 目前只比對 open state，不處理部分成交、取消後重送、盤後收斂策略；這些要跟 callback streaming 一起定義。
 
 ## 5. Working Commands
 
@@ -512,4 +552,5 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli notify telegram --date 2026-05-
 - 決定 raw data 儲存先用 JSONL 還是直接導入 Parquet library。
 - 設計 Telegram 正式發送 gate。
 - 接真正 Shioaji SDK simulation login / callback streaming。
+- 將 execution sync store 從 dry-run file contract 推進到 callback event ingestion。
 - 建立 execution sync persistence，用於 restart 後比對 broker open state 與 ledger state。
