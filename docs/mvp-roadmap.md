@@ -83,12 +83,13 @@
 
 ## Later: Report Loop / Notification
 
-目前狀態：已完成 MVP。
+目前狀態：hardening 已完成。
 
 - 每日日報：已完成 candidate daily report。
 - 單日 close report：已完成，可聚合 candidate / replay / simulation output。
-- Telegram 摘要 dry-run：已完成，仍禁止真實發送。
+- Telegram 摘要 dry-run：已完成專用 summary renderer，仍禁止真實發送。
 - 前一日候選驗證。
 - valid / excluded / needs_review 樣本統計：已透過 replay 與 close report 顯示。
 - simulation status summary：已完成，`needs_review` 會明確列出，且 simulation 不納入 replay expectancy。
-- 下一步 hardening：逐筆 `needs_review` reason、專用 Telegram summary renderer、壞檔 / 缺欄位測試。
+- hardening：逐筆 `needs_review` reason、專用 Telegram summary renderer、壞檔 / 缺欄位測試已完成第一版。
+- 下一步：execution sync。

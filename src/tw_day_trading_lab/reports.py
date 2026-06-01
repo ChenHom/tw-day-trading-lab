@@ -117,6 +117,7 @@ def render_close_report_markdown(
     candidate_source_summary: dict[str, Any] | None = None,
     replay_summary: dict[str, Any] | None = None,
     simulation_summary: dict[str, Any] | None = None,
+    simulation_results: list[dict[str, Any]] | None = None,
 ) -> str:
     """Render one close report across candidate, replay, and simulation outputs."""
     actionable = [item for item in candidates if item.next_day_actionable]
@@ -159,9 +160,40 @@ def render_close_report_markdown(
             "",
             "- simulation 不納入 replay expectancy",
             _format_simulation_summary_markdown(simulation_summary),
+            _format_needs_review_details_markdown(simulation_results),
         ]
     )
     return "\n".join(lines) + "\n"
+
+
+def render_close_report_telegram_summary(
+    trading_date: str,
+    candidates: list[CandidateScore],
+    *,
+    replay_summary: dict[str, Any] | None = None,
+    simulation_summary: dict[str, Any] | None = None,
+) -> str:
+    """Render a compact Telegram-safe close summary from structured report inputs."""
+    actionable = [item for item in candidates if item.next_day_actionable]
+    needs_review = int((simulation_summary or {}).get("needs_review", 0) or 0)
+    simulated = int((simulation_summary or {}).get("simulated", 0) or 0)
+    duplicate = int((simulation_summary or {}).get("duplicate", 0) or 0)
+    replayed = int((replay_summary or {}).get("replayed", 0) or 0)
+    action = (
+        "先處理 needs_review，再進下一步"
+        if needs_review
+        else "可進下一步，但仍禁止真實自動下單"
+    )
+    return "\n".join(
+        [
+            f"台股當沖 Close Summary {trading_date}",
+            f"- candidates/actionable：{len(candidates)} / {len(actionable)}",
+            f"- replayed：{replayed}",
+            f"- replay net R：{_format_optional_float((replay_summary or {}).get('expectancy_net_r'))}",
+            f"- simulation：simulated {simulated} / needs_review {needs_review} / duplicate {duplicate}",
+            f"- action：{action}",
+        ]
+    ) + "\n"
 
 
 def _format_sample_summary_markdown(sample_summary: dict[str, Any] | None) -> str:
@@ -277,3 +309,57 @@ def _format_simulation_summary_markdown(simulation_summary: dict[str, Any] | Non
             *status_lines,
         ]
     )
+
+
+def _format_needs_review_details_markdown(simulation_results: list[dict[str, Any]] | None) -> str:
+    if not simulation_results:
+        return ""
+    needs_review = [
+        item for item in simulation_results if str(item.get("status") or "") == "needs_review"
+    ]
+    if not needs_review:
+        return ""
+    lines = [
+        "",
+        "## Needs Review Details",
+        "",
+        "| Symbol | Idempotency Key | Reason |",
+        "|---|---|---|",
+    ]
+    for item in needs_review:
+        symbol = _extract_symbol(item)
+        key = _extract_idempotency_key(item)
+        reason = str(item.get("review_reason") or "-")
+        lines.append(f"| {symbol} | {key} | {reason} |")
+    return "\n".join(lines)
+
+
+def _extract_symbol(item: dict[str, Any]) -> str:
+    signal = item.get("signal")
+    if isinstance(signal, dict) and signal.get("symbol"):
+        return str(signal["symbol"])
+    trade = item.get("broker_trade")
+    if isinstance(trade, dict) and trade.get("symbol"):
+        return str(trade["symbol"])
+    return "-"
+
+
+def _extract_idempotency_key(item: dict[str, Any]) -> str:
+    trade = item.get("broker_trade")
+    if isinstance(trade, dict) and trade.get("idempotency_key"):
+        return str(trade["idempotency_key"])
+    order_intent = item.get("order_intent")
+    if isinstance(order_intent, dict):
+        existing_key = order_intent.get("idempotency_key")
+        if existing_key:
+            return str(existing_key)
+        parts = [
+            order_intent.get("trading_date"),
+            order_intent.get("strategy_id"),
+            order_intent.get("symbol"),
+            order_intent.get("setup_id"),
+            order_intent.get("side"),
+        ]
+        if all(parts):
+            return ":".join(str(part) for part in parts)
+    return "-"

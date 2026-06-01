@@ -1,7 +1,7 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P6 MVP 已完成；Report Loop / Notification MVP 已完成；下一步 execution sync
+狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；下一步 execution sync
 預設分支：`master`
 
 ## Phase 對照
@@ -411,7 +411,7 @@
 
 ## 4. Immediate Next Sprint
 
-目前狀態：Report Loop / Notification MVP 已完成。
+目前狀態：Report Loop / Notification hardening 已完成。
 
 任務切分：
 
@@ -432,23 +432,28 @@
 實際產出：
 
 - `render_close_report_markdown`
+- `render_close_report_telegram_summary`
 - CLI：`tw-daytrade report close`
-- close report summary 可接 `notify telegram --dry-run`
+- CLI：`tw-daytrade report close --telegram-summary-output ...`
+- close report 可列出逐筆 `needs_review` reason。
+- close report summary 可接 `notify telegram --dry-run`，真實發送仍 disabled。
 - `tests/test_reports.py` report loop regression
 
 驗證結果：
 
-- `tests.test_reports`：3 tests OK。
-- full unittest：42 tests OK。
+- `tests.test_reports`：6 tests OK。
+- full unittest：45 tests OK。
 - close report smoke：`reports/2026-05-28-close.md` 可由 candidate / replay / simulation JSON 產生。
-- Telegram dry-run smoke：可輸出 close report 前 12 行摘要，未開啟真實發送。
+- Telegram summary smoke：`reports/2026-05-28-telegram-summary.txt` 可由結構化 summary 產生。
+- 壞檔 shape 測試：replay payload 若缺 `summary` 會明確失敗，不產生假正常報告。
 
 Grill-me review：
 
-- 目前設計方向可接受，因為 report loop 只做聚合與揭露，沒有混入新的策略判斷。
-- 剩餘風險 1：close report 目前只顯示 simulation status summary，沒有列出逐筆 `needs_review` 的 review reason；execution sync 前應補。
-- 剩餘風險 2：Telegram dry-run 摘要目前取 report 前 12 個非空行，可能截掉 replay / simulation 重點；正式 notification 前應改成專用 summary renderer。
-- 剩餘風險 3：CLI smoke 覆蓋正常檔案路徑，尚未覆蓋 replay / simulation JSON 欄位缺失或壞檔格式；若要進入日常排程，需補錯誤訊息與測試。
+- hardening 後方向仍正確：report loop 只做聚合、揭露與輸出整形，沒有混入策略判斷。
+- 原 must-fix 1 已處理：close report 會列逐筆 `needs_review` reason、symbol、idempotency key。
+- 原 must-fix 2 已處理：新增 `render_close_report_telegram_summary`，不再依賴前 12 行截斷作為專用 summary。
+- 原 must-fix 3 已部分處理：replay / simulation payload 缺 `summary` 會明確失敗；完整 JSON schema validation 可留到日常排程化前。
+- 剩餘優化：daily health score、close report summary persist 到 TiDB、Telegram action hints，可在 execution sync 後依實際痛點補。
 
 Reporting hardening 的主要功能：
 
@@ -468,7 +473,7 @@ Reporting hardening 的主要功能：
 
 未來延伸：
 
-- 短期：close report 列出逐筆 `needs_review` reason；新增專用 Telegram summary renderer；補壞檔 / 缺欄位測試。
+- 短期：完整 JSON schema validation 與更細緻的錯誤碼。
 - 中期：產生 daily health score，例如 candidate data completeness、replay confidence、simulation integrity。
 - 中期：將 close report summary persist 到 TiDB，追蹤每天資料品質與 execution-chain 健康度。
 - 後期：Telegram summary 加 action hints，例如「資料缺法人，候選降權」、「broker / ledger mismatch，暫停下一步模擬」。
@@ -495,7 +500,7 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli candidates build-from-raw --dat
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli report daily --date 2026-05-28 --input reports/2026-05-28-candidates-from-raw.json --format md --output reports/2026-05-28-daily-from-raw.md
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli replay samples --date 2026-03-25 --input reports/old-log-sample-samples.json --output reports/2026-03-25-replay.json --report-output reports/2026-03-25-replay.md --cost-r 0.1
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate run --date 2026-05-28 --input examples/simulation-plan.sample.json --output reports/2026-05-28-simulation.json --report-output reports/2026-05-28-simulation.md
-PYTHONPATH=src python3 -m tw_day_trading_lab.cli report close --date 2026-05-28 --candidates reports/2026-05-28-candidates-from-raw.json --replay reports/2026-03-25-replay.json --simulation reports/2026-05-28-simulation.json --output reports/2026-05-28-close.md
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli report close --date 2026-05-28 --candidates reports/2026-05-28-candidates-from-raw.json --replay reports/2026-03-25-replay.json --simulation reports/2026-05-28-simulation.json --output reports/2026-05-28-close.md --telegram-summary-output reports/2026-05-28-telegram-summary.txt
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli notify telegram --date 2026-05-28 --report reports/2026-05-28-close.md --dry-run
 ```
 

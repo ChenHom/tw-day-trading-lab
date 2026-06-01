@@ -75,7 +75,8 @@ python3 -m tw_day_trading_lab.cli report close \
   --candidates reports/2026-05-28-candidates-from-raw.json \
   --replay reports/2026-03-25-replay.json \
   --simulation reports/2026-05-28-simulation.json \
-  --output reports/2026-05-28-close.md
+  --output reports/2026-05-28-close.md \
+  --telegram-summary-output reports/2026-05-28-telegram-summary.txt
 python3 -m tw_day_trading_lab.cli notify telegram \
   --date 2026-05-28 \
   --report reports/2026-05-28-close.md \
@@ -136,7 +137,7 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 ## Current Implementation Status
 
 - P0-P6 MVP 已完成。
-- Report Loop / Notification MVP 已完成：`report close` 可聚合 candidate / replay / simulation；Telegram summary 維持 dry-run gate。
+- Report Loop / Notification hardening 已完成：`report close` 可聚合 candidate / replay / simulation，列出逐筆 `needs_review` reason，並輸出專用 Telegram summary；真實發送仍維持 dry-run gate。
 - 下一步是更完整的 execution sync。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。

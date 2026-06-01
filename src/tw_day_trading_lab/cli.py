@@ -17,7 +17,12 @@ from .ledger import PaperLedger
 from .models import CandidateInput, CandidateScore
 from .old_log_importer import import_trade_log_csv, render_failure_replay_markdown
 from .replay import ReplayAssumptions, render_replay_markdown, replay_samples
-from .reports import render_close_report_markdown, render_html, render_markdown
+from .reports import (
+    render_close_report_markdown,
+    render_close_report_telegram_summary,
+    render_html,
+    render_markdown,
+)
 from .simulation import (
     DryRunSimulationBroker,
     RiskDecision,
@@ -108,6 +113,24 @@ def load_payload_summary(path: Path | None) -> dict[str, object] | None:
     raw = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(raw, dict) and isinstance(raw.get("summary"), dict):
         return raw["summary"]
+    return None
+
+
+def load_required_payload_summary(path: Path, label: str) -> dict[str, object]:
+    """Load a required summary object and fail clearly when payload shape is wrong."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, dict) and isinstance(raw.get("summary"), dict):
+        return raw["summary"]
+    raise ValueError(f"{label} payload must contain a summary object")
+
+
+def load_payload_results(path: Path | None) -> list[dict[str, object]] | None:
+    """Load optional top-level results from a JSON payload."""
+    if path is None:
+        return None
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, dict) and isinstance(raw.get("results"), list):
+        return [dict(item) for item in raw["results"] if isinstance(item, dict)]
     return None
 
 
@@ -228,17 +251,35 @@ def cmd_report_daily(args: argparse.Namespace) -> None:
 def cmd_report_close(args: argparse.Namespace) -> None:
     """Build the daily close report from candidate, replay, and simulation outputs."""
     candidate_path = Path(args.candidates)
+    replay_summary = load_required_payload_summary(Path(args.replay), "replay") if args.replay else None
+    simulation_path = Path(args.simulation) if args.simulation else None
+    simulation_summary = (
+        load_required_payload_summary(simulation_path, "simulation") if simulation_path else None
+    )
     candidates = load_candidate_scores(candidate_path)
     content = render_close_report_markdown(
         args.date,
         candidates,
         candidate_source_summary=load_candidate_source_summary(candidate_path),
-        replay_summary=load_payload_summary(Path(args.replay)) if args.replay else None,
-        simulation_summary=load_payload_summary(Path(args.simulation)) if args.simulation else None,
+        replay_summary=replay_summary,
+        simulation_summary=simulation_summary,
+        simulation_results=load_payload_results(simulation_path),
     )
     output = Path(args.output) if args.output else Path("reports") / f"{args.date}-close.md"
     write_text(output, content)
     print(output)
+    if args.telegram_summary_output:
+        summary_output = Path(args.telegram_summary_output)
+        write_text(
+            summary_output,
+            render_close_report_telegram_summary(
+                args.date,
+                candidates,
+                replay_summary=replay_summary,
+                simulation_summary=simulation_summary,
+            ),
+        )
+        print(summary_output)
 
 
 def cmd_notify_telegram(args: argparse.Namespace) -> None:
@@ -420,6 +461,7 @@ def build_parser() -> argparse.ArgumentParser:
     close.add_argument("--replay")
     close.add_argument("--simulation")
     close.add_argument("--output")
+    close.add_argument("--telegram-summary-output")
     close.set_defaults(func=cmd_report_close)
 
     notify = subparsers.add_parser("notify")
