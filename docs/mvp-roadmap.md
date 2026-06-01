@@ -72,7 +72,7 @@
 
 ## P6: Shioaji Simulation
 
-目前狀態：dry-run adapter MVP、execution sync MVP、callback normalization MVP、order custom field token mapping、SDK-shaped gateway MVP、callback stream MVP、execution lifecycle policy MVP 已完成。
+目前狀態：dry-run adapter MVP、execution sync MVP、callback normalization MVP、order custom field token mapping、SDK-shaped gateway MVP、callback stream MVP、execution lifecycle policy MVP、duplicate callback dedupe MVP 已完成。
 
 - `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition`：已完成 dry-run chain。
 - duplicate intent 會在 broker order 前被 ledger 擋下。
@@ -85,7 +85,8 @@
 - `ShioajiSdkSimulationGateway` 已用 fake SDK 測試 login / `api.Order` / `api.place_order` 邊界，且會拒絕 `api.simulation=False`；真實登入與真實委託仍未啟用。
 - `ShioajiCallbackStream` 可註冊 `set_order_callback`，把 callback normalize 後寫入 execution sync store，且會拒絕 `api.simulation=False`。
 - execution lifecycle policy 已先記錄 callback 對 ledger 的決策：filled 確認開倉，cancelled / rejected 釋放 intent，partial fill 先進人工檢查。
-- duplicate callback 去重、callback ordering、store locking 留到後續 sprint。
+- duplicate callback dedupe 已完成：相同 callback key 不會重複寫 callback event、broker trade 或 lifecycle decision。
+- callback ordering、store locking 留到後續 sprint。
 
 ## Later: Report Loop / Notification
 
@@ -98,4 +99,4 @@
 - valid / excluded / needs_review 樣本統計：已透過 replay 與 close report 顯示。
 - simulation status summary：已完成，`needs_review` 會明確列出，且 simulation 不納入 replay expectancy。
 - hardening：逐筆 `needs_review` reason、專用 Telegram summary renderer、壞檔 / 缺欄位測試已完成第一版。
-- 下一步：duplicate callback 去重、callback ordering、store locking。
+- 下一步：callback ordering、store locking。

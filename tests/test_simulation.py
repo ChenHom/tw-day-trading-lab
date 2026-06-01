@@ -565,6 +565,33 @@ class SimulationAdapterTest(unittest.TestCase):
             self.assertEqual(len(snapshot["lifecycle_decisions"]), 1)
             self.assertEqual(snapshot["lifecycle_decisions"][0]["ledger_effect"], "open_position")
 
+    def test_file_execution_sync_store_deduplicates_identical_callback_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FileExecutionSyncStore(Path(tmp) / "execution-sync.json")
+            event = ExecutionCallbackEvent(
+                stat="OrderState.Filled",
+                broker_order_id="broker-1",
+                idempotency_key="2026-05-28:mvp:2330:vwap-breakout:buy",
+                trading_date="2026-05-28",
+                symbol="2330",
+                side="buy",
+                quantity=1000,
+                price=900.0,
+                normalized_status="filled",
+                raw_status="Filled",
+                review_reason="",
+                raw={"source": "unit-test"},
+            )
+
+            self.assertTrue(store.record_callback_event(event))
+            self.assertFalse(store.record_callback_event(event))
+            snapshot = store.load_snapshot()
+
+            self.assertEqual(len(snapshot["callback_events"]), 1)
+            self.assertEqual(len(snapshot["broker_trades"]), 1)
+            self.assertEqual(len(snapshot["lifecycle_decisions"]), 1)
+            self.assertEqual(len(snapshot["callback_event_keys"]), 1)
+
     def test_cli_ingest_callback_normalizes_and_records_store(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)

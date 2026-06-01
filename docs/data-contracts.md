@@ -140,6 +140,7 @@ Top-level 欄位：
 | `results` | simulation result payload |
 | `callback_events` | normalized Shioaji callback events |
 | `lifecycle_decisions` | callback 對 ledger lifecycle 的決策紀錄 |
+| `callback_event_keys` | 已保存 callback 的去重 key |
 | `custom_field_map` | Shioaji 短 `custom_field` token 到完整 `idempotency_key` 的 mapping |
 
 `tw-daytrade simulate restart-sync --store ...` 會讀取 execution sync store，重建 `PaperLedger` open keys，並比對 broker trades 與 ledger open positions。
@@ -227,6 +228,12 @@ Lifecycle policy：
 | `needs_review` | `hold_for_review` | `callback_needs_review` |
 
 目前 MVP 只記錄 lifecycle decision，不自動改寫 `open_positions`；partial fill / cancel / reject 的實際 position mutation 留到後續明確策略化。
+
+Callback 去重：
+
+- execution sync store 會用 `trading_date | broker_order_id | idempotency_key | normalized_status | quantity | price` 建立 callback event key。
+- 同一 key 重複進來時，`callback_events`、`broker_trades`、`lifecycle_decisions` 都不會重複寫入。
+- 目前只處理完全相同 callback 的去重；out-of-order callback 與同 broker order 的狀態遞進仍留到後續策略化。
 
 ## Persisted Strategy Samples
 

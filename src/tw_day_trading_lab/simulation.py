@@ -634,6 +634,20 @@ def classify_execution_lifecycle(event: ExecutionCallbackEvent) -> ExecutionLife
     )
 
 
+def build_callback_event_key(event: ExecutionCallbackEvent) -> str:
+    """Build a stable key for idempotent callback persistence."""
+    return "|".join(
+        [
+            event.trading_date,
+            event.broker_order_id,
+            event.idempotency_key,
+            event.normalized_status,
+            str(event.quantity),
+            "" if event.price is None else str(event.price),
+        ]
+    )
+
+
 class FileExecutionSyncStore:
     """Persist simulation execution state for restart reconciliation."""
 
@@ -652,6 +666,7 @@ class FileExecutionSyncStore:
             "results": list(raw.get("results", [])),
             "callback_events": list(raw.get("callback_events", [])),
             "lifecycle_decisions": list(raw.get("lifecycle_decisions", [])),
+            "callback_event_keys": list(raw.get("callback_event_keys", [])),
             "custom_field_map": dict(raw.get("custom_field_map", {})),
         }
 
@@ -672,14 +687,19 @@ class FileExecutionSyncStore:
             )
         self._write_snapshot(snapshot)
 
-    def record_callback_event(self, event: ExecutionCallbackEvent) -> None:
+    def record_callback_event(self, event: ExecutionCallbackEvent) -> bool:
         snapshot = self.load_snapshot()
+        event_key = build_callback_event_key(event)
+        if event_key in set(snapshot["callback_event_keys"]):
+            return False
+        snapshot["callback_event_keys"].append(event_key)
         snapshot["callback_events"].append(event.to_dict())
         snapshot["lifecycle_decisions"].append(classify_execution_lifecycle(event).to_dict())
         trade = event.to_broker_trade()
         if trade:
             snapshot["broker_trades"].append(trade.to_dict())
         self._write_snapshot(snapshot)
+        return True
 
     def _write_snapshot(self, snapshot: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -861,6 +881,7 @@ def _empty_execution_sync_snapshot() -> dict[str, Any]:
         "results": [],
         "callback_events": [],
         "lifecycle_decisions": [],
+        "callback_event_keys": [],
         "custom_field_map": {},
     }
 

@@ -1,7 +1,7 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；Shioaji order custom field token mapping、SDK-shaped gateway、callback stream、execution lifecycle policy MVP 已完成；下一步 duplicate callback 去重 / ordering / store locking
+狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；Shioaji order custom field token mapping、SDK-shaped gateway、callback stream、execution lifecycle policy、duplicate callback dedupe MVP 已完成；下一步 callback ordering / store locking
 預設分支：`master`
 
 ## Phase 對照
@@ -681,6 +681,40 @@ Grill-me review：
 - 剩餘風險：尚未做 duplicate callback 去重；同一 broker order 重複 callback 會重複記錄。
 - 剩餘風險：尚未處理 callback ordering，例如 submitted 晚於 filled 到達。
 - 剩餘風險：JSON file store 仍沒有 locking / transaction，多進程 callback 寫入可能競態。
+
+### Duplicate Callback Dedupe MVP
+
+目前狀態：已完成 MVP。
+
+目標：避免 Shioaji callback 重送或 stream 重播時，同一筆 callback 重複寫入 execution sync store，導致 callback event、broker trade、lifecycle decision 重複。
+
+實際產出：
+
+- `build_callback_event_key`
+- `FileExecutionSyncStore.callback_event_keys`
+- `FileExecutionSyncStore.record_callback_event` 回傳 `True / False` 表示是否真的新增。
+
+設計結果：
+
+- callback event key 使用 `trading_date | broker_order_id | idempotency_key | normalized_status | quantity | price`。
+- 同一 key 已存在時，不重複寫入 `callback_events`、`broker_trades`、`lifecycle_decisions`。
+- 目前只處理完全相同 callback 的去重；不同 status 的同一 broker order 仍會記錄為狀態遞進，ordering policy 留後續。
+
+驗證結果：
+
+- TDD red：新增 duplicate callback 測試後，`record_callback_event` 尚未回傳 bool，測試失敗。
+- focused test：1 test OK。
+- full unittest：67 tests OK。
+- compile check：OK。
+- diff check：OK。
+
+Grill-me review：
+
+- 方向正確：先處理完全相同 callback 的冪等性，避免最常見的重送污染。
+- must-fix 已處理：重複 callback 不會重複產生 broker trade 或 lifecycle decision。
+- 剩餘風險：尚未處理 out-of-order 狀態，例如 filled 先到、submitted 後到。
+- 剩餘風險：尚未針對同 broker order 的狀態遞進建立 precedence。
+- 剩餘風險：JSON file store 沒有 atomic lock，多進程同時寫仍可能競態。
 
 ## 5. Working Commands
 
