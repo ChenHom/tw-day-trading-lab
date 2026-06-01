@@ -279,6 +279,8 @@ class ShioajiSdkSimulationGateway:
         *,
         account: Any = None,
     ) -> None:
+        if getattr(api, "simulation", True) is not True:
+            raise ValueError("ShioajiSdkSimulationGateway requires api.simulation=True")
         self._api = api
         self._api_key = api_key
         self._secret_key = secret_key

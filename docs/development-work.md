@@ -52,7 +52,7 @@
 - 最高原則：先產生價值，再擴張架構
 - 第一個真實資料工作：舊 log / CSV importer
 - 第二個真實資料工作：FinMind nightly ingestion
-- 第一階段禁止真實自動下單
+- 第一階段禁止真實自動下單；目前所有下單相關實作只允許使用 Shioaji simulation / fake SDK 完成開發與驗證
 - Shioaji simulation 只驗證執行鏈路，不單獨證明策略 edge
 
 舊 log importer 是反例測試器，不是舊策略復活。它要先確認新系統能正確處理舊失敗：debug 樣本、盤後測試、重複開倉、缺 exit、資料污染與不可信 expectancy。
@@ -585,12 +585,13 @@ Grill-me review：
 - `quantity` / `price` 優先使用 `RiskDecision` 覆寫值，未覆寫才使用 `SignalIntent`。
 - `ShioajiOrderRequestBroker` 只依賴 gateway protocol，可用 fake gateway 驗證，不匯入 SDK、不登入真實帳號、不送出真實委託。
 - `ShioajiSdkSimulationGateway` 可用 fake SDK 驗證 `login`、`api.Order`、`api.place_order` 邊界；測試不登入真實帳號、不送真實委託。
+- `ShioajiSdkSimulationGateway` 會拒絕 `api.simulation=False`，避免開發階段誤接正式區 API。
 
 驗證結果：
 
 - TDD red：新增測試後，因缺 `ShioajiOrderRequest` import 失敗。
 - TDD red：新增 SDK gateway 測試後，因缺 `ShioajiSdkSimulationGateway` import 失敗。
-- `tests/test_simulation.py` 新增 order request builder、短 token unresolved review、store mapping callback restore、fake SDK gateway 測試。
+- `tests/test_simulation.py` 新增 order request builder、短 token unresolved review、store mapping callback restore、fake SDK gateway、非 simulation API 拒絕測試。
 - simulation unittest：22 tests OK。
 - full unittest：60 tests OK。
 - compile check：OK。

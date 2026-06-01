@@ -82,7 +82,7 @@
 - execution sync store 可保存 dry-run broker trades / open positions，restart-sync 可重建 ledger open state 並比對 broker / ledger 一致性。
 - callback normalization 可將 Shioaji `{stat, msg}` payload 轉成穩定內部 event，缺 key / 缺欄位會進 `needs_review`。
 - order request contract 會把 `OrderIntent.idempotency_key` 轉成 6 字元 `custom_field` token，並透過 execution sync store mapping 還原 callback intent。
-- `ShioajiSdkSimulationGateway` 已用 fake SDK 測試 login / `api.Order` / `api.place_order` 邊界；真實登入與真實委託仍未啟用。
+- `ShioajiSdkSimulationGateway` 已用 fake SDK 測試 login / `api.Order` / `api.place_order` 邊界，且會拒絕 `api.simulation=False`；真實登入與真實委託仍未啟用。
 - 真正 Shioaji SDK callback streaming 留到後續 sprint。
 
 ## Later: Report Loop / Notification

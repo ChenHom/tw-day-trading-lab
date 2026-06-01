@@ -29,6 +29,10 @@
 - 用 FinMind 做盤中即時進出場
 - 用 Shioaji `kbars` 盤中掃全市場
 
+## Execution Boundary
+
+目前所有下單相關實作只允許使用 Shioaji simulation / fake SDK，用來完成開發與驗證。正式區登入、正式委託與自動下單不屬於本階段；任何真實 Shioaji smoke 都必須另加人工 gate。
+
 ## Quick Start
 
 ```bash
@@ -150,7 +154,7 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 - Execution Sync MVP 已完成：dry-run simulation 可保存 broker trades / open positions 到 execution sync store，restart-sync 可重建 ledger open state 並比對 broker / ledger 是否一致。
 - Shioaji callback normalization MVP 已完成：可將 callback payload 標準化為 execution callback event，寫入 execution sync store，並透過 restart-sync 暴露 broker / ledger mismatch。
 - Shioaji order custom field contract 已完成：因 Shioaji SDK `custom_field` 最長 6 字元，order request 會把 `OrderIntent.idempotency_key` 轉成短 token，並用 execution sync store mapping 還原 callback intent。
-- Shioaji SDK-shaped gateway MVP 已完成：可用 fake SDK 驗證 login / `api.Order` / `api.place_order` 邊界；真實登入與真實委託仍未啟用。
+- Shioaji SDK-shaped gateway MVP 已完成：可用 fake SDK 驗證 login / `api.Order` / `api.place_order` 邊界，並拒絕 `api.simulation=False`；真實登入與真實委託仍未啟用。
 - 下一步是更完整的 Shioaji SDK callback streaming。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。

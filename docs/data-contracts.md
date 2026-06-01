@@ -185,6 +185,7 @@ Order request 欄位：
 - Shioaji SDK `custom_field` 最長 6 字元，因此不能直接寫入完整 `idempotency_key`；系統用穩定 6 字元 token 寫入 `custom_field`，並把 `custom_field -> idempotency_key` mapping 存在 execution sync store。
 - `ShioajiOrderRequestBroker` 只依賴 gateway protocol，可用 fake gateway 驗證 request contract；真實 SDK adapter 必須遵守同一 contract。
 - `ShioajiSdkSimulationGateway` 已可用 fake SDK 驗證 login / `api.Order` / `api.place_order` 的 SDK-shaped 邊界，不會在測試中登入真實帳號或送真實委託。
+- `ShioajiSdkSimulationGateway` 只接受 `api.simulation=True` 或沒有該屬性的 fake API；若偵測到 `api.simulation=False` 會直接拒絕。
 - 若後續 callback 的短 `custom_field` 找不到 mapping，callback normalization 會標為 `unresolved_custom_field`。
 
 Callback event 欄位：

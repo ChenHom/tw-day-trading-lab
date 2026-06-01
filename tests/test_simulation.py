@@ -223,6 +223,8 @@ class SimulationAdapterTest(unittest.TestCase):
             Stocks = {"2330": {"code": "2330"}}
 
         class FakeApi:
+            simulation = True
+
             def __init__(self) -> None:
                 self.Contracts = FakeContracts()
                 self.stock_account = "stock-account"
@@ -269,6 +271,17 @@ class SimulationAdapterTest(unittest.TestCase):
         self.assertEqual(api.orders[0]["account"], "stock-account")
         self.assertEqual(response["custom_field"], request.custom_field)
         self.assertEqual(response["broker_order_id"], "broker-1")
+
+    def test_shioaji_sdk_gateway_rejects_non_simulation_api(self):
+        class LiveLikeApi:
+            simulation = False
+
+        with self.assertRaisesRegex(ValueError, "simulation=True"):
+            ShioajiSdkSimulationGateway(
+                api=LiveLikeApi(),
+                api_key="test-key",
+                secret_key="test-secret",
+            )
 
     def test_markdown_report_separates_simulation_from_replay_expectancy(self):
         broker = DryRunSimulationBroker()
