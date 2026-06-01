@@ -1,7 +1,7 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；Shioaji order custom field token mapping、SDK-shaped gateway、callback stream、execution lifecycle policy、duplicate callback dedupe MVP 已完成；下一步 callback ordering / store locking
+狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；Shioaji order custom field token mapping、SDK-shaped gateway、callback stream、execution lifecycle policy、duplicate callback dedupe、callback status ordering MVP 已完成；下一步 store locking
 預設分支：`master`
 
 ## Phase 對照
@@ -678,8 +678,7 @@ Grill-me review：
 - 方向正確：先把狀態決策寫成 pure policy 與可追蹤紀錄，避免直接把 callback 寫成不可逆 ledger mutation。
 - must-fix 已處理：partial fill 不會被當成完整開倉，先進人工檢查。
 - must-fix 已處理：cancelled / rejected 明確釋放 intent，但目前只記錄 decision，不直接刪 position。
-- 剩餘風險：尚未做 duplicate callback 去重；同一 broker order 重複 callback 會重複記錄。
-- 剩餘風險：尚未處理 callback ordering，例如 submitted 晚於 filled 到達。
+- 後續已補：duplicate callback dedupe 與 callback status ordering。
 - 剩餘風險：JSON file store 仍沒有 locking / transaction，多進程 callback 寫入可能競態。
 
 ### Duplicate Callback Dedupe MVP
@@ -698,7 +697,7 @@ Grill-me review：
 
 - callback event key 使用 `trading_date | broker_order_id | idempotency_key | normalized_status | quantity | price`。
 - 同一 key 已存在時，不重複寫入 `callback_events`、`broker_trades`、`lifecycle_decisions`。
-- 目前只處理完全相同 callback 的去重；不同 status 的同一 broker order 仍會記錄為狀態遞進，ordering policy 留後續。
+- 目前只處理完全相同 callback 的去重；不同 status 的同一 broker order 由後續 callback status ordering policy 處理。
 
 驗證結果：
 
@@ -712,9 +711,43 @@ Grill-me review：
 
 - 方向正確：先處理完全相同 callback 的冪等性，避免最常見的重送污染。
 - must-fix 已處理：重複 callback 不會重複產生 broker trade 或 lifecycle decision。
-- 剩餘風險：尚未處理 out-of-order 狀態，例如 filled 先到、submitted 後到。
-- 剩餘風險：尚未針對同 broker order 的狀態遞進建立 precedence。
+- 後續已補：callback status ordering 已處理 out-of-order `filled -> submitted` 與同 broker order 狀態 precedence。
 - 剩餘風險：JSON file store 沒有 atomic lock，多進程同時寫仍可能競態。
+
+### Callback Status Ordering MVP
+
+目前狀態：已完成 MVP。
+
+目標：避免 Shioaji callback out-of-order 到達時讓 execution sync store 狀態倒退，例如 `filled` 已進來後，晚到的 `submitted` 不應再新增 broker trade 或 lifecycle decision。
+
+實際產出：
+
+- `build_callback_order_key`
+- `callback_status_precedence`
+- `FileExecutionSyncStore.callback_status_by_order`
+- `FileExecutionSyncStore.callback_ordering_issues`
+
+設計結果：
+
+- 同一 broker order 用 `trading_date | broker_order_id | idempotency_key` 追蹤狀態。
+- 狀態 precedence：`submitted < partial_filled < filled < cancelled / rejected < needs_review`。
+- 若後到 callback 的 precedence 小於目前已接受狀態，`record_callback_event` 回傳 `False`，並寫入 `callback_ordering_issues`。
+- stale callback 不會新增 `callback_events`、`broker_trades` 或 `lifecycle_decisions`。
+- 正常 `submitted -> filled` 狀態遞進仍會被接受。
+
+驗證結果：
+
+- TDD red：新增 stale submitted after filled 與 submitted then filled 測試後，因缺 `callback_ordering_issues` / ordering policy 失敗。
+- focused tests：2 tests OK。
+- full unittest discover：69 tests OK。
+- compile check：OK。
+
+Grill-me review：
+
+- 方向正確：這輪只補 ordering contract，仍不做真實登入、不送單，也不自動 mutation `open_positions`。
+- must-fix 已處理：`filled` 後到的 `submitted` 會被跳過，不會污染 callback event、broker trade 或 lifecycle decision。
+- 剩餘風險：`filled` 後的 `cancelled / rejected` 目前仍會保留，因為可能代表更複雜的 broker 狀態，需要下一輪用 manual review / terminal-state policy 補強。
+- 剩餘風險：JSON file store 仍沒有 atomic lock，多進程 callback 同時寫可能競態；下一步應優先補 store locking / atomic write。
 
 ## 5. Working Commands
 

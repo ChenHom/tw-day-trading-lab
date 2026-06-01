@@ -592,6 +592,114 @@ class SimulationAdapterTest(unittest.TestCase):
             self.assertEqual(len(snapshot["lifecycle_decisions"]), 1)
             self.assertEqual(len(snapshot["callback_event_keys"]), 1)
 
+    def test_file_execution_sync_store_skips_stale_callback_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FileExecutionSyncStore(Path(tmp) / "execution-sync.json")
+            filled = ExecutionCallbackEvent(
+                stat="OrderState.Filled",
+                broker_order_id="broker-1",
+                idempotency_key="2026-05-28:mvp:2330:vwap-breakout:buy",
+                trading_date="2026-05-28",
+                symbol="2330",
+                side="buy",
+                quantity=1000,
+                price=900.0,
+                normalized_status="filled",
+                raw_status="Filled",
+                review_reason="",
+                raw={"source": "unit-test"},
+            )
+            submitted = ExecutionCallbackEvent(
+                stat="OrderState.Submitted",
+                broker_order_id="broker-1",
+                idempotency_key="2026-05-28:mvp:2330:vwap-breakout:buy",
+                trading_date="2026-05-28",
+                symbol="2330",
+                side="buy",
+                quantity=1000,
+                price=900.0,
+                normalized_status="submitted",
+                raw_status="Submitted",
+                review_reason="",
+                raw={"source": "unit-test"},
+            )
+
+            self.assertTrue(store.record_callback_event(filled))
+            self.assertFalse(store.record_callback_event(submitted))
+            snapshot = store.load_snapshot()
+
+            self.assertEqual(len(snapshot["callback_events"]), 1)
+            self.assertEqual(snapshot["callback_events"][0]["normalized_status"], "filled")
+            self.assertEqual(len(snapshot["broker_trades"]), 1)
+            self.assertEqual(len(snapshot["lifecycle_decisions"]), 1)
+            self.assertEqual(
+                snapshot["callback_status_by_order"][
+                    "2026-05-28|broker-1|2026-05-28:mvp:2330:vwap-breakout:buy"
+                ],
+                "filled",
+            )
+            self.assertEqual(len(snapshot["callback_ordering_issues"]), 1)
+            self.assertEqual(
+                snapshot["callback_ordering_issues"][0]["reason"],
+                "stale_callback_status",
+            )
+            self.assertEqual(
+                snapshot["callback_ordering_issues"][0]["incoming_status"],
+                "submitted",
+            )
+            self.assertEqual(
+                snapshot["callback_ordering_issues"][0]["current_status"],
+                "filled",
+            )
+
+    def test_file_execution_sync_store_accepts_later_callback_status_progression(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FileExecutionSyncStore(Path(tmp) / "execution-sync.json")
+            submitted = ExecutionCallbackEvent(
+                stat="OrderState.Submitted",
+                broker_order_id="broker-1",
+                idempotency_key="2026-05-28:mvp:2330:vwap-breakout:buy",
+                trading_date="2026-05-28",
+                symbol="2330",
+                side="buy",
+                quantity=1000,
+                price=900.0,
+                normalized_status="submitted",
+                raw_status="Submitted",
+                review_reason="",
+                raw={"source": "unit-test"},
+            )
+            filled = ExecutionCallbackEvent(
+                stat="OrderState.Filled",
+                broker_order_id="broker-1",
+                idempotency_key="2026-05-28:mvp:2330:vwap-breakout:buy",
+                trading_date="2026-05-28",
+                symbol="2330",
+                side="buy",
+                quantity=1000,
+                price=900.0,
+                normalized_status="filled",
+                raw_status="Filled",
+                review_reason="",
+                raw={"source": "unit-test"},
+            )
+
+            self.assertTrue(store.record_callback_event(submitted))
+            self.assertTrue(store.record_callback_event(filled))
+            snapshot = store.load_snapshot()
+
+            self.assertEqual(
+                [event["normalized_status"] for event in snapshot["callback_events"]],
+                ["submitted", "filled"],
+            )
+            self.assertEqual(len(snapshot["callback_ordering_issues"]), 0)
+            self.assertEqual(
+                snapshot["callback_status_by_order"][
+                    "2026-05-28|broker-1|2026-05-28:mvp:2330:vwap-breakout:buy"
+                ],
+                "filled",
+            )
+
     def test_cli_ingest_callback_normalizes_and_records_store(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)

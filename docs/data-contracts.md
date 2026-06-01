@@ -141,6 +141,8 @@ Top-level 欄位：
 | `callback_events` | normalized Shioaji callback events |
 | `lifecycle_decisions` | callback 對 ledger lifecycle 的決策紀錄 |
 | `callback_event_keys` | 已保存 callback 的去重 key |
+| `callback_status_by_order` | 同一 broker order 目前已接受的最後狀態 |
+| `callback_ordering_issues` | 被跳過的 stale callback 狀態紀錄 |
 | `custom_field_map` | Shioaji 短 `custom_field` token 到完整 `idempotency_key` 的 mapping |
 
 `tw-daytrade simulate restart-sync --store ...` 會讀取 execution sync store，重建 `PaperLedger` open keys，並比對 broker trades 與 ledger open positions。
@@ -233,7 +235,10 @@ Callback 去重：
 
 - execution sync store 會用 `trading_date | broker_order_id | idempotency_key | normalized_status | quantity | price` 建立 callback event key。
 - 同一 key 重複進來時，`callback_events`、`broker_trades`、`lifecycle_decisions` 都不會重複寫入。
-- 目前只處理完全相同 callback 的去重；out-of-order callback 與同 broker order 的狀態遞進仍留到後續策略化。
+- 同一 broker order 另外用 `trading_date | broker_order_id | idempotency_key` 追蹤最後已接受狀態。
+- 狀態 precedence：`submitted < partial_filled < filled < cancelled / rejected < needs_review`。
+- 若後到 callback 的 precedence 小於目前已接受狀態，會寫入 `callback_ordering_issues` 並跳過，不新增 `callback_events`、`broker_trades` 或 `lifecycle_decisions`。
+- 目前 ordering policy 只防止狀態倒退；`filled` 後又出現 `cancelled / rejected` 仍會保留為後續人工或策略檢查資料，不自動改寫 position。
 
 ## Persisted Strategy Samples
 

@@ -648,6 +648,23 @@ def build_callback_event_key(event: ExecutionCallbackEvent) -> str:
     )
 
 
+def build_callback_order_key(event: ExecutionCallbackEvent) -> str:
+    """Build the key used to track status progression for one broker order."""
+    return "|".join([event.trading_date, event.broker_order_id, event.idempotency_key])
+
+
+def callback_status_precedence(normalized_status: str) -> int:
+    """Return monotonic precedence for callback status ordering."""
+    return {
+        "submitted": 10,
+        "partial_filled": 20,
+        "filled": 30,
+        "cancelled": 40,
+        "rejected": 40,
+        "needs_review": 100,
+    }.get(normalized_status, 100)
+
+
 class FileExecutionSyncStore:
     """Persist simulation execution state for restart reconciliation."""
 
@@ -667,6 +684,8 @@ class FileExecutionSyncStore:
             "callback_events": list(raw.get("callback_events", [])),
             "lifecycle_decisions": list(raw.get("lifecycle_decisions", [])),
             "callback_event_keys": list(raw.get("callback_event_keys", [])),
+            "callback_status_by_order": dict(raw.get("callback_status_by_order", {})),
+            "callback_ordering_issues": list(raw.get("callback_ordering_issues", [])),
             "custom_field_map": dict(raw.get("custom_field_map", {})),
         }
 
@@ -692,7 +711,24 @@ class FileExecutionSyncStore:
         event_key = build_callback_event_key(event)
         if event_key in set(snapshot["callback_event_keys"]):
             return False
+        order_key = build_callback_order_key(event)
+        current_status = snapshot["callback_status_by_order"].get(order_key)
+        if current_status and callback_status_precedence(
+            event.normalized_status
+        ) < callback_status_precedence(current_status):
+            snapshot["callback_ordering_issues"].append(
+                {
+                    "reason": "stale_callback_status",
+                    "order_key": order_key,
+                    "event_key": event_key,
+                    "incoming_status": event.normalized_status,
+                    "current_status": current_status,
+                }
+            )
+            self._write_snapshot(snapshot)
+            return False
         snapshot["callback_event_keys"].append(event_key)
+        snapshot["callback_status_by_order"][order_key] = event.normalized_status
         snapshot["callback_events"].append(event.to_dict())
         snapshot["lifecycle_decisions"].append(classify_execution_lifecycle(event).to_dict())
         trade = event.to_broker_trade()
@@ -882,6 +918,8 @@ def _empty_execution_sync_snapshot() -> dict[str, Any]:
         "callback_events": [],
         "lifecycle_decisions": [],
         "callback_event_keys": [],
+        "callback_status_by_order": {},
+        "callback_ordering_issues": [],
         "custom_field_map": {},
     }
 
