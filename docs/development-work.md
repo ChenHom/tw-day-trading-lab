@@ -398,7 +398,7 @@
 3. 報告固定列出 candidate source summary、replay expectancy、simulation status summary：已完成。
 4. 將 broker / ledger `needs_review` 顯示在每日報告，不讓它被 expectancy 吞掉：已完成。
 5. 補 report loop tests：已完成。
-6. commit：待本輪收尾。
+6. commit：已完成，`1612271 Add report loop close summary`。
 
 完成標準：
 
@@ -417,6 +417,7 @@
 驗證結果：
 
 - `tests.test_reports`：3 tests OK。
+- full unittest：42 tests OK。
 - close report smoke：`reports/2026-05-28-close.md` 可由 candidate / replay / simulation JSON 產生。
 - Telegram dry-run smoke：可輸出 close report 前 12 行摘要，未開啟真實發送。
 
