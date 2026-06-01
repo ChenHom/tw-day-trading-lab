@@ -1,0 +1,18 @@
+{
+  "stat": "OrderState.Filled",
+  "msg": {
+    "order": {
+      "id": "broker-1",
+      "custom_field": "2026-05-28:mvp:2330:vwap-breakout:buy",
+      "action": "Buy",
+      "price": 900.0,
+      "quantity": 1000
+    },
+    "contract": {
+      "code": "2330"
+    },
+    "status": {
+      "status": "Filled"
+    }
+  }
+}

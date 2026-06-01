@@ -138,6 +138,7 @@ Top-level 欄位：
 | `broker_trades` | broker 回報的 normalized trades |
 | `open_positions` | ledger open position snapshot |
 | `results` | simulation result payload |
+| `callback_events` | normalized Shioaji callback events |
 
 `tw-daytrade simulate restart-sync --store ...` 會讀取 execution sync store，重建 `PaperLedger` open keys，並比對 broker trades 與 ledger open positions。
 
@@ -153,8 +154,35 @@ Restart sync report：
 目前 MVP 邊界：
 
 - 只使用 dry-run simulation output 驗證 restart sync contract。
-- 尚未連接真正 Shioaji SDK callback streaming。
+- 已可 normalize Shioaji callback payload，但尚未連接真正 SDK streaming。
 - 若 broker / ledger 不一致，一律 `needs_review`，不自動修正 state。
+
+## Shioaji Callback Normalization
+
+`tw-daytrade simulate ingest-callback` 讀取 `{stat, msg}` JSON，轉成標準 callback event，並寫入 execution sync store。
+
+Callback event 欄位：
+
+| 欄位 | 說明 |
+|---|---|
+| `stat` | Shioaji callback 的 stat |
+| `broker_order_id` | broker order id |
+| `idempotency_key` | 由 Shioaji order `custom_field` 或 callback payload 提供 |
+| `trading_date` | CLI 提供的交易日 |
+| `symbol` | 股票代號 |
+| `side` | `buy` / `sell` |
+| `quantity` | 委託或成交數量 |
+| `price` | 委託或成交價格 |
+| `normalized_status` | `filled` / `partial_filled` / `submitted` / `cancelled` / `rejected` / `needs_review` |
+| `raw_status` | broker 原始狀態 |
+| `review_reason` | 缺欄位或未知狀態原因 |
+| `raw` | 原始 callback payload |
+
+Normalization 規則：
+
+- 缺 `idempotency_key`、`broker_order_id` 或 `symbol` 會標為 `needs_review`。
+- 未知 broker status 會標為 `broker_status_needs_review`。
+- callback-only event 若沒有對應 ledger open position，restart-sync 會輸出 `ledger_missing_open_intent`。
 
 ## Persisted Strategy Samples
 

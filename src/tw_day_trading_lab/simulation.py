@@ -75,6 +75,40 @@ class BrokerTrade:
 
 
 @dataclass(frozen=True)
+class ExecutionCallbackEvent:
+    stat: str
+    broker_order_id: str
+    idempotency_key: str
+    trading_date: str
+    symbol: str
+    side: str
+    quantity: int
+    price: float | None
+    normalized_status: str
+    raw_status: str
+    review_reason: str
+    raw: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    def to_broker_trade(self) -> BrokerTrade | None:
+        if not self.idempotency_key or self.review_reason:
+            return None
+        return BrokerTrade(
+            idempotency_key=self.idempotency_key,
+            broker_order_id=self.broker_order_id,
+            trading_date=self.trading_date,
+            symbol=self.symbol,
+            side=self.side,
+            quantity=self.quantity,
+            price=self.price,
+            status=self.normalized_status,
+            raw_status=self.raw_status,
+        )
+
+
+@dataclass(frozen=True)
 class LedgerPosition:
     position_id: str
     idempotency_key: str
@@ -305,7 +339,7 @@ class FileExecutionSyncStore:
 
     def load_snapshot(self) -> dict[str, Any]:
         if not self.path.exists():
-            return {"broker_trades": [], "open_positions": [], "results": []}
+            return _empty_execution_sync_snapshot()
         raw = json.loads(self.path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError("execution sync store must be a JSON object")
@@ -313,6 +347,7 @@ class FileExecutionSyncStore:
             "broker_trades": list(raw.get("broker_trades", [])),
             "open_positions": list(raw.get("open_positions", [])),
             "results": list(raw.get("results", [])),
+            "callback_events": list(raw.get("callback_events", [])),
         }
 
     def record_result(self, result: SimulationResult) -> None:
@@ -326,6 +361,14 @@ class FileExecutionSyncStore:
                 snapshot["open_positions"],
                 result.position.to_dict(),
             )
+        self._write_snapshot(snapshot)
+
+    def record_callback_event(self, event: ExecutionCallbackEvent) -> None:
+        snapshot = self.load_snapshot()
+        snapshot["callback_events"].append(event.to_dict())
+        trade = event.to_broker_trade()
+        if trade:
+            snapshot["broker_trades"].append(trade.to_dict())
         self._write_snapshot(snapshot)
 
     def _write_snapshot(self, snapshot: dict[str, Any]) -> None:
@@ -416,6 +459,123 @@ def _upsert_position_payload(
         *[item for item in rows if item.get("idempotency_key") != row.get("idempotency_key")],
         row,
     ]
+
+
+def normalize_shioaji_order_callback(
+    stat: Any,
+    msg: Any,
+    *,
+    trading_date: str,
+) -> ExecutionCallbackEvent:
+    """Normalize a Shioaji order callback payload into the lab execution contract."""
+    payload = _to_plain_mapping(msg)
+    order = _to_plain_mapping(payload.get("order", {}))
+    contract = _to_plain_mapping(payload.get("contract", {}))
+    status = _to_plain_mapping(payload.get("status", {}))
+
+    raw_status = str(
+        _first_non_empty(
+            status.get("status"),
+            status.get("order_status"),
+            payload.get("status"),
+            stat,
+        )
+        or ""
+    )
+    idempotency_key = str(
+        _first_non_empty(
+            order.get("custom_field"),
+            order.get("customField"),
+            order.get("idempotency_key"),
+            payload.get("idempotency_key"),
+        )
+        or ""
+    )
+    broker_order_id = str(
+        _first_non_empty(
+            order.get("id"),
+            order.get("order_id"),
+            order.get("ordno"),
+            payload.get("order_id"),
+        )
+        or ""
+    )
+    symbol = str(
+        _first_non_empty(
+            contract.get("code"),
+            contract.get("symbol"),
+            order.get("code"),
+            payload.get("symbol"),
+        )
+        or ""
+    )
+    normalized_status = normalize_broker_status(raw_status)
+    review_reasons: list[str] = []
+    if not idempotency_key:
+        review_reasons.append("missing_idempotency_key")
+    if not broker_order_id:
+        review_reasons.append("missing_broker_order_id")
+    if not symbol:
+        review_reasons.append("missing_symbol")
+    if normalized_status == "needs_review":
+        review_reasons.append("broker_status_needs_review")
+    if review_reasons:
+        normalized_status = "needs_review"
+
+    return ExecutionCallbackEvent(
+        stat=str(stat),
+        broker_order_id=broker_order_id,
+        idempotency_key=idempotency_key,
+        trading_date=trading_date,
+        symbol=symbol,
+        side=_normalize_side(_first_non_empty(order.get("action"), order.get("side"), payload.get("side"))),
+        quantity=_parse_int(_first_non_empty(order.get("quantity"), order.get("qty"), payload.get("quantity"))),
+        price=_parse_float(_first_non_empty(order.get("price"), payload.get("price"))),
+        normalized_status=normalized_status,
+        raw_status=raw_status,
+        review_reason=",".join(review_reasons),
+        raw={"stat": str(stat), "msg": payload},
+    )
+
+
+def _empty_execution_sync_snapshot() -> dict[str, Any]:
+    return {"broker_trades": [], "open_positions": [], "results": [], "callback_events": []}
+
+
+def _to_plain_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if hasattr(value, "__dict__"):
+        return dict(vars(value))
+    return {}
+
+
+def _first_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value not in {None, ""}:
+            return value
+    return None
+
+
+def _normalize_side(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"buy", "b", "action.buy"}:
+        return "buy"
+    if text in {"sell", "s", "action.sell"}:
+        return "sell"
+    return text
+
+
+def _parse_int(value: Any) -> int:
+    if value in {None, ""}:
+        return 0
+    return int(value)
+
+
+def _parse_float(value: Any) -> float | None:
+    if value in {None, ""}:
+        return None
+    return float(value)
 
 
 def render_simulation_markdown(trading_date: str, results: list[SimulationResult]) -> str:

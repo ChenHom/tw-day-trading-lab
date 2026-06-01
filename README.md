@@ -74,6 +74,11 @@ python3 -m tw_day_trading_lab.cli simulate run \
 python3 -m tw_day_trading_lab.cli simulate restart-sync \
   --store reports/2026-05-28-execution-sync.json \
   --output reports/2026-05-28-restart-sync.json
+python3 -m tw_day_trading_lab.cli simulate ingest-callback \
+  --date 2026-05-28 \
+  --input examples/shioaji-callback.sample.json \
+  --store reports/2026-05-28-execution-sync.json \
+  --output reports/2026-05-28-callback-event.json
 python3 -m tw_day_trading_lab.cli report close \
   --date 2026-05-28 \
   --candidates reports/2026-05-28-candidates-from-raw.json \
@@ -143,6 +148,7 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 - P0-P6 MVP 已完成。
 - Report Loop / Notification hardening 已完成：`report close` 可聚合 candidate / replay / simulation，列出逐筆 `needs_review` reason，並輸出專用 Telegram summary；真實發送仍維持 dry-run gate。
 - Execution Sync MVP 已完成：dry-run simulation 可保存 broker trades / open positions 到 execution sync store，restart-sync 可重建 ledger open state 並比對 broker / ledger 是否一致。
+- Shioaji callback normalization MVP 已完成：可將 callback payload 標準化為 execution callback event，寫入 execution sync store，並透過 restart-sync 暴露 broker / ledger mismatch。
 - 下一步是更完整的 Shioaji SDK callback streaming。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。

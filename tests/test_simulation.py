@@ -6,17 +6,23 @@ from argparse import Namespace
 from io import StringIO
 from pathlib import Path
 
-from tw_day_trading_lab.cli import cmd_simulate_restart_sync, cmd_simulate_run
+from tw_day_trading_lab.cli import (
+    cmd_simulate_ingest_callback,
+    cmd_simulate_restart_sync,
+    cmd_simulate_run,
+)
 from tw_day_trading_lab.ledger import PaperLedger
 from tw_day_trading_lab.simulation import (
     BrokerTrade,
     DryRunSimulationBroker,
+    ExecutionCallbackEvent,
     FileExecutionSyncStore,
     LedgerPosition,
     RiskDecision,
     ShioajiSimulationAdapter,
     SignalIntent,
     build_restart_sync_report,
+    normalize_shioaji_order_callback,
     normalize_broker_status,
     order_intent_from_idempotency_key,
     reconcile_broker_trades,
@@ -320,6 +326,112 @@ class SimulationAdapterTest(unittest.TestCase):
         self.assertEqual(intent.symbol, "2330")
         self.assertEqual(intent.setup_id, "vwap-breakout")
         self.assertEqual(intent.side, "buy")
+
+    def test_normalizes_shioaji_order_callback_dict_payload(self):
+        event = normalize_shioaji_order_callback(
+            "OrderState.Filled",
+            {
+                "order": {
+                    "id": "broker-1",
+                    "custom_field": "2026-05-28:mvp:2330:vwap-breakout:buy",
+                    "action": "Buy",
+                    "price": 900.0,
+                    "quantity": 1000,
+                },
+                "contract": {"code": "2330"},
+                "status": {"status": "Filled"},
+            },
+            trading_date="2026-05-28",
+        )
+
+        self.assertEqual(event.broker_order_id, "broker-1")
+        self.assertEqual(event.idempotency_key, "2026-05-28:mvp:2330:vwap-breakout:buy")
+        self.assertEqual(event.symbol, "2330")
+        self.assertEqual(event.normalized_status, "filled")
+        self.assertEqual(event.review_reason, "")
+
+    def test_callback_event_to_broker_trade_requires_idempotency_key(self):
+        event = normalize_shioaji_order_callback(
+            "OrderState.Filled",
+            {
+                "order": {"id": "broker-1", "action": "Buy", "price": 900.0, "quantity": 1000},
+                "contract": {"code": "2330"},
+                "status": {"status": "Filled"},
+            },
+            trading_date="2026-05-28",
+        )
+
+        self.assertEqual(event.normalized_status, "needs_review")
+        self.assertEqual(event.review_reason, "missing_idempotency_key")
+        self.assertIsNone(event.to_broker_trade())
+
+    def test_file_execution_sync_store_records_callback_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FileExecutionSyncStore(Path(tmp) / "execution-sync.json")
+            event = ExecutionCallbackEvent(
+                stat="OrderState.Filled",
+                broker_order_id="broker-1",
+                idempotency_key="2026-05-28:mvp:2330:vwap-breakout:buy",
+                trading_date="2026-05-28",
+                symbol="2330",
+                side="buy",
+                quantity=1000,
+                price=900.0,
+                normalized_status="filled",
+                raw_status="Filled",
+                review_reason="",
+                raw={"source": "unit-test"},
+            )
+
+            store.record_callback_event(event)
+            snapshot = store.load_snapshot()
+
+            self.assertEqual(len(snapshot["callback_events"]), 1)
+            self.assertEqual(len(snapshot["broker_trades"]), 1)
+            self.assertEqual(snapshot["broker_trades"][0]["broker_order_id"], "broker-1")
+
+    def test_cli_ingest_callback_normalizes_and_records_store(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            callback_path = tmpdir / "callback.json"
+            store_path = tmpdir / "execution-sync.json"
+            output_path = tmpdir / "callback-event.json"
+            callback_path.write_text(
+                json.dumps(
+                    {
+                        "stat": "OrderState.Filled",
+                        "msg": {
+                            "order": {
+                                "id": "broker-1",
+                                "custom_field": "2026-05-28:mvp:2330:vwap-breakout:buy",
+                                "action": "Buy",
+                                "price": 900.0,
+                                "quantity": 1000,
+                            },
+                            "contract": {"code": "2330"},
+                            "status": {"status": "Filled"},
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with redirect_stdout(StringIO()):
+                cmd_simulate_ingest_callback(
+                    Namespace(
+                        date="2026-05-28",
+                        input=str(callback_path),
+                        store=str(store_path),
+                        output=str(output_path),
+                    )
+                )
+
+            event = json.loads(output_path.read_text(encoding="utf-8"))
+            snapshot = json.loads(store_path.read_text(encoding="utf-8"))
+            self.assertEqual(event["normalized_status"], "filled")
+            self.assertEqual(len(snapshot["callback_events"]), 1)
+            self.assertEqual(len(snapshot["broker_trades"]), 1)
 
 
 if __name__ == "__main__":

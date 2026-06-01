@@ -33,6 +33,7 @@ from .simulation import (
     broker_trades_from_payload,
     build_restart_sync_report,
     ledger_positions_from_payload,
+    normalize_shioaji_order_callback,
     render_simulation_markdown,
     restore_ledger_from_positions,
 )
@@ -406,6 +407,23 @@ def cmd_simulate_restart_sync(args: argparse.Namespace) -> None:
     print(output)
 
 
+def cmd_simulate_ingest_callback(args: argparse.Namespace) -> None:
+    """Normalize a Shioaji callback payload and append it to the execution sync store."""
+    raw = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("callback input must be a JSON object")
+    event = normalize_shioaji_order_callback(
+        raw.get("stat", ""),
+        raw.get("msg", {}),
+        trading_date=args.date,
+    )
+    store = FileExecutionSyncStore(Path(args.store))
+    store.record_callback_event(event)
+    output = Path(args.output) if args.output else Path("reports") / f"{args.date}-callback-event.json"
+    write_json(output, event.to_dict())
+    print(output)
+
+
 def cmd_ingest_finmind(args: argparse.Namespace) -> None:
     """Run FinMind nightly ingestion with ledger-backed raw cache."""
     token = args.token or os.getenv("FINMIND_TOKEN")
@@ -543,6 +561,12 @@ def build_parser() -> argparse.ArgumentParser:
     restart_sync.add_argument("--store", required=True)
     restart_sync.add_argument("--output")
     restart_sync.set_defaults(func=cmd_simulate_restart_sync)
+    ingest_callback = simulate_sub.add_parser("ingest-callback")
+    ingest_callback.add_argument("--date", required=True)
+    ingest_callback.add_argument("--input", required=True)
+    ingest_callback.add_argument("--store", required=True)
+    ingest_callback.add_argument("--output")
+    ingest_callback.set_defaults(func=cmd_simulate_ingest_callback)
 
     ingest = subparsers.add_parser("ingest")
     ingest_sub = ingest.add_subparsers(required=True)

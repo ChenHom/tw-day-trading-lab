@@ -1,7 +1,7 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；下一步 Shioaji callback streaming
+狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；下一步 Shioaji callback streaming
 預設分支：`master`
 
 ## Phase 對照
@@ -523,6 +523,43 @@ Grill-me review：
 - 剩餘風險：真正 Shioaji SDK callback payload 尚未接入，下一 sprint 要先做 callback payload normalization，再接 live-like event streaming。
 - 剩餘風險：restart-sync 目前只比對 open state，不處理部分成交、取消後重送、盤後收斂策略；這些要跟 callback streaming 一起定義。
 
+### Shioaji Callback Normalization MVP
+
+目前狀態：已完成 MVP。
+
+目標：先把 Shioaji order callback `{stat, msg}` normalize 成穩定內部 event contract，避免之後直接把 SDK callback shape 滲進核心邏輯。
+
+實際產出：
+
+- `ExecutionCallbackEvent`
+- `normalize_shioaji_order_callback`
+- `FileExecutionSyncStore.record_callback_event`
+- CLI：`tw-daytrade simulate ingest-callback`
+- sample：`examples/shioaji-callback.sample.json`
+
+設計結果：
+
+- callback event 會保存 `stat`、broker order id、`idempotency_key`、symbol、side、quantity、price、normalized status、raw status、review reason 與 raw payload。
+- `idempotency_key` 優先從 Shioaji order `custom_field` 取得；缺 key 會標 `missing_idempotency_key`。
+- callback event 可轉成 `BrokerTrade` 並寫入 execution sync store，供 restart-sync 比對。
+- callback-only event 若沒有對應 ledger open intent，restart-sync 會輸出 `ledger_missing_open_intent`，不會自動修正。
+
+驗證結果：
+
+- `tests/test_simulation.py` 覆蓋 callback dict normalization、missing idempotency key、store callback event、CLI ingest-callback。
+- full unittest：55 tests OK。
+- compile check：OK。
+- diff check：OK。
+- smoke：`simulate ingest-callback` 後接 `simulate restart-sync`，callback-only event 正確輸出 `ledger_missing_open_intent`。
+
+Grill-me review：
+
+- 方向正確：先 normalize callback contract，再接 streaming，避免 SDK payload 直接污染核心。
+- must-fix 已處理：缺 `idempotency_key` 不會被當成正常 trade，而是 `needs_review`。
+- 剩餘風險：目前只支援 dict / object-like payload 的欄位抽取，尚未用真實 Shioaji callback payload 做 live smoke。
+- 剩餘風險：`custom_field` 如何在真正 place order 時填入 idempotency key，下一 sprint 必須接上，否則 callback 無法穩定對應 ledger intent。
+- 剩餘風險：partial fill / cancelled / rejected 的 position lifecycle policy 尚未定義，只先 normalize status。
+
 ## 5. Working Commands
 
 ```bash
@@ -552,5 +589,6 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli notify telegram --date 2026-05-
 - 決定 raw data 儲存先用 JSONL 還是直接導入 Parquet library。
 - 設計 Telegram 正式發送 gate。
 - 接真正 Shioaji SDK simulation login / callback streaming。
+- 在真正 place order 時將 `idempotency_key` 寫入 order `custom_field`。
 - 將 execution sync store 從 dry-run file contract 推進到 callback event ingestion。
 - 建立 execution sync persistence，用於 restart 後比對 broker open state 與 ledger state。
