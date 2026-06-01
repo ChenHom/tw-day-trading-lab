@@ -147,6 +147,12 @@ Top-level 欄位：
 
 `tw-daytrade simulate restart-sync --store ...` 會讀取 execution sync store，重建 `PaperLedger` open keys，並比對 broker trades 與 ledger open positions。
 
+寫入規則：
+
+- `FileExecutionSyncStore` 對 `record_result` 與 `record_callback_event` 使用同一個 `.lock` 檔做 exclusive file lock。
+- lock 會包住 read-modify-write，避免多個 callback writer 同時讀到舊 snapshot 後互相覆蓋。
+- JSON store 寫入使用同目錄 temp file，再用 atomic replace 換到正式路徑；避免讀到半寫入內容。
+
 Restart sync report：
 
 | 欄位 | 說明 |

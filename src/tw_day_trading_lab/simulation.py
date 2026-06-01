@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
 import json
+import os
+import uuid
+from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
@@ -670,6 +675,7 @@ class FileExecutionSyncStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        self.lock_path = path.with_suffix(path.suffix + ".lock")
 
     def load_snapshot(self) -> dict[str, Any]:
         if not self.path.exists():
@@ -690,59 +696,83 @@ class FileExecutionSyncStore:
         }
 
     def record_result(self, result: SimulationResult) -> None:
-        snapshot = self.load_snapshot()
-        result_payload = result.to_dict()
-        snapshot["results"].append(result_payload)
-        if result.order_intent:
-            snapshot["custom_field_map"][
-                build_shioaji_custom_field(result.order_intent.idempotency_key)
-            ] = result.order_intent.idempotency_key
-        if result.trade:
-            snapshot["broker_trades"].append(result.trade.to_dict())
-        if result.position:
-            snapshot["open_positions"] = _upsert_position_payload(
-                snapshot["open_positions"],
-                result.position.to_dict(),
-            )
-        self._write_snapshot(snapshot)
+        def mutate(snapshot: dict[str, Any]) -> None:
+            result_payload = result.to_dict()
+            snapshot["results"].append(result_payload)
+            if result.order_intent:
+                snapshot["custom_field_map"][
+                    build_shioaji_custom_field(result.order_intent.idempotency_key)
+                ] = result.order_intent.idempotency_key
+            if result.trade:
+                snapshot["broker_trades"].append(result.trade.to_dict())
+            if result.position:
+                snapshot["open_positions"] = _upsert_position_payload(
+                    snapshot["open_positions"],
+                    result.position.to_dict(),
+                )
+
+        self._mutate_snapshot(mutate)
 
     def record_callback_event(self, event: ExecutionCallbackEvent) -> bool:
-        snapshot = self.load_snapshot()
-        event_key = build_callback_event_key(event)
-        if event_key in set(snapshot["callback_event_keys"]):
-            return False
-        order_key = build_callback_order_key(event)
-        current_status = snapshot["callback_status_by_order"].get(order_key)
-        if current_status and callback_status_precedence(
-            event.normalized_status
-        ) < callback_status_precedence(current_status):
-            snapshot["callback_ordering_issues"].append(
-                {
-                    "reason": "stale_callback_status",
-                    "order_key": order_key,
-                    "event_key": event_key,
-                    "incoming_status": event.normalized_status,
-                    "current_status": current_status,
-                }
-            )
+        def mutate(snapshot: dict[str, Any]) -> bool:
+            event_key = build_callback_event_key(event)
+            if event_key in set(snapshot["callback_event_keys"]):
+                return False
+            order_key = build_callback_order_key(event)
+            current_status = snapshot["callback_status_by_order"].get(order_key)
+            if current_status and callback_status_precedence(
+                event.normalized_status
+            ) < callback_status_precedence(current_status):
+                snapshot["callback_ordering_issues"].append(
+                    {
+                        "reason": "stale_callback_status",
+                        "order_key": order_key,
+                        "event_key": event_key,
+                        "incoming_status": event.normalized_status,
+                        "current_status": current_status,
+                    }
+                )
+                return False
+            snapshot["callback_event_keys"].append(event_key)
+            snapshot["callback_status_by_order"][order_key] = event.normalized_status
+            snapshot["callback_events"].append(event.to_dict())
+            snapshot["lifecycle_decisions"].append(classify_execution_lifecycle(event).to_dict())
+            trade = event.to_broker_trade()
+            if trade:
+                snapshot["broker_trades"].append(trade.to_dict())
+            return True
+
+        return self._mutate_snapshot(mutate)
+
+    def _mutate_snapshot(self, mutate: Callable[[dict[str, Any]], Any]) -> Any:
+        with self._exclusive_lock():
+            snapshot = self.load_snapshot()
+            result = mutate(snapshot)
             self._write_snapshot(snapshot)
-            return False
-        snapshot["callback_event_keys"].append(event_key)
-        snapshot["callback_status_by_order"][order_key] = event.normalized_status
-        snapshot["callback_events"].append(event.to_dict())
-        snapshot["lifecycle_decisions"].append(classify_execution_lifecycle(event).to_dict())
-        trade = event.to_broker_trade()
-        if trade:
-            snapshot["broker_trades"].append(trade.to_dict())
-        self._write_snapshot(snapshot)
-        return True
+            return result
+
+    @contextmanager
+    def _exclusive_lock(self):
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.lock_path.open("a", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _write_snapshot(self, snapshot: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        tmp_path = self.path.with_name(f".{self.path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+        try:
+            tmp_path.write_text(
+                json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(tmp_path, self.path)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
 
 
 def restore_ledger_from_positions(positions: list[LedgerPosition]) -> PaperLedger:

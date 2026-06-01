@@ -1,7 +1,7 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；Shioaji order custom field token mapping、SDK-shaped gateway、callback stream、execution lifecycle policy、duplicate callback dedupe、callback status ordering MVP 已完成；下一步 store locking
+狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；Shioaji order custom field token mapping、SDK-shaped gateway、callback stream、execution lifecycle policy、duplicate callback dedupe、callback status ordering、execution sync store locking MVP 已完成；下一步 terminal-state policy / longer simulation smoke
 預設分支：`master`
 
 ## Phase 對照
@@ -747,7 +747,42 @@ Grill-me review：
 - 方向正確：這輪只補 ordering contract，仍不做真實登入、不送單，也不自動 mutation `open_positions`。
 - must-fix 已處理：`filled` 後到的 `submitted` 會被跳過，不會污染 callback event、broker trade 或 lifecycle decision。
 - 剩餘風險：`filled` 後的 `cancelled / rejected` 目前仍會保留，因為可能代表更複雜的 broker 狀態，需要下一輪用 manual review / terminal-state policy 補強。
-- 剩餘風險：JSON file store 仍沒有 atomic lock，多進程 callback 同時寫可能競態；下一步應優先補 store locking / atomic write。
+- 後續已補：execution sync store locking / atomic write 已處理單機多 writer 競態。
+
+### Execution Sync Store Locking MVP
+
+目前狀態：已完成 MVP。
+
+目標：避免多個 Shioaji callback writer 同時寫入 execution sync JSON store 時互相覆蓋，或讓讀取端看到半寫入 JSON。
+
+實際產出：
+
+- `FileExecutionSyncStore.lock_path`
+- `FileExecutionSyncStore._mutate_snapshot`
+- `FileExecutionSyncStore._exclusive_lock`
+- `record_result` 與 `record_callback_event` 改為在同一個 locked read-modify-write 區段內更新 snapshot。
+- `_write_snapshot` 改為同目錄 temp file + `os.replace` atomic replace。
+
+設計結果：
+
+- lock 檔路徑為 execution store path 加上 `.lock` suffix。
+- file lock 包住整個 read-modify-write，不只鎖寫入，避免兩個 writer 都從舊 snapshot 開始修改。
+- temp file 以 process id 與 uuid 命名，降低同 process 多 thread / 多 process 撞名風險。
+- 仍維持 JSON file store contract；尚未引入 DB-backed repository。
+
+驗證結果：
+
+- TDD red：新增 30 個 thread 同時寫 callback 的測試後，原本會出現 `JSONDecodeError` / lost write。
+- focused concurrency test：1 test OK。
+- full unittest discover：70 tests OK。
+- compile check：OK。
+
+Grill-me review：
+
+- 方向正確：先補本階段 JSON store 的最小可用並發保護，沒有過早引入 DB / queue / event bus。
+- must-fix 已處理：callback / result 的 read-modify-write 都進 lock，JSON 寫入也改成 atomic replace。
+- 剩餘風險：file lock 是單機單檔保護；若之後變成多台機器、NFS 或真正高頻 callback，應升級為 DB-backed repository 或 append-only event log。
+- 剩餘風險：目前沒有 terminal-state policy；`filled` 後的 `cancelled / rejected` 還需要下一輪策略化。
 
 ## 5. Working Commands
 

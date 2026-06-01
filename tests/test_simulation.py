@@ -1,6 +1,7 @@
 import unittest
 import json
 import tempfile
+import threading
 from contextlib import redirect_stdout
 from argparse import Namespace
 from io import StringIO
@@ -699,6 +700,50 @@ class SimulationAdapterTest(unittest.TestCase):
                 ],
                 "filled",
             )
+
+    def test_file_execution_sync_store_preserves_concurrent_callback_writes(self):
+        callback_count = 30
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "execution-sync.json"
+            start = threading.Barrier(callback_count)
+            errors: list[Exception] = []
+
+            def record(index: int) -> None:
+                event = ExecutionCallbackEvent(
+                    stat="OrderState.Filled",
+                    broker_order_id=f"broker-{index}",
+                    idempotency_key=f"2026-05-28:mvp:2330:setup-{index}:buy",
+                    trading_date="2026-05-28",
+                    symbol="2330",
+                    side="buy",
+                    quantity=1000,
+                    price=900.0 + index,
+                    normalized_status="filled",
+                    raw_status="Filled",
+                    review_reason="",
+                    raw={"source": "unit-test", "index": index},
+                )
+                try:
+                    start.wait()
+                    FileExecutionSyncStore(store_path).record_callback_event(event)
+                except Exception as error:
+                    errors.append(error)
+
+            threads = [
+                threading.Thread(target=record, args=(index,))
+                for index in range(callback_count)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            snapshot = FileExecutionSyncStore(store_path).load_snapshot()
+
+            self.assertEqual(errors, [])
+            self.assertEqual(len(snapshot["callback_events"]), callback_count)
+            self.assertEqual(len(snapshot["broker_trades"]), callback_count)
+            self.assertEqual(len(snapshot["lifecycle_decisions"]), callback_count)
 
     def test_cli_ingest_callback_normalizes_and_records_store(self):
         with tempfile.TemporaryDirectory() as tmp:
