@@ -172,6 +172,8 @@ Restart sync report：
 
 `tw-daytrade simulate ingest-callback` 讀取 `{stat, msg}` JSON，轉成標準 callback event，並寫入 execution sync store。
 
+`tw-daytrade simulate callback-smoke` 讀取 callback sequence JSON，依序 normalize 並寫入 execution sync store，輸出 accepted / skipped summary、逐筆 normalized event 摘要與 ordering issues。這個 smoke 用來驗證多事件序列，不登入 Shioaji、不送單。
+
 ## Shioaji Order Request Contract
 
 Shioaji order request adapter 目前只定義 dry-run / fake gateway contract，不匯入 SDK、不登入真實帳號、不送出真實委託。

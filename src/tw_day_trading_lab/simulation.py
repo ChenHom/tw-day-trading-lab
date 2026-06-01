@@ -961,6 +961,62 @@ def normalize_shioaji_order_callback(
     )
 
 
+def run_callback_sequence_smoke(
+    *,
+    trading_date: str,
+    callbacks: list[dict[str, Any]],
+    store: FileExecutionSyncStore,
+) -> dict[str, Any]:
+    """Replay a callback sequence through the execution sync store contract."""
+    events: list[dict[str, Any]] = []
+    accepted_count = 0
+    skipped_count = 0
+
+    for index, callback in enumerate(callbacks, start=1):
+        if not isinstance(callback, dict):
+            raise ValueError("callback sequence items must be JSON objects")
+        snapshot = store.load_snapshot()
+        event = normalize_shioaji_order_callback(
+            callback.get("stat", ""),
+            callback.get("msg", {}),
+            trading_date=trading_date,
+            custom_field_map=snapshot["custom_field_map"],
+        )
+        accepted = store.record_callback_event(event)
+        if accepted:
+            accepted_count += 1
+        else:
+            skipped_count += 1
+        events.append(
+            {
+                "index": index,
+                "accepted": accepted,
+                "normalized_status": event.normalized_status,
+                "broker_order_id": event.broker_order_id,
+                "idempotency_key": event.idempotency_key,
+                "review_reason": event.review_reason,
+            }
+        )
+
+    final_snapshot = store.load_snapshot()
+    return {
+        "trading_date": trading_date,
+        "summary": {
+            "total": len(callbacks),
+            "accepted": accepted_count,
+            "skipped": skipped_count,
+        },
+        "events": events,
+        "ordering_issues": final_snapshot["callback_ordering_issues"],
+        "store_summary": {
+            "callback_events": len(final_snapshot["callback_events"]),
+            "broker_trades": len(final_snapshot["broker_trades"]),
+            "lifecycle_decisions": len(final_snapshot["lifecycle_decisions"]),
+            "ordering_issues": len(final_snapshot["callback_ordering_issues"]),
+        },
+    }
+
+
 def _empty_execution_sync_snapshot() -> dict[str, Any]:
     return {
         "broker_trades": [],

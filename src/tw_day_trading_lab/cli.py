@@ -36,6 +36,7 @@ from .simulation import (
     normalize_shioaji_order_callback,
     render_simulation_markdown,
     restore_ledger_from_positions,
+    run_callback_sequence_smoke,
 )
 from .storage import (
     DatabaseStorage,
@@ -426,6 +427,23 @@ def cmd_simulate_ingest_callback(args: argparse.Namespace) -> None:
     print(output)
 
 
+def cmd_simulate_callback_smoke(args: argparse.Namespace) -> None:
+    """Replay a sequence of callback payloads through the execution sync store."""
+    raw = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    callbacks = raw.get("callbacks", raw) if isinstance(raw, dict) else raw
+    if not isinstance(callbacks, list):
+        raise ValueError("callback smoke input must be a JSON list or contain callbacks")
+    store = FileExecutionSyncStore(Path(args.store))
+    report = run_callback_sequence_smoke(
+        trading_date=args.date,
+        callbacks=callbacks,
+        store=store,
+    )
+    output = Path(args.output) if args.output else Path("reports") / f"{args.date}-callback-smoke.json"
+    write_json(output, report)
+    print(output)
+
+
 def cmd_ingest_finmind(args: argparse.Namespace) -> None:
     """Run FinMind nightly ingestion with ledger-backed raw cache."""
     token = args.token or os.getenv("FINMIND_TOKEN")
@@ -569,6 +587,12 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_callback.add_argument("--store", required=True)
     ingest_callback.add_argument("--output")
     ingest_callback.set_defaults(func=cmd_simulate_ingest_callback)
+    callback_smoke = simulate_sub.add_parser("callback-smoke")
+    callback_smoke.add_argument("--date", required=True)
+    callback_smoke.add_argument("--input", required=True)
+    callback_smoke.add_argument("--store", required=True)
+    callback_smoke.add_argument("--output")
+    callback_smoke.set_defaults(func=cmd_simulate_callback_smoke)
 
     ingest = subparsers.add_parser("ingest")
     ingest_sub = ingest.add_subparsers(required=True)

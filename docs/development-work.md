@@ -1,7 +1,7 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；Shioaji order custom field token mapping、SDK-shaped gateway、callback stream、execution lifecycle policy、duplicate callback dedupe、callback status ordering、execution sync store locking、terminal-state policy MVP 已完成；下一步 longer simulation smoke
+狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；Shioaji order custom field token mapping、SDK-shaped gateway、callback stream、execution lifecycle policy、duplicate callback dedupe、callback status ordering、execution sync store locking、terminal-state policy、longer callback smoke MVP 已完成；下一步 gated Shioaji simulation smoke
 預設分支：`master`
 
 ## Phase 對照
@@ -817,6 +817,40 @@ Grill-me review：
 - must-fix 已處理：`filled` 後到的 `cancelled` 不再新增 broker trade 或 lifecycle decision。
 - 剩餘風險：目前只處理 callback status contract；真正長時間 simulation smoke 還沒建立，下一步需要用 fake stream 或 gated simulation smoke 驗證多事件序列。
 
+### Longer Callback Smoke MVP
+
+目前狀態：已完成 MVP。
+
+目標：用一串 callback payload 驗證 execution sync store 的多事件序列，不只測單筆 callback。這是進入 gated Shioaji simulation smoke 前的本地安全檢查。
+
+實際產出：
+
+- `run_callback_sequence_smoke`
+- CLI：`tw-daytrade simulate callback-smoke`
+- sample：`examples/shioaji-callback-sequence.sample.json`
+
+設計結果：
+
+- callback smoke input 可為 JSON list，或 `{ "callbacks": [...] }`。
+- 每筆 callback 會依目前 store 的 `custom_field_map` normalize，再呼叫 `record_callback_event`。
+- report 會輸出 summary：`total / accepted / skipped`。
+- report 會輸出逐筆 event 摘要與 `callback_ordering_issues`。
+- sample sequence 覆蓋 `submitted -> filled -> stale submitted -> terminal conflict cancelled`。
+
+驗證結果：
+
+- TDD red：新增 sequence smoke 測試後，因缺 `run_callback_sequence_smoke` 失敗。
+- focused smoke tests：2 tests OK。
+- full unittest discover：73 tests OK。
+- compile check：OK。
+- CLI smoke：sample sequence 4 events，accepted 2、skipped 2，ordering issues 為 `stale_callback_status` 與 `terminal_state_conflict`。
+
+Grill-me review：
+
+- 方向正確：先用本地 callback sequence smoke 覆蓋多事件順序，不直接跳真實 Shioaji smoke。
+- must-fix 已處理：smoke report 會同時揭露 accepted / skipped 與 ordering issues，方便判斷終態衝突是否被擋下。
+- 剩餘風險：尚未跑真正 Shioaji simulation callback；下一步必須保持人工 gate，且只允許 `simulation=True`。
+
 ## 5. Working Commands
 
 ```bash
@@ -834,6 +868,7 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli candidates build-from-raw --dat
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli report daily --date 2026-05-28 --input reports/2026-05-28-candidates-from-raw.json --format md --output reports/2026-05-28-daily-from-raw.md
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli replay samples --date 2026-03-25 --input reports/old-log-sample-samples.json --output reports/2026-03-25-replay.json --report-output reports/2026-03-25-replay.md --cost-r 0.1
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate run --date 2026-05-28 --input examples/simulation-plan.sample.json --output reports/2026-05-28-simulation.json --report-output reports/2026-05-28-simulation.md
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate callback-smoke --date 2026-05-28 --input examples/shioaji-callback-sequence.sample.json --store reports/2026-05-28-callback-smoke-store.json --output reports/2026-05-28-callback-smoke.json
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli report close --date 2026-05-28 --candidates reports/2026-05-28-candidates-from-raw.json --replay reports/2026-03-25-replay.json --simulation reports/2026-05-28-simulation.json --output reports/2026-05-28-close.md --telegram-summary-output reports/2026-05-28-telegram-summary.txt
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli notify telegram --date 2026-05-28 --report reports/2026-05-28-close.md --dry-run
 ```

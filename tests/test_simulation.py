@@ -8,6 +8,7 @@ from io import StringIO
 from pathlib import Path
 
 from tw_day_trading_lab.cli import (
+    cmd_simulate_callback_smoke,
     cmd_simulate_ingest_callback,
     cmd_simulate_restart_sync,
     cmd_simulate_run,
@@ -37,6 +38,7 @@ from tw_day_trading_lab.simulation import (
     reconcile_broker_trades,
     render_simulation_markdown,
     restore_ledger_from_positions,
+    run_callback_sequence_smoke,
 )
 
 
@@ -897,6 +899,145 @@ class SimulationAdapterTest(unittest.TestCase):
             event = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(event["idempotency_key"], result.order_intent.idempotency_key)
             self.assertEqual(event["review_reason"], "")
+
+    def test_callback_sequence_smoke_reports_accepted_and_skipped_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = Path(tmp) / "execution-sync.json"
+            store = FileExecutionSyncStore(store_path)
+            broker = DryRunSimulationBroker()
+            adapter = ShioajiSimulationAdapter(broker=broker, ledger=PaperLedger())
+            result = adapter.execute(
+                self.make_signal(),
+                RiskDecision(approved=True, reason="risk_ok", quantity=1000),
+            )
+            store.record_result(result)
+            short_custom_field = build_shioaji_custom_field(result.order_intent.idempotency_key)
+            callbacks = [
+                {
+                    "stat": "OrderState.Submitted",
+                    "msg": {
+                        "order": {
+                            "id": "broker-1",
+                            "custom_field": short_custom_field,
+                            "action": "Buy",
+                            "price": 901.0,
+                            "quantity": 1000,
+                        },
+                        "contract": {"code": "2330"},
+                        "status": {"status": "Submitted"},
+                    },
+                },
+                {
+                    "stat": "OrderState.Filled",
+                    "msg": {
+                        "order": {
+                            "id": "broker-1",
+                            "custom_field": short_custom_field,
+                            "action": "Buy",
+                            "price": 900.0,
+                            "quantity": 1000,
+                        },
+                        "contract": {"code": "2330"},
+                        "status": {"status": "Filled"},
+                    },
+                },
+                {
+                    "stat": "OrderState.Submitted",
+                    "msg": {
+                        "order": {
+                            "id": "broker-1",
+                            "custom_field": short_custom_field,
+                            "action": "Buy",
+                            "price": 900.0,
+                            "quantity": 1000,
+                        },
+                        "contract": {"code": "2330"},
+                        "status": {"status": "Submitted"},
+                    },
+                },
+                {
+                    "stat": "OrderState.Cancelled",
+                    "msg": {
+                        "order": {
+                            "id": "broker-1",
+                            "custom_field": short_custom_field,
+                            "action": "Buy",
+                            "price": 900.0,
+                            "quantity": 1000,
+                        },
+                        "contract": {"code": "2330"},
+                        "status": {"status": "Cancelled"},
+                    },
+                },
+            ]
+
+            report = run_callback_sequence_smoke(
+                trading_date="2026-05-28",
+                callbacks=callbacks,
+                store=store,
+            )
+
+            self.assertEqual(report["summary"]["total"], 4)
+            self.assertEqual(report["summary"]["accepted"], 2)
+            self.assertEqual(report["summary"]["skipped"], 2)
+            self.assertEqual(
+                [event["accepted"] for event in report["events"]],
+                [True, True, False, False],
+            )
+            self.assertEqual(
+                [issue["reason"] for issue in report["ordering_issues"]],
+                ["stale_callback_status", "terminal_state_conflict"],
+            )
+            self.assertEqual(report["store_summary"]["callback_events"], 2)
+
+    def test_cli_callback_smoke_writes_sequence_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            input_path = tmpdir / "callback-smoke.json"
+            output_path = tmpdir / "callback-smoke-output.json"
+            store_path = tmpdir / "execution-sync.json"
+            store = FileExecutionSyncStore(store_path)
+            broker = DryRunSimulationBroker()
+            adapter = ShioajiSimulationAdapter(broker=broker, ledger=PaperLedger())
+            result = adapter.execute(
+                self.make_signal(),
+                RiskDecision(approved=True, reason="risk_ok", quantity=1000),
+            )
+            store.record_result(result)
+            short_custom_field = build_shioaji_custom_field(result.order_intent.idempotency_key)
+            callback = {
+                "stat": "OrderState.Filled",
+                "msg": {
+                    "order": {
+                        "id": "broker-1",
+                        "custom_field": short_custom_field,
+                        "action": "Buy",
+                        "price": 900.0,
+                        "quantity": 1000,
+                    },
+                    "contract": {"code": "2330"},
+                    "status": {"status": "Filled"},
+                },
+            }
+            input_path.write_text(
+                json.dumps({"callbacks": [callback]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            with redirect_stdout(StringIO()):
+                cmd_simulate_callback_smoke(
+                    Namespace(
+                        date="2026-05-28",
+                        input=str(input_path),
+                        store=str(store_path),
+                        output=str(output_path),
+                    )
+                )
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["summary"]["total"], 1)
+            self.assertEqual(payload["summary"]["accepted"], 1)
+            self.assertEqual(payload["store_summary"]["callback_events"], 1)
 
     def test_shioaji_callback_stream_records_events_from_registered_callback(self):
         class FakeCallbackApi:

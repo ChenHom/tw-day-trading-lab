@@ -83,6 +83,11 @@ python3 -m tw_day_trading_lab.cli simulate ingest-callback \
   --input examples/shioaji-callback.sample.json \
   --store reports/2026-05-28-execution-sync.json \
   --output reports/2026-05-28-callback-event.json
+python3 -m tw_day_trading_lab.cli simulate callback-smoke \
+  --date 2026-05-28 \
+  --input examples/shioaji-callback-sequence.sample.json \
+  --store reports/2026-05-28-callback-smoke-store.json \
+  --output reports/2026-05-28-callback-smoke.json
 python3 -m tw_day_trading_lab.cli report close \
   --date 2026-05-28 \
   --candidates reports/2026-05-28-candidates-from-raw.json \
@@ -161,7 +166,8 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 - Callback status ordering MVP 已完成：同一 broker order 若已記錄較後段狀態，後到的舊狀態會寫入 ordering issue 並跳過，不污染 callback event / broker trade / lifecycle decision。
 - Execution sync store locking MVP 已完成：callback / result 寫入會用 file lock 包住 read-modify-write，並以 atomic replace 更新 JSON store，避免並發 callback 寫入造成 JSONDecodeError 或 lost write。
 - Terminal-state policy MVP 已完成：同一 broker order 已進 `filled / cancelled / rejected` 後，若又收到不同終態，會寫入 `terminal_state_conflict` 並跳過，不當成正常 lifecycle progression。
-- 下一步是 longer simulation smoke。
+- Longer callback smoke MVP 已完成：`simulate callback-smoke` 可把一串 callback payload 重播進 execution sync store，統計 accepted / skipped 與 ordering issues。
+- 下一步是 gated Shioaji simulation smoke。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。
 - P6 已支援 `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition` dry-run，simulation sample 與 replay expectancy 分開，重送同一 intent 不會重複開倉。
