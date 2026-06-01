@@ -21,6 +21,28 @@
 
 `P4b Candidate Engine Data Enrichment` 是 P4 的資料強化 sprint，不是獨立大 phase。
 
+## Phase Close-out Rule
+
+每個 phase / sprint 完成後，必須固定執行 grill-me review，再收尾。這不是可選項。
+
+流程：
+
+1. 整理本 phase 實作範圍、測試結果、文件更新與 commit。
+2. 用 grill-me review 檢查：
+   - 實作是否偏離原始目標。
+   - 文件是否和實際行為一致。
+   - 驗證是否只覆蓋 happy path。
+   - 是否有把 simulation / replay / live execution 混在一起。
+   - 下一步是否應先 hardening，而不是直接擴張功能。
+3. 將 grill-me 結論寫回本文件對應 phase：
+   - verdict / 方向判斷。
+   - must-fix 風險。
+   - should-fix 優化。
+   - next sprint 建議。
+4. 必要時同步 `docs/mvp-roadmap.md`、README 與 memory。
+
+目的：避免 phase 看起來完成，但實際上只完成「產出」，沒有完成「可營運、可排錯、可接手」。
+
 ## 0. Grill-me 結論
 
 目前沒有更多阻塞型問題需要先問。已決定：
@@ -427,6 +449,30 @@ Grill-me review：
 - 剩餘風險 1：close report 目前只顯示 simulation status summary，沒有列出逐筆 `needs_review` 的 review reason；execution sync 前應補。
 - 剩餘風險 2：Telegram dry-run 摘要目前取 report 前 12 個非空行，可能截掉 replay / simulation 重點；正式 notification 前應改成專用 summary renderer。
 - 剩餘風險 3：CLI smoke 覆蓋正常檔案路徑，尚未覆蓋 replay / simulation JSON 欄位缺失或壞檔格式；若要進入日常排程，需補錯誤訊息與測試。
+
+Reporting hardening 的主要功能：
+
+- 將報告從「有產出」提升成「可值班、可排錯、可接手」。
+- 讓每日 report 不只回答總數，而能指出：
+  - 哪些資料可相信。
+  - 哪些樣本不可納入 expectancy。
+  - 哪些 broker / ledger / simulation 狀態需要人工檢查。
+  - Telegram 摘要是否足以讓人快速判斷要不要介入。
+
+如何幫助：
+
+- 減少每天手動打開多份 JSON / Markdown 比對的成本。
+- 避免 `needs_review` 只有數量、沒有原因，導致隔天排錯困難。
+- 在接 Shioaji callback / restart sync 前，先建立一致的異常揭露格式。
+- 讓 future operator 可以先看 Telegram summary，再決定是否打開完整 close report。
+
+未來延伸：
+
+- 短期：close report 列出逐筆 `needs_review` reason；新增專用 Telegram summary renderer；補壞檔 / 缺欄位測試。
+- 中期：產生 daily health score，例如 candidate data completeness、replay confidence、simulation integrity。
+- 中期：將 close report summary persist 到 TiDB，追蹤每天資料品質與 execution-chain 健康度。
+- 後期：Telegram summary 加 action hints，例如「資料缺法人，候選降權」、「broker / ledger mismatch，暫停下一步模擬」。
+- 後期：接 PWA / dashboard，讓 close report 成為 trading ops control panel，而不只是文字輸出。
 
 推薦下一個 sprint：execution sync。
 

@@ -2,6 +2,10 @@
 
 本文件的 Phase 命名必須和 `docs/development-work.md` 的 P0-P6 保持一致。若實作狀態改變，優先同步這兩份既有文件，不另開新的 phase 狀態文件。
 
+## Phase Review Rule
+
+每個 phase / sprint 完成後，必須執行 grill-me review，確認實作方向、驗證範圍與文件狀態沒有偏離。review 結論必須寫回 `docs/development-work.md` 對應 phase；若 roadmap 狀態改變，才同步更新本文件。
+
 ## P0: Repo Bootstrap
 
 目前狀態：已完成。
@@ -87,3 +91,4 @@
 - 前一日候選驗證。
 - valid / excluded / needs_review 樣本統計：已透過 replay 與 close report 顯示。
 - simulation status summary：已完成，`needs_review` 會明確列出，且 simulation 不納入 replay expectancy。
+- 下一步 hardening：逐筆 `needs_review` reason、專用 Telegram summary renderer、壞檔 / 缺欄位測試。
