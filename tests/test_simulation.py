@@ -41,6 +41,7 @@ from tw_day_trading_lab.simulation import (
     restore_ledger_from_positions,
     run_callback_sequence_smoke,
     run_gated_shioaji_callback_stream_smoke,
+    run_gated_shioaji_cancel_smoke,
     run_gated_shioaji_order_request_smoke,
     run_gated_shioaji_simulation_login_smoke,
 )
@@ -1196,6 +1197,7 @@ class SimulationAdapterTest(unittest.TestCase):
                 signal=self.make_signal(),
                 decision=RiskDecision(approved=True, reason="risk_ok", quantity=1000, price=900.0),
                 enabled=True,
+                current_time="09:30",
             )
 
             snapshot = store.load_snapshot()
@@ -1207,6 +1209,100 @@ class SimulationAdapterTest(unittest.TestCase):
             self.assertEqual(gateway.requests[0].custom_field, build_shioaji_custom_field(report["result"]["idempotency_key"]))
             self.assertEqual(len(snapshot["broker_trades"]), 1)
             self.assertEqual(len(snapshot["open_positions"]), 1)
+
+    def test_gated_order_request_smoke_rejects_outside_regular_session(self):
+        class FakeGateway:
+            def login(self):
+                raise AssertionError("login must not be called")
+
+            def place_order(self, session, request):
+                raise AssertionError("place_order must not be called")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_gated_shioaji_order_request_smoke(
+                gateway=FakeGateway(),
+                store=FileExecutionSyncStore(Path(tmp) / "execution-sync.json"),
+                signal=self.make_signal(),
+                decision=RiskDecision(approved=True, reason="risk_ok", quantity=1000, price=900.0),
+                enabled=True,
+                current_time="13:31",
+            )
+
+            self.assertEqual(report["status"], "blocked")
+            self.assertEqual(report["review_reason"], "outside_regular_session")
+
+    def test_gated_order_request_smoke_can_allow_outside_session_for_fake_only(self):
+        class FakeGateway:
+            def login(self):
+                return {"mode": "simulation", "session_id": "fake-session"}
+
+            def place_order(self, session, request):
+                return {
+                    "broker_order_id": "broker-1",
+                    "idempotency_key": request.idempotency_key,
+                    "status": "Filled",
+                    "raw_status": "Filled",
+                }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_gated_shioaji_order_request_smoke(
+                gateway=FakeGateway(),
+                store=FileExecutionSyncStore(Path(tmp) / "execution-sync.json"),
+                signal=self.make_signal(),
+                decision=RiskDecision(approved=True, reason="risk_ok", quantity=1000, price=900.0),
+                enabled=True,
+                current_time="13:31",
+                allow_outside_session=True,
+            )
+
+            self.assertEqual(report["status"], "ok")
+            self.assertTrue(report["checks"]["allow_outside_session"])
+
+    def test_gated_cancel_smoke_blocks_without_gate_or_order_id(self):
+        class FakeCancelGateway:
+            def login(self):
+                raise AssertionError("login must not be called")
+
+            def cancel_order(self, session, broker_order_id):
+                raise AssertionError("cancel_order must not be called")
+
+        blocked = run_gated_shioaji_cancel_smoke(
+            gateway=FakeCancelGateway(),
+            broker_order_id="broker-1",
+            enabled=False,
+        )
+        missing = run_gated_shioaji_cancel_smoke(
+            gateway=FakeCancelGateway(),
+            broker_order_id="",
+            enabled=True,
+        )
+
+        self.assertEqual(blocked["review_reason"], "enable_cancel_smoke_required")
+        self.assertEqual(missing["review_reason"], "broker_order_id_required")
+
+    def test_gated_cancel_smoke_calls_gateway_cancel(self):
+        class FakeCancelGateway:
+            def __init__(self) -> None:
+                self.cancelled: list[str] = []
+
+            def login(self):
+                return {"mode": "simulation", "session_id": "fake-session"}
+
+            def cancel_order(self, session, broker_order_id):
+                self.cancelled.append(broker_order_id)
+                return {"broker_order_id": broker_order_id, "status": "cancel_requested"}
+
+        gateway = FakeCancelGateway()
+
+        report = run_gated_shioaji_cancel_smoke(
+            gateway=gateway,
+            broker_order_id="broker-1",
+            enabled=True,
+        )
+
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["result"]["status"], "cancel_requested")
+        self.assertEqual(gateway.cancelled, ["broker-1"])
 
     def test_cli_shioaji_smoke_defaults_to_blocked_report_without_import_or_login(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1224,14 +1320,18 @@ class SimulationAdapterTest(unittest.TestCase):
                         enable_login_smoke=False,
                         enable_callback_stream=False,
                         enable_order_smoke=False,
+                        enable_cancel_smoke=False,
+                        cancel_broker_order_id=None,
                         max_order_quantity=1000,
+                        current_time=None,
+                        allow_outside_session=False,
                         fetch_contract=False,
                         subscribe_trade=False,
                     )
                 )
 
             payload = json.loads(output_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["summary"]["blocked"], 3)
+            self.assertEqual(payload["summary"]["blocked"], 4)
             self.assertEqual(payload["reports"][0]["review_reason"], "enable_login_smoke_required")
             self.assertEqual(
                 payload["reports"][1]["review_reason"],
@@ -1240,6 +1340,10 @@ class SimulationAdapterTest(unittest.TestCase):
             self.assertEqual(
                 payload["reports"][2]["review_reason"],
                 "enable_order_smoke_required",
+            )
+            self.assertEqual(
+                payload["reports"][3]["review_reason"],
+                "enable_cancel_smoke_required",
             )
 
     def test_shioaji_callback_stream_records_events_from_registered_callback(self):

@@ -39,6 +39,7 @@ from .simulation import (
     restore_ledger_from_positions,
     run_callback_sequence_smoke,
     run_gated_shioaji_callback_stream_smoke,
+    run_gated_shioaji_cancel_smoke,
     run_gated_shioaji_order_request_smoke,
     run_gated_shioaji_simulation_login_smoke,
 )
@@ -569,6 +570,8 @@ def cmd_simulate_shioaji_smoke(args: argparse.Namespace) -> None:
                         decision=decision,
                         enabled=True,
                         max_quantity=args.max_order_quantity,
+                        current_time=args.current_time,
+                        allow_outside_session=args.allow_outside_session,
                     )
                 )
     else:
@@ -577,6 +580,42 @@ def cmd_simulate_shioaji_smoke(args: argparse.Namespace) -> None:
                 "status": "blocked",
                 "mode": "shioaji_order_request",
                 "review_reason": "enable_order_smoke_required",
+            }
+        )
+
+    if args.enable_cancel_smoke:
+        login_ok = any(
+            report.get("mode") == "shioaji_simulation_login" and report.get("status") == "ok"
+            for report in reports
+        )
+        if not login_ok or api is None or not api_key or not secret_key:
+            reports.append(
+                {
+                    "status": "blocked",
+                    "mode": "shioaji_cancel_order",
+                    "review_reason": "successful_login_smoke_required",
+                }
+            )
+        else:
+            reports.append(
+                run_gated_shioaji_cancel_smoke(
+                    gateway=ShioajiSdkSimulationGateway(
+                        api=api,
+                        api_key=api_key,
+                        secret_key=secret_key,
+                        fetch_contract=args.fetch_contract,
+                        subscribe_trade=args.subscribe_trade,
+                    ),
+                    broker_order_id=args.cancel_broker_order_id or "",
+                    enabled=True,
+                )
+            )
+    else:
+        reports.append(
+            {
+                "status": "blocked",
+                "mode": "shioaji_cancel_order",
+                "review_reason": "enable_cancel_smoke_required",
             }
         )
 
@@ -753,7 +792,11 @@ def build_parser() -> argparse.ArgumentParser:
     shioaji_smoke.add_argument("--enable-login-smoke", action="store_true")
     shioaji_smoke.add_argument("--enable-callback-stream", action="store_true")
     shioaji_smoke.add_argument("--enable-order-smoke", action="store_true")
+    shioaji_smoke.add_argument("--enable-cancel-smoke", action="store_true")
+    shioaji_smoke.add_argument("--cancel-broker-order-id")
     shioaji_smoke.add_argument("--max-order-quantity", type=int, default=1000)
+    shioaji_smoke.add_argument("--current-time")
+    shioaji_smoke.add_argument("--allow-outside-session", action="store_true")
     shioaji_smoke.add_argument("--fetch-contract", action="store_true")
     shioaji_smoke.add_argument("--subscribe-trade", action="store_true")
     shioaji_smoke.set_defaults(func=cmd_simulate_shioaji_smoke)

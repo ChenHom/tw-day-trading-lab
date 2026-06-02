@@ -9,6 +9,7 @@ import uuid
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
+from datetime import datetime, time
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -213,6 +214,18 @@ class ShioajiOrderGateway(Protocol):
         """Submit a Shioaji-shaped request and return the raw order response."""
 
 
+class ShioajiCancelGateway(Protocol):
+    def login(self) -> dict[str, str]:
+        """Return a gateway-owned Shioaji simulation session."""
+
+    def cancel_order(
+        self,
+        session: dict[str, str],
+        broker_order_id: str,
+    ) -> dict[str, Any]:
+        """Cancel a Shioaji simulation order and return the raw cancel response."""
+
+
 class DryRunSimulationBroker:
     def __init__(self, raw_status: str = "Filled") -> None:
         self.raw_status = raw_status
@@ -339,6 +352,20 @@ class ShioajiSdkSimulationGateway:
         )
         raw_trade = self._api.place_order(contract, order)
         return _normalize_shioaji_place_order_response(raw_trade, request)
+
+    def cancel_order(
+        self,
+        session: dict[str, str],
+        broker_order_id: str,
+    ) -> dict[str, Any]:
+        if not hasattr(self._api, "cancel_order"):
+            raise ValueError("Shioaji API object does not expose cancel_order")
+        raw_cancel = self._api.cancel_order(broker_order_id)
+        return {
+            "broker_order_id": broker_order_id,
+            "status": str(_first_non_empty(_to_plain_mapping(raw_cancel).get("status"), "cancel_requested")),
+            "raw": _to_plain_mapping(raw_cancel),
+        }
 
     def _resolve_sdk_value(self, enum_name: str, member_name: str) -> Any:
         try:
@@ -1104,6 +1131,12 @@ def run_gated_shioaji_callback_stream_smoke(
     return report
 
 
+def is_regular_day_order_smoke_time(value: str | None = None) -> bool:
+    """Return whether a smoke order is inside the regular intraday order window."""
+    current = _parse_hhmm(value) if value else datetime.now().time()
+    return time(9, 0) <= current <= time(13, 20)
+
+
 def run_gated_shioaji_order_request_smoke(
     *,
     gateway: ShioajiOrderGateway,
@@ -1112,10 +1145,13 @@ def run_gated_shioaji_order_request_smoke(
     decision: RiskDecision,
     enabled: bool,
     max_quantity: int = 1000,
+    current_time: str | None = None,
+    allow_outside_session: bool = False,
 ) -> dict[str, Any]:
     """Place one explicitly gated Shioaji simulation order and reconcile persisted state."""
     quantity = decision.quantity if decision.quantity is not None else signal.quantity
     price = decision.price if decision.price is not None else signal.price
+    session_allowed = allow_outside_session or is_regular_day_order_smoke_time(current_time)
     report: dict[str, Any] = {
         "status": "blocked",
         "mode": "shioaji_order_request",
@@ -1129,6 +1165,8 @@ def run_gated_shioaji_order_request_smoke(
             "quantity": quantity,
             "max_quantity": max_quantity,
             "quantity_within_limit": 0 < quantity <= max_quantity,
+            "regular_session_allowed": session_allowed,
+            "allow_outside_session": allow_outside_session,
         },
         "side_effects": [],
         "review_reason": "",
@@ -1144,6 +1182,9 @@ def run_gated_shioaji_order_request_smoke(
         return report
     if quantity <= 0 or quantity > max_quantity:
         report["review_reason"] = "quantity_out_of_smoke_limit"
+        return report
+    if not session_allowed:
+        report["review_reason"] = "outside_regular_session"
         return report
 
     adapter = ShioajiSimulationAdapter(
@@ -1181,6 +1222,41 @@ def run_gated_shioaji_order_request_smoke(
     return report
 
 
+def run_gated_shioaji_cancel_smoke(
+    *,
+    gateway: ShioajiCancelGateway,
+    broker_order_id: str,
+    enabled: bool,
+) -> dict[str, Any]:
+    """Cancel one explicitly gated Shioaji simulation order."""
+    report: dict[str, Any] = {
+        "status": "blocked",
+        "mode": "shioaji_cancel_order",
+        "checks": {
+            "gate_enabled": enabled,
+            "broker_order_id_present": bool(broker_order_id),
+        },
+        "side_effects": [],
+        "review_reason": "",
+    }
+    if not enabled:
+        report["review_reason"] = "enable_cancel_smoke_required"
+        return report
+    if not broker_order_id:
+        report["review_reason"] = "broker_order_id_required"
+        return report
+
+    session = gateway.login()
+    response = gateway.cancel_order(session, broker_order_id)
+    report["status"] = "ok"
+    report["side_effects"] = ["login", "cancel_order"]
+    report["result"] = {
+        "broker_order_id": str(response.get("broker_order_id") or broker_order_id),
+        "status": str(response.get("status") or ""),
+    }
+    return report
+
+
 def _empty_execution_sync_snapshot() -> dict[str, Any]:
     return {
         "broker_trades": [],
@@ -1208,6 +1284,10 @@ def _first_non_empty(*values: Any) -> Any:
         if value not in {None, ""}:
             return value
     return None
+
+
+def _parse_hhmm(value: str) -> time:
+    return datetime.strptime(value, "%H:%M").time()
 
 
 def _resolve_callback_idempotency_key(

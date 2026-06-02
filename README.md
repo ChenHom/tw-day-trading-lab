@@ -173,7 +173,9 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 - Gated Shioaji callback registration 實測已通：`set_order_callback` 可註冊，store 初始 callback / broker trade / lifecycle decision 皆為 0。
 - Gated Shioaji order request smoke guard 已完成：`--enable-order-smoke` 才允許送出一筆 simulation order；預設 blocked，且要求 risk approved、limit price、quantity 在 smoke limit 內。
 - Order smoke restart reconciliation 已完成：order smoke 會寫入 execution sync store，並立即跑 restart-sync summary，確認 broker trade / open position 是否 matched。
-- 下一步是真實 gated Shioaji simulation order request smoke；執行前仍需確認盤中 / 盤後限制與 cancel/retry 行為。
+- Order smoke regular-session gate 已完成：預設只允許 `09:00-13:20`，盤後需明確 `--allow-outside-session` 才可跑 smoke。
+- Cancel smoke guard 已完成：`--enable-cancel-smoke --cancel-broker-order-id ...` 才允許 cancel smoke；預設 blocked，缺 broker order id 會被擋。
+- 下一步是真實 gated Shioaji simulation order request smoke；執行前仍需確認測試委託價、盤中 / 盤後策略與真實 SDK cancel response shape。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。
 - P6 已支援 `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition` dry-run，simulation sample 與 replay expectancy 分開，重送同一 intent 不會重複開倉。

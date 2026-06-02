@@ -928,6 +928,42 @@ Grill-me review：
 - must-fix 已處理：無 gate 不 login / 不 place order；market order 被擋；超過 smoke quantity limit 會被擋；成功 fake order 後會檢查 restart-sync matched。
 - 剩餘風險：真正 simulation order 仍可能因盤中 / 盤後、契約載入、帳戶狀態、價格限制或 SDK response shape 不同而失敗；下一步實測前要先定義測試委託與取消 / retry 策略。
 
+### Order Smoke Session Gate / Cancel Guard MVP
+
+目前狀態：已完成 MVP，尚未跑真實 Shioaji order 或 cancel smoke。
+
+目標：補上真實 simulation order smoke 前最後兩個保護：盤中 / 盤後 time gate，以及 cancel smoke 的可測 gate。這輪仍以 fake gateway 測試，不自動對外送單或取消。
+
+實際產出：
+
+- `is_regular_day_order_smoke_time`
+- `run_gated_shioaji_cancel_smoke`
+- `ShioajiCancelGateway`
+- `ShioajiSdkSimulationGateway.cancel_order`
+- CLI：`--allow-outside-session`、`--current-time`、`--enable-cancel-smoke`、`--cancel-broker-order-id`
+
+設計結果：
+
+- order smoke 預設只允許 `09:00-13:20`。
+- `--allow-outside-session` 必須明確指定，盤後 / 非常規時段才可繼續 order smoke。
+- cancel smoke 預設 blocked。
+- cancel smoke 需要 `--enable-cancel-smoke` 與 `--cancel-broker-order-id`。
+- 預設 `simulate shioaji-smoke` 會輸出 login / callback / order / cancel 四個 blocked reports。
+
+驗證結果：
+
+- focused session gate / cancel guard tests：6 tests OK。
+- full unittest discover：84 tests OK。
+- compile check：OK。
+- diff check：OK。
+- CLI blocked smoke v3：summary total 4、ok 0、blocked 4。
+
+Grill-me review：
+
+- 方向正確：先補時段與取消 gate，不急著真實送 simulation order。
+- must-fix 已處理：盤後 order smoke 預設會擋；缺 cancel broker order id 不會進 gateway；fake cancel 可驗證 side effect 與 result shape。
+- 剩餘風險：`ShioajiSdkSimulationGateway.cancel_order` 目前只定義最小邊界，真實 SDK 可能需要 Trade object 而不是 broker order id；下一步實測時要確認 SDK response shape，再決定是否保存 raw trade handle 或建立 cancel mapping。
+
 ## 5. Working Commands
 
 ```bash
@@ -949,6 +985,7 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate callback-smoke --date 
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-smoke --date 2026-05-28 --output reports/2026-05-28-shioaji-smoke.json
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-smoke --date 2026-06-02 --enable-login-smoke --enable-callback-stream --store reports/2026-06-02-shioaji-callback-smoke-store.json --output reports/2026-06-02-shioaji-callback-stream-smoke.json
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-smoke --date 2026-06-02 --enable-login-smoke --enable-order-smoke --input examples/simulation-plan.sample.json --store reports/2026-06-02-shioaji-order-smoke-store.json --output reports/2026-06-02-shioaji-order-smoke.json --max-order-quantity 1000
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-smoke --date 2026-06-02 --enable-login-smoke --enable-order-smoke --input examples/simulation-plan.sample.json --store reports/2026-06-02-shioaji-order-smoke-store.json --output reports/2026-06-02-shioaji-order-smoke.json --max-order-quantity 1000 --allow-outside-session
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli report close --date 2026-05-28 --candidates reports/2026-05-28-candidates-from-raw.json --replay reports/2026-03-25-replay.json --simulation reports/2026-05-28-simulation.json --output reports/2026-05-28-close.md --telegram-summary-output reports/2026-05-28-telegram-summary.txt
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli notify telegram --date 2026-05-28 --report reports/2026-05-28-close.md --dry-run
 ```
