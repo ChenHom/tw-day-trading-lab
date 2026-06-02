@@ -1104,6 +1104,83 @@ def run_gated_shioaji_callback_stream_smoke(
     return report
 
 
+def run_gated_shioaji_order_request_smoke(
+    *,
+    gateway: ShioajiOrderGateway,
+    store: FileExecutionSyncStore,
+    signal: SignalIntent,
+    decision: RiskDecision,
+    enabled: bool,
+    max_quantity: int = 1000,
+) -> dict[str, Any]:
+    """Place one explicitly gated Shioaji simulation order and reconcile persisted state."""
+    quantity = decision.quantity if decision.quantity is not None else signal.quantity
+    price = decision.price if decision.price is not None else signal.price
+    report: dict[str, Any] = {
+        "status": "blocked",
+        "mode": "shioaji_order_request",
+        "trading_date": signal.trading_date,
+        "symbol": signal.symbol,
+        "checks": {
+            "gate_enabled": enabled,
+            "orders_allowed": enabled,
+            "risk_approved": decision.approved,
+            "limit_price_present": price is not None,
+            "quantity": quantity,
+            "max_quantity": max_quantity,
+            "quantity_within_limit": 0 < quantity <= max_quantity,
+        },
+        "side_effects": [],
+        "review_reason": "",
+    }
+    if not enabled:
+        report["review_reason"] = "enable_order_smoke_required"
+        return report
+    if not decision.approved:
+        report["review_reason"] = "risk_decision_not_approved"
+        return report
+    if price is None:
+        report["review_reason"] = "limit_price_required"
+        return report
+    if quantity <= 0 or quantity > max_quantity:
+        report["review_reason"] = "quantity_out_of_smoke_limit"
+        return report
+
+    adapter = ShioajiSimulationAdapter(
+        broker=ShioajiOrderRequestBroker(gateway),
+        ledger=PaperLedger(),
+    )
+    result = adapter.execute(signal, decision)
+    store.record_result(result)
+    snapshot = store.load_snapshot()
+    positions = ledger_positions_from_payload(snapshot["open_positions"])
+    restart_report = build_restart_sync_report(
+        broker_trades_from_payload(snapshot["broker_trades"]),
+        positions,
+        restore_ledger_from_positions(positions),
+    )
+    report["status"] = "ok" if result.status == "simulated" else "needs_review"
+    report["side_effects"] = ["login", "place_order"]
+    report["result"] = {
+        "status": result.status,
+        "idempotency_key": result.order_intent.idempotency_key if result.order_intent else "",
+        "broker_order_id": result.trade.broker_order_id if result.trade else "",
+        "broker_status": result.trade.status if result.trade else "",
+        "review_reason": result.review_reason,
+    }
+    report["store_summary"] = {
+        "broker_trades": len(snapshot["broker_trades"]),
+        "open_positions": len(snapshot["open_positions"]),
+        "results": len(snapshot["results"]),
+    }
+    report["restart_sync"] = {
+        "checked": restart_report["checked"],
+        "matched": restart_report["matched"],
+        "needs_review": restart_report["needs_review"],
+    }
+    return report
+
+
 def _empty_execution_sync_snapshot() -> dict[str, Any]:
     return {
         "broker_trades": [],

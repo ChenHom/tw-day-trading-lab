@@ -28,6 +28,7 @@ from .simulation import (
     FileExecutionSyncStore,
     RiskDecision,
     ShioajiSimulationAdapter,
+    ShioajiSdkSimulationGateway,
     SimulationResult,
     SignalIntent,
     broker_trades_from_payload,
@@ -38,6 +39,7 @@ from .simulation import (
     restore_ledger_from_positions,
     run_callback_sequence_smoke,
     run_gated_shioaji_callback_stream_smoke,
+    run_gated_shioaji_order_request_smoke,
     run_gated_shioaji_simulation_login_smoke,
 )
 from .storage import (
@@ -450,6 +452,8 @@ def cmd_simulate_shioaji_smoke(args: argparse.Namespace) -> None:
     """Run explicitly gated Shioaji simulation smoke checks."""
     reports: list[dict[str, object]] = []
     api = None
+    api_key = None
+    secret_key = None
     store = FileExecutionSyncStore(Path(args.store)) if args.store else None
 
     if args.enable_login_smoke:
@@ -507,6 +511,72 @@ def cmd_simulate_shioaji_smoke(args: argparse.Namespace) -> None:
                 "status": "blocked",
                 "mode": "shioaji_callback_stream",
                 "review_reason": "enable_callback_stream_required",
+            }
+        )
+
+    if args.enable_order_smoke:
+        login_ok = any(
+            report.get("mode") == "shioaji_simulation_login" and report.get("status") == "ok"
+            for report in reports
+        )
+        if not login_ok or api is None or not api_key or not secret_key:
+            reports.append(
+                {
+                    "status": "blocked",
+                    "mode": "shioaji_order_request",
+                    "review_reason": "successful_login_smoke_required",
+                }
+            )
+        elif store is None:
+            reports.append(
+                {
+                    "status": "blocked",
+                    "mode": "shioaji_order_request",
+                    "review_reason": "store_required",
+                }
+            )
+        elif not args.input:
+            reports.append(
+                {
+                    "status": "blocked",
+                    "mode": "shioaji_order_request",
+                    "review_reason": "input_plan_required",
+                }
+            )
+        else:
+            plan = load_simulation_plan(Path(args.input))
+            if not plan:
+                reports.append(
+                    {
+                        "status": "blocked",
+                        "mode": "shioaji_order_request",
+                        "review_reason": "input_plan_empty",
+                    }
+                )
+            else:
+                signal, decision = plan[0]
+                reports.append(
+                    run_gated_shioaji_order_request_smoke(
+                        gateway=ShioajiSdkSimulationGateway(
+                            api=api,
+                            api_key=api_key,
+                            secret_key=secret_key,
+                            fetch_contract=args.fetch_contract,
+                            subscribe_trade=args.subscribe_trade,
+                        ),
+                        store=store,
+                        signal=signal,
+                        decision=decision,
+                        enabled=True,
+                        max_quantity=args.max_order_quantity,
+                    )
+                )
+    else:
+        reports.append(
+            {
+                "status": "blocked",
+                "mode": "shioaji_order_request",
+                "review_reason": "enable_order_smoke_required",
             }
         )
 
@@ -677,10 +747,13 @@ def build_parser() -> argparse.ArgumentParser:
     shioaji_smoke.add_argument("--date", required=True)
     shioaji_smoke.add_argument("--output")
     shioaji_smoke.add_argument("--store")
+    shioaji_smoke.add_argument("--input")
     shioaji_smoke.add_argument("--api-key-env", default="SHIOAJI_API_KEY")
     shioaji_smoke.add_argument("--secret-key-env", default="SHIOAJI_SECRET_KEY")
     shioaji_smoke.add_argument("--enable-login-smoke", action="store_true")
     shioaji_smoke.add_argument("--enable-callback-stream", action="store_true")
+    shioaji_smoke.add_argument("--enable-order-smoke", action="store_true")
+    shioaji_smoke.add_argument("--max-order-quantity", type=int, default=1000)
     shioaji_smoke.add_argument("--fetch-contract", action="store_true")
     shioaji_smoke.add_argument("--subscribe-trade", action="store_true")
     shioaji_smoke.set_defaults(func=cmd_simulate_shioaji_smoke)

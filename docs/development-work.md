@@ -887,6 +887,47 @@ Grill-me review：
 - must-fix 已處理：預設 CLI 不 import Shioaji、不讀 credential、不登入；明確 gate 後也只允許 `simulation=True`。
 - 剩餘風險：目前只驗證 login 與 callback registration，尚未送出 simulation order；下一步若做 order request smoke，必須先定義最小委託、盤中 / 盤後限制、取消 / retry 行為與人工 gate。
 
+### Gated Shioaji Order Request Smoke Guard MVP
+
+目前狀態：已完成 MVP，尚未跑真實 Shioaji order smoke。
+
+目標：把下一步「真的送出一筆 Shioaji simulation order」的 gate 與驗證鏈先做起來。這一步仍以 fake gateway / 本地測試驗證，不自動對外送單。
+
+實際產出：
+
+- `run_gated_shioaji_order_request_smoke`
+- CLI：`tw-daytrade simulate shioaji-smoke --enable-order-smoke`
+- order smoke report：`result`、`store_summary`、`restart_sync`
+
+設計結果：
+
+- 預設 `simulate shioaji-smoke` 會多一個 `shioaji_order_request` blocked report。
+- order smoke 必須同時滿足：
+  - `--enable-login-smoke`
+  - 成功 simulation login smoke
+  - `--enable-order-smoke`
+  - `--store`
+  - `--input`
+  - risk decision approved
+  - limit price present
+  - quantity 在 `--max-order-quantity` 內
+- order smoke 的 side effects 明確標成 `login`、`place_order`。
+- 成功後會把 result 寫入 `FileExecutionSyncStore`，並立即用 restart-sync summary 檢查 broker trade / open position 是否 matched。
+
+驗證結果：
+
+- focused gated order smoke tests：4 tests OK。
+- full unittest discover：80 tests OK。
+- compile check：OK。
+- diff check：OK。
+- CLI blocked smoke v2：summary total 3、ok 0、blocked 3。
+
+Grill-me review：
+
+- 方向正確：這輪只補送單前的 gate、防呆與本地 reconciliation，不直接跑真實 simulation order。
+- must-fix 已處理：無 gate 不 login / 不 place order；market order 被擋；超過 smoke quantity limit 會被擋；成功 fake order 後會檢查 restart-sync matched。
+- 剩餘風險：真正 simulation order 仍可能因盤中 / 盤後、契約載入、帳戶狀態、價格限制或 SDK response shape 不同而失敗；下一步實測前要先定義測試委託與取消 / retry 策略。
+
 ## 5. Working Commands
 
 ```bash
@@ -907,6 +948,7 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate run --date 2026-05-28 
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate callback-smoke --date 2026-05-28 --input examples/shioaji-callback-sequence.sample.json --store reports/2026-05-28-callback-smoke-store.json --output reports/2026-05-28-callback-smoke.json
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-smoke --date 2026-05-28 --output reports/2026-05-28-shioaji-smoke.json
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-smoke --date 2026-06-02 --enable-login-smoke --enable-callback-stream --store reports/2026-06-02-shioaji-callback-smoke-store.json --output reports/2026-06-02-shioaji-callback-stream-smoke.json
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-smoke --date 2026-06-02 --enable-login-smoke --enable-order-smoke --input examples/simulation-plan.sample.json --store reports/2026-06-02-shioaji-order-smoke-store.json --output reports/2026-06-02-shioaji-order-smoke.json --max-order-quantity 1000
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli report close --date 2026-05-28 --candidates reports/2026-05-28-candidates-from-raw.json --replay reports/2026-03-25-replay.json --simulation reports/2026-05-28-simulation.json --output reports/2026-05-28-close.md --telegram-summary-output reports/2026-05-28-telegram-summary.txt
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli notify telegram --date 2026-05-28 --report reports/2026-05-28-close.md --dry-run
 ```
