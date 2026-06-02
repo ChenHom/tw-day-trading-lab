@@ -154,7 +154,7 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 
 ## Current Implementation Status
 
-- P0-P6 已完成。
+- P0-P7 已完成。
 - Report Loop / Notification hardening 已完成：`report close` 可聚合 candidate / replay / simulation，列出逐筆 `needs_review` reason，並輸出專用 Telegram summary；真實發送仍維持 dry-run gate。
 - Execution Sync MVP 已完成：dry-run simulation 可保存 broker trades / open positions 到 execution sync store，restart-sync 可重建 ledger open state 並比對 broker / ledger 是否一致。
 - Shioaji callback normalization MVP 已完成：可將 callback payload 標準化為 execution callback event，寫入 execution sync store，並透過 restart-sync 暴露 broker / ledger mismatch。
@@ -173,7 +173,9 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 - Gated Shioaji callback registration 實測已通：`set_order_callback` 可註冊，store 初始 callback / broker trade / lifecycle decision 皆為 0。
 - Gated Shioaji simulation order + cancel smoke 已完成：真實 `sj.Shioaji(simulation=True)` order / callback / cancel 鏈路已打通，最終 smoke summary total 4、ok 4、blocked 0；restart-sync matched 2、needs_review 0。
 - P6 主線可收斂成四段：P6A 本地 simulation execution chain、P6B callback / restart-sync hardening、P6C gated login + callback registration、P6D gated simulation order + cancel smoke，四段皆已完成。
-- 下一步是 production readiness gap，不是繼續拆 P6：正式 gate、交易時段策略、cancel retry、partial fill policy、report/alert 與人工確認流程。
+- P7 Production Readiness Gate 已完成：`simulate production-readiness` 會讀 execution sync store，檢查正式 live gate、交易時段、pending orders、partial fills、callback ordering、cancel retry plan，並輸出 JSON / Markdown readiness report。未提供明確人工 approval token 時，live execution 一律 blocked。
+- P7 smoke 已用 P6 真實 simulation store 驗證：6 checks 中 5 ok、1 blocked；唯一 blocker 是 `formal_live_gate`，pending orders / partial fills / ordering issues 皆為 0。
+- 下一步不是繼續拆 P7，而是決定是否進正式營運設計：正式 approval token 流程、實際 live broker adapter、告警發送與人工操作 SOP。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。
 - P6 已支援 `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition` dry-run，simulation sample 與 replay expectancy 分開，重送同一 intent 不會重複開倉。

@@ -249,6 +249,55 @@ Callback 去重：
 - `filled`、`cancelled`、`rejected` 視為 terminal callback status；同一 broker order 已接受其中一個終態後，若又收到不同終態，會寫入 `callback_ordering_issues.reason = terminal_state_conflict` 並跳過。
 - terminal-state conflict 不會新增 `callback_events`、`broker_trades` 或 `lifecycle_decisions`，避免把終態衝突當成正常 lifecycle progression。
 
+## Production Readiness Report
+
+`tw-daytrade simulate production-readiness` 讀取 execution sync store，輸出正式營運前的 gate / alert / manual action report。這個命令不登入、不送單、不取消，只做 readiness 判斷。
+
+Input：
+
+| 欄位 / 參數 | 說明 |
+|---|---|
+| `--date` | readiness report 的交易日 |
+| `--store` | execution sync store |
+| `--current-time` | 可選，檢查是否在 `09:00-13:20` regular session |
+| `--allow-live-trading` | 只表示 readiness gate 願意評估 live trading；不會觸發下單 |
+| `--manual-approval-token` | 人工確認 token |
+| `--expected-manual-approval-token` | 可選，預設為 `{date}:LIVE-TRADING-APPROVED` |
+| `--max-pending-orders` | 允許未終態 submitted order 數，預設 0 |
+| `--disable-cancel-retry-plan` | 關閉 cancel retry plan 檢查，預設不建議 |
+
+Output：
+
+| 欄位 | 說明 |
+|---|---|
+| `status` | `ready` / `blocked` / `needs_review` |
+| `live_execution_allowed` | 只有所有 checks OK 時才為 true |
+| `summary.checks` | 檢查項目數 |
+| `summary.ok` / `blocked` / `needs_review` | readiness check 統計 |
+| `summary.pending_orders` | 尚未進終態的 submitted order 數 |
+| `summary.partial_fills` | partial fill lifecycle decision 數 |
+| `summary.ordering_issues` | callback ordering issue 數 |
+| `checks[]` | 每個 readiness check 的狀態、severity、review reason、detail |
+| `alerts[]` | 非 OK checks 的告警摘要 |
+| `manual_actions[]` | 操作者下一步清單 |
+
+Checks：
+
+| check | OK 條件 |
+|---|---|
+| `formal_live_gate` | `--allow-live-trading` 且人工 token 等於 expected token |
+| `regular_session_policy` | 未提供 `--current-time`，或時間在 `09:00-13:20` |
+| `pending_order_limit` | pending orders <= `--max-pending-orders` |
+| `partial_fill_policy` | 沒有 partial fill lifecycle decision |
+| `callback_ordering` | 沒有 callback ordering issue |
+| `cancel_retry_plan` | 沒有 pending order 或 failed cancel result；除非明確關閉檢查 |
+
+安全邊界：
+
+- readiness report 是正式營運前的 blocker，不是正式下單功能。
+- 未提供人工 approval token 時，`formal_live_gate` 必須 blocked。
+- P7 只輸出 JSON / Markdown report；正式告警發送、live broker adapter 與人工操作 SOP 留下一個 phase。
+
 ## Persisted Strategy Samples
 
 TiDB `valid_samples` table 目前保存 classified strategy samples。雖然沿用 `valid_samples` 名稱，實際內容包含：

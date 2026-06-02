@@ -26,6 +26,7 @@ from .reports import (
 from .simulation import (
     DryRunSimulationBroker,
     FileExecutionSyncStore,
+    ProductionReadinessPolicy,
     RiskDecision,
     ShioajiSimulationAdapter,
     ShioajiSdkSimulationGateway,
@@ -36,7 +37,9 @@ from .simulation import (
     ledger_positions_from_payload,
     normalize_shioaji_order_callback,
     render_simulation_markdown,
+    render_production_readiness_markdown,
     restore_ledger_from_positions,
+    build_production_readiness_report,
     run_callback_sequence_smoke,
     run_gated_shioaji_callback_stream_smoke,
     run_gated_shioaji_cancel_smoke,
@@ -642,6 +645,31 @@ def cmd_simulate_shioaji_smoke(args: argparse.Namespace) -> None:
     print(output)
 
 
+def cmd_simulate_production_readiness(args: argparse.Namespace) -> None:
+    """Build the P7 production readiness gate report from execution sync state."""
+    store = FileExecutionSyncStore(Path(args.store))
+    expected_token = args.expected_manual_approval_token or f"{args.date}:LIVE-TRADING-APPROVED"
+    report = build_production_readiness_report(
+        store.load_snapshot(),
+        ProductionReadinessPolicy(
+            trading_date=args.date,
+            current_time=args.current_time,
+            allow_live_trading=args.allow_live_trading,
+            manual_approval_token=args.manual_approval_token or "",
+            expected_manual_approval_token=expected_token,
+            max_pending_orders=args.max_pending_orders,
+            require_cancel_retry_plan=not args.disable_cancel_retry_plan,
+        ),
+    )
+    output = Path(args.output) if args.output else Path("reports") / f"{args.date}-production-readiness.json"
+    write_json(output, report)
+    print(output)
+    if args.report_output:
+        report_output = Path(args.report_output)
+        write_text(report_output, render_production_readiness_markdown(report))
+        print(report_output)
+
+
 def cmd_ingest_finmind(args: argparse.Namespace) -> None:
     """Run FinMind nightly ingestion with ledger-backed raw cache."""
     token = args.token or os.getenv("FINMIND_TOKEN")
@@ -809,6 +837,18 @@ def build_parser() -> argparse.ArgumentParser:
     shioaji_smoke.add_argument("--fetch-contract", action="store_true")
     shioaji_smoke.add_argument("--subscribe-trade", action="store_true")
     shioaji_smoke.set_defaults(func=cmd_simulate_shioaji_smoke)
+    production_readiness = simulate_sub.add_parser("production-readiness")
+    production_readiness.add_argument("--date", required=True)
+    production_readiness.add_argument("--store", required=True)
+    production_readiness.add_argument("--output")
+    production_readiness.add_argument("--report-output")
+    production_readiness.add_argument("--current-time")
+    production_readiness.add_argument("--allow-live-trading", action="store_true")
+    production_readiness.add_argument("--manual-approval-token")
+    production_readiness.add_argument("--expected-manual-approval-token")
+    production_readiness.add_argument("--max-pending-orders", type=int, default=0)
+    production_readiness.add_argument("--disable-cancel-retry-plan", action="store_true")
+    production_readiness.set_defaults(func=cmd_simulate_production_readiness)
 
     ingest = subparsers.add_parser("ingest")
     ingest_sub = ingest.add_subparsers(required=True)

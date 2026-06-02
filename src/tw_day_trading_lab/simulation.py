@@ -147,6 +147,17 @@ class ExecutionLifecycleDecision:
 
 
 @dataclass(frozen=True)
+class ProductionReadinessPolicy:
+    trading_date: str
+    current_time: str | None = None
+    allow_live_trading: bool = False
+    manual_approval_token: str = ""
+    expected_manual_approval_token: str = ""
+    max_pending_orders: int = 0
+    require_cancel_retry_plan: bool = True
+
+
+@dataclass(frozen=True)
 class LedgerPosition:
     position_id: str
     idempotency_key: str
@@ -516,6 +527,7 @@ def normalize_broker_status(raw_status: str) -> str:
         "cancelled": "cancelled",
         "canceled": "cancelled",
         "cancel": "cancelled",
+        "cancelrequested": "submitted",
         "rejected": "rejected",
         "failed": "rejected",
         "statusfailed": "rejected",
@@ -942,6 +954,153 @@ def build_restart_sync_report(
         "needs_review": needs_review,
         "samples": samples,
     }
+
+
+def build_production_readiness_report(
+    snapshot: dict[str, Any],
+    policy: ProductionReadinessPolicy,
+) -> dict[str, Any]:
+    """Build the P7 production readiness gate report from execution sync state."""
+    callback_events = [dict(row) for row in snapshot.get("callback_events", [])]
+    lifecycle_decisions = [dict(row) for row in snapshot.get("lifecycle_decisions", [])]
+    ordering_issues = [dict(row) for row in snapshot.get("callback_ordering_issues", [])]
+    cancel_results = [dict(row) for row in snapshot.get("cancel_results", [])]
+    broker_trades = [dict(row) for row in snapshot.get("broker_trades", [])]
+
+    terminal_order_keys = {
+        _readiness_order_key(row)
+        for row in callback_events
+        if str(row.get("normalized_status") or "") in {"filled", "cancelled", "rejected"}
+    }
+    submitted_order_keys = {
+        _readiness_order_key(row)
+        for row in callback_events + broker_trades
+        if normalize_broker_status(
+            str(row.get("raw_status") or row.get("normalized_status") or row.get("status") or "")
+        )
+        == "submitted"
+    }
+    pending_order_keys = sorted(key for key in submitted_order_keys if key not in terminal_order_keys)
+    partial_fill_decisions = [
+        row for row in lifecycle_decisions if str(row.get("normalized_status") or "") == "partial_filled"
+    ]
+    failed_cancel_results = [
+        row
+        for row in cancel_results
+        if _readiness_cancel_status(row) not in {"cancelled", "submitted"}
+    ]
+
+    checks = [
+        _readiness_check(
+            "formal_live_gate",
+            policy.allow_live_trading
+            and bool(policy.manual_approval_token)
+            and policy.manual_approval_token == policy.expected_manual_approval_token,
+            "live_trading_requires_explicit_manual_approval",
+            severity="blocker",
+        ),
+        _readiness_check(
+            "regular_session_policy",
+            policy.current_time is None or is_regular_day_order_smoke_time(policy.current_time),
+            "outside_regular_session",
+            severity="blocker",
+        ),
+        _readiness_check(
+            "pending_order_limit",
+            len(pending_order_keys) <= policy.max_pending_orders,
+            "pending_orders_require_manual_reconciliation",
+            severity="blocker",
+            detail={"pending_orders": len(pending_order_keys), "max_pending_orders": policy.max_pending_orders},
+        ),
+        _readiness_check(
+            "partial_fill_policy",
+            not partial_fill_decisions,
+            "partial_fill_requires_manual_policy",
+            severity="blocker",
+            detail={"partial_fills": len(partial_fill_decisions)},
+        ),
+        _readiness_check(
+            "callback_ordering",
+            not ordering_issues,
+            "callback_ordering_issues_present",
+            severity="blocker",
+            detail={"ordering_issues": len(ordering_issues)},
+        ),
+        _readiness_check(
+            "cancel_retry_plan",
+            not policy.require_cancel_retry_plan or not (pending_order_keys or failed_cancel_results),
+            "cancel_retry_plan_required",
+            severity="needs_review",
+            detail={
+                "pending_orders": len(pending_order_keys),
+                "failed_cancel_results": len(failed_cancel_results),
+            },
+        ),
+    ]
+    blockers = [check for check in checks if check["status"] == "blocked"]
+    needs_review = [check for check in checks if check["status"] == "needs_review"]
+    alerts = [
+        {
+            "severity": check["severity"],
+            "name": check["name"],
+            "review_reason": check["review_reason"],
+            "detail": check.get("detail", {}),
+        }
+        for check in checks
+        if check["status"] != "ok"
+    ]
+    status = "blocked" if blockers else "needs_review" if needs_review else "ready"
+    return {
+        "trading_date": policy.trading_date,
+        "mode": "production_readiness",
+        "status": status,
+        "summary": {
+            "checks": len(checks),
+            "ok": sum(1 for check in checks if check["status"] == "ok"),
+            "blocked": len(blockers),
+            "needs_review": len(needs_review),
+            "alerts": len(alerts),
+            "pending_orders": len(pending_order_keys),
+            "partial_fills": len(partial_fill_decisions),
+            "ordering_issues": len(ordering_issues),
+        },
+        "checks": checks,
+        "alerts": alerts,
+        "manual_actions": _readiness_manual_actions(alerts),
+        "live_execution_allowed": status == "ready",
+    }
+
+
+def render_production_readiness_markdown(report: dict[str, Any]) -> str:
+    """Render a compact operator-facing P7 readiness report."""
+    summary = dict(report.get("summary", {}))
+    lines = [
+        f"# Production Readiness - {report.get('trading_date', '')}",
+        "",
+        f"- status: {report.get('status', '')}",
+        f"- live execution allowed: {str(report.get('live_execution_allowed', False)).lower()}",
+        f"- checks: {summary.get('ok', 0)} ok / {summary.get('blocked', 0)} blocked / {summary.get('needs_review', 0)} needs_review",
+        f"- pending orders: {summary.get('pending_orders', 0)}",
+        f"- partial fills: {summary.get('partial_fills', 0)}",
+        f"- ordering issues: {summary.get('ordering_issues', 0)}",
+        "",
+        "## Alerts",
+    ]
+    alerts = list(report.get("alerts", []))
+    if not alerts:
+        lines.append("- none")
+    else:
+        for alert in alerts:
+            lines.append(
+                f"- {alert.get('severity', '')}: {alert.get('name', '')} - {alert.get('review_reason', '')}"
+            )
+    lines.extend(["", "## Manual Actions"])
+    actions = list(report.get("manual_actions", []))
+    if not actions:
+        lines.append("- none")
+    else:
+        lines.extend(f"- {action}" for action in actions)
+    return "\n".join(lines) + "\n"
 
 
 def broker_trades_from_payload(rows: list[dict[str, Any]]) -> list[BrokerTrade]:
@@ -1377,6 +1536,65 @@ def _empty_execution_sync_snapshot() -> dict[str, Any]:
         "shioaji_order_handles": {},
         "cancel_results": [],
     }
+
+
+def _readiness_order_key(row: dict[str, Any]) -> str:
+    return "|".join(
+        [
+            str(row.get("trading_date") or ""),
+            str(row.get("broker_order_id") or ""),
+            str(row.get("idempotency_key") or ""),
+        ]
+    )
+
+
+def _readiness_check(
+    name: str,
+    ok: bool,
+    review_reason: str,
+    *,
+    severity: str,
+    detail: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "status": "ok" if ok else ("blocked" if severity == "blocker" else "needs_review"),
+        "severity": severity,
+        "review_reason": "" if ok else review_reason,
+        "detail": detail or {},
+    }
+
+
+def _readiness_cancel_status(row: dict[str, Any]) -> str:
+    raw = _to_plain_mapping(row.get("raw", {}))
+    raw_status = _to_plain_mapping(raw.get("status", {}))
+    return normalize_broker_status(
+        str(
+            _first_non_empty(
+                raw_status.get("status"),
+                row.get("status"),
+                raw.get("status"),
+            )
+            or ""
+        )
+    )
+
+
+def _readiness_manual_actions(alerts: list[dict[str, Any]]) -> list[str]:
+    action_map = {
+        "formal_live_gate": "Keep live trading disabled until an explicit manual approval token is provided.",
+        "regular_session_policy": "Run production checks during regular session or define an approved outside-session procedure.",
+        "pending_order_limit": "Reconcile or cancel pending broker orders before enabling live execution.",
+        "partial_fill_policy": "Resolve partial fills manually and define the ledger mutation policy before production.",
+        "callback_ordering": "Inspect callback ordering issues before trusting broker / ledger state.",
+        "cancel_retry_plan": "Prepare cancel retry and escalation steps for unresolved submitted orders.",
+    }
+    actions: list[str] = []
+    for alert in alerts:
+        action = action_map.get(str(alert.get("name") or ""))
+        if action and action not in actions:
+            actions.append(action)
+    return actions
 
 
 def _to_plain_mapping(value: Any) -> dict[str, Any]:

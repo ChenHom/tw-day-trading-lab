@@ -1,12 +1,12 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P6 已完成；P6 可收斂為 P6A 本地 simulation execution chain、P6B callback / restart-sync hardening、P6C gated login + callback registration、P6D gated simulation order + cancel smoke，四段皆已完成。下一步是 production readiness gap。
+狀態：P0-P7 已完成；P6 可收斂為 P6A 本地 simulation execution chain、P6B callback / restart-sync hardening、P6C gated login + callback registration、P6D gated simulation order + cancel smoke，四段皆已完成；P7 Production Readiness Gate 已完成。下一步是正式營運設計，不再拆 P7。
 預設分支：`master`
 
 ## Phase 對照
 
-本文件採用 P0-P6 作為唯一開發 phase 命名。`docs/mvp-roadmap.md` 必須與本文件保持一致。
+本文件採用 P0-P7 作為唯一開發 phase 命名。`docs/mvp-roadmap.md` 必須與本文件保持一致。
 
 | Phase | 名稱 | 目前狀態 | 對應 commit |
 |---|---|---|---|
@@ -18,6 +18,7 @@
 | P4b | Candidate Engine Data Enrichment | 已完成 MVP | `2b56adf` |
 | P5 | Replay / Paper Ledger | 已完成 MVP | `3c998be` |
 | P6 | Shioaji Simulation Adapter | 已完成 | through P6D smoke |
+| P7 | Production Readiness Gate | 已完成 | P7 readiness gate |
 
 `P4b Candidate Engine Data Enrichment` 是 P4 的資料強化 sprint，不是獨立大 phase。
 
@@ -1036,6 +1037,51 @@ Grill-me review：
 - must-fix 已處理：真實 callback payload 的 dict / operation shape 已修正；`PendingSubmit` 不再被當成 filled；submitted 不建立 open position；cancel 使用 live Trade handle。
 - 剩餘風險：P6 尚未處理 production readiness，包括正式 gate、交易時段策略、partial fill、cancel retry、失敗告警、人工確認流程與正式下單權限控管。這些應進下一 phase，不再塞進 P6。
 
+### P7 Production Readiness Gate Complete
+
+目前狀態：已完成。
+
+目標：把 P6 後留下的 production readiness gap 收斂成一個可測、可擋、可回報的正式營運前 gate，而不是直接啟用正式下單。
+
+實際結果：
+
+- `simulate production-readiness` 已完成，可從 execution sync store 產生 JSON / Markdown readiness report。
+- readiness checks 包含：
+  - `formal_live_gate`
+  - `regular_session_policy`
+  - `pending_order_limit`
+  - `partial_fill_policy`
+  - `callback_ordering`
+  - `cancel_retry_plan`
+- live execution 預設 blocked；必須明確 `--allow-live-trading` 且提供符合 expected token 的 `--manual-approval-token`，readiness report 才可能進入 `ready`。
+- pending submitted order、partial fill、callback ordering issue、cancel retry 缺口都會進 alerts 與 manual actions。
+- P7 命令本身不登入、不送單、不取消，只做正式營運前判斷。
+
+P7 smoke：
+
+- input store：`reports/2026-06-02-p6-complete-smoke-store-v2.json`
+- output JSON：`reports/2026-06-02-p7-production-readiness.json`
+- output Markdown：`reports/2026-06-02-p7-production-readiness.md`
+- result：checks 6、ok 5、blocked 1、needs_review 0。
+- 唯一 blocker：`formal_live_gate`，原因是未提供正式人工 approval token。
+- pending orders：0。
+- partial fills：0。
+- ordering issues：0。
+
+驗證結果：
+
+- focused P7 tests：5 tests OK。
+- full unittest discover：94 tests OK。
+- compile check：OK。
+- diff check：OK。
+
+Grill-me review：
+
+- 方向正確：P7 只做正式營運前 gate/report/alert contract，沒有偷開正式區，也沒有把 readiness 當成策略 edge。
+- must-fix 已處理：live gate 預設 blocked；人工 token 才能讓 report ready；pending / partial / ordering / cancel retry 都可被 report 揭露。
+- should-fix：下一 phase 若要進正式營運，必須把 approval token 流程、實際 live broker adapter、告警發送、人工操作 SOP 與權限控管獨立成新 phase。
+- 結論：P7 完成；不要再拆 P7。
+
 ## 5. Working Commands
 
 ```bash
@@ -1059,6 +1105,7 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-smoke --date 2
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-smoke --date 2026-06-02 --enable-login-smoke --enable-order-smoke --input examples/simulation-plan.sample.json --store reports/2026-06-02-shioaji-order-smoke-store.json --output reports/2026-06-02-shioaji-order-smoke.json --max-order-quantity 1000
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-smoke --date 2026-06-02 --enable-login-smoke --enable-order-smoke --input examples/simulation-plan.sample.json --store reports/2026-06-02-shioaji-order-smoke-store.json --output reports/2026-06-02-shioaji-order-smoke.json --max-order-quantity 1000 --allow-outside-session
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-smoke --date 2026-06-02 --enable-login-smoke --enable-callback-stream --enable-order-smoke --enable-cancel-smoke --fetch-contract --subscribe-trade --input reports/2026-06-02-p6-real-order-plan-low.json --store reports/2026-06-02-p6-complete-smoke-store-v2.json --output reports/2026-06-02-p6-complete-smoke-v2.json --max-order-quantity 1000
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate production-readiness --date 2026-06-02 --store reports/2026-06-02-p6-complete-smoke-store-v2.json --output reports/2026-06-02-p7-production-readiness.json --report-output reports/2026-06-02-p7-production-readiness.md --current-time 12:30
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli report close --date 2026-05-28 --candidates reports/2026-05-28-candidates-from-raw.json --replay reports/2026-03-25-replay.json --simulation reports/2026-05-28-simulation.json --output reports/2026-05-28-close.md --telegram-summary-output reports/2026-05-28-telegram-summary.txt
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli notify telegram --date 2026-05-28 --report reports/2026-05-28-close.md --dry-run
 ```
@@ -1070,4 +1117,4 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli notify telegram --date 2026-05-
 - 設計 TiDB schema migration 流程。
 - 決定 raw data 儲存先用 JSONL 還是直接導入 Parquet library。
 - 設計 Telegram 正式發送 gate。
-- Production readiness：正式 gate、交易時段策略、partial fill、cancel retry、失敗告警、人工確認流程與正式下單權限控管。
+- 正式營運設計：approval token 流程、實際 live broker adapter、告警發送、人工操作 SOP 與正式下單權限控管。

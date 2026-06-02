@@ -10,6 +10,7 @@ from pathlib import Path
 from tw_day_trading_lab.cli import (
     cmd_simulate_callback_smoke,
     cmd_simulate_ingest_callback,
+    cmd_simulate_production_readiness,
     cmd_simulate_restart_sync,
     cmd_simulate_run,
     cmd_simulate_shioaji_smoke,
@@ -22,6 +23,7 @@ from tw_day_trading_lab.simulation import (
     ExecutionLifecycleDecision,
     FileExecutionSyncStore,
     LedgerPosition,
+    ProductionReadinessPolicy,
     RiskDecision,
     ShioajiOrderRequest,
     ShioajiOrderRequestBroker,
@@ -31,12 +33,14 @@ from tw_day_trading_lab.simulation import (
     SignalIntent,
     build_shioaji_order_request,
     build_shioaji_custom_field,
+    build_production_readiness_report,
     build_restart_sync_report,
     classify_execution_lifecycle,
     normalize_shioaji_order_callback,
     normalize_broker_status,
     order_intent_from_idempotency_key,
     reconcile_broker_trades,
+    render_production_readiness_markdown,
     render_simulation_markdown,
     restore_ledger_from_positions,
     run_callback_sequence_smoke,
@@ -1603,6 +1607,200 @@ class SimulationAdapterTest(unittest.TestCase):
                 self.assertEqual(decision.ledger_effect, "close_intent")
                 self.assertEqual(decision.action, f"{status}_release_intent")
                 self.assertFalse(decision.needs_review)
+
+    def test_production_readiness_blocks_live_execution_without_manual_approval(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FileExecutionSyncStore(Path(tmp) / "execution-sync.json")
+
+            report = build_production_readiness_report(
+                store.load_snapshot(),
+                ProductionReadinessPolicy(
+                    trading_date="2026-05-28",
+                    current_time="09:30",
+                    allow_live_trading=False,
+                    manual_approval_token="",
+                    expected_manual_approval_token="2026-05-28:LIVE-TRADING-APPROVED",
+                ),
+            )
+
+            self.assertEqual(report["status"], "blocked")
+            self.assertFalse(report["live_execution_allowed"])
+            self.assertEqual(report["checks"][0]["name"], "formal_live_gate")
+            self.assertEqual(report["checks"][0]["status"], "blocked")
+            self.assertIn("Keep live trading disabled", report["manual_actions"][0])
+
+    def test_production_readiness_flags_pending_partial_and_ordering_alerts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FileExecutionSyncStore(Path(tmp) / "execution-sync.json")
+            partial = ExecutionCallbackEvent(
+                stat="OrderState.PartFilled",
+                broker_order_id="broker-1",
+                idempotency_key="2026-05-28:mvp:2330:vwap-breakout:buy",
+                trading_date="2026-05-28",
+                symbol="2330",
+                side="buy",
+                quantity=500,
+                price=900.0,
+                normalized_status="partial_filled",
+                raw_status="PartFilled",
+                review_reason="",
+                raw={"source": "unit-test"},
+            )
+            submitted = ExecutionCallbackEvent(
+                stat="OrderState.Submitted",
+                broker_order_id="broker-2",
+                idempotency_key="2026-05-28:mvp:2317:vwap-breakout:buy",
+                trading_date="2026-05-28",
+                symbol="2317",
+                side="buy",
+                quantity=1000,
+                price=150.0,
+                normalized_status="submitted",
+                raw_status="Submitted",
+                review_reason="",
+                raw={"source": "unit-test"},
+            )
+            filled = ExecutionCallbackEvent(
+                stat="OrderState.Filled",
+                broker_order_id="broker-3",
+                idempotency_key="2026-05-28:mvp:2454:vwap-breakout:buy",
+                trading_date="2026-05-28",
+                symbol="2454",
+                side="buy",
+                quantity=1000,
+                price=900.0,
+                normalized_status="filled",
+                raw_status="Filled",
+                review_reason="",
+                raw={"source": "unit-test"},
+            )
+            stale = ExecutionCallbackEvent(
+                stat="OrderState.Submitted",
+                broker_order_id="broker-3",
+                idempotency_key="2026-05-28:mvp:2454:vwap-breakout:buy",
+                trading_date="2026-05-28",
+                symbol="2454",
+                side="buy",
+                quantity=1000,
+                price=900.0,
+                normalized_status="submitted",
+                raw_status="Submitted",
+                review_reason="",
+                raw={"source": "unit-test"},
+            )
+            store.record_callback_event(partial)
+            store.record_callback_event(submitted)
+            store.record_callback_event(filled)
+            store.record_callback_event(stale)
+
+            report = build_production_readiness_report(
+                store.load_snapshot(),
+                ProductionReadinessPolicy(
+                    trading_date="2026-05-28",
+                    current_time="09:30",
+                    allow_live_trading=True,
+                    manual_approval_token="2026-05-28:LIVE-TRADING-APPROVED",
+                    expected_manual_approval_token="2026-05-28:LIVE-TRADING-APPROVED",
+                ),
+            )
+
+            self.assertEqual(report["status"], "blocked")
+            self.assertEqual(report["summary"]["pending_orders"], 1)
+            self.assertEqual(report["summary"]["partial_fills"], 1)
+            self.assertEqual(report["summary"]["ordering_issues"], 1)
+            self.assertIn("partial_fill_policy", [alert["name"] for alert in report["alerts"]])
+            self.assertIn("cancel_retry_plan", [alert["name"] for alert in report["alerts"]])
+
+    def test_production_readiness_can_be_ready_with_clean_state_and_approval(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FileExecutionSyncStore(Path(tmp) / "execution-sync.json")
+            cancelled = ExecutionCallbackEvent(
+                stat="OrderState.Cancelled",
+                broker_order_id="broker-1",
+                idempotency_key="2026-05-28:mvp:2330:vwap-breakout:buy",
+                trading_date="2026-05-28",
+                symbol="2330",
+                side="buy",
+                quantity=1000,
+                price=900.0,
+                normalized_status="cancelled",
+                raw_status="Cancelled",
+                review_reason="",
+                raw={"source": "unit-test"},
+            )
+            store.record_callback_event(cancelled)
+
+            report = build_production_readiness_report(
+                store.load_snapshot(),
+                ProductionReadinessPolicy(
+                    trading_date="2026-05-28",
+                    current_time="09:30",
+                    allow_live_trading=True,
+                    manual_approval_token="2026-05-28:LIVE-TRADING-APPROVED",
+                    expected_manual_approval_token="2026-05-28:LIVE-TRADING-APPROVED",
+                ),
+            )
+
+            self.assertEqual(report["status"], "ready")
+            self.assertTrue(report["live_execution_allowed"])
+            self.assertEqual(report["summary"]["blocked"], 0)
+            self.assertEqual(report["alerts"], [])
+            self.assertIn("live execution allowed: true", render_production_readiness_markdown(report))
+
+    def test_production_readiness_accepts_pending_submit_cancel_result_shape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FileExecutionSyncStore(Path(tmp) / "execution-sync.json")
+            store.record_cancel_result(
+                broker_order_id="broker-1",
+                response={
+                    "status": "trade object string",
+                    "raw": {"status": {"status": "PendingSubmit"}},
+                },
+            )
+
+            report = build_production_readiness_report(
+                store.load_snapshot(),
+                ProductionReadinessPolicy(
+                    trading_date="2026-05-28",
+                    current_time="09:30",
+                    allow_live_trading=True,
+                    manual_approval_token="2026-05-28:LIVE-TRADING-APPROVED",
+                    expected_manual_approval_token="2026-05-28:LIVE-TRADING-APPROVED",
+                ),
+            )
+
+            self.assertEqual(report["status"], "ready")
+            self.assertNotIn("cancel_retry_plan", [alert["name"] for alert in report["alerts"]])
+
+    def test_cli_production_readiness_writes_json_and_markdown_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            store_path = tmpdir / "execution-sync.json"
+            output_path = tmpdir / "readiness.json"
+            report_path = tmpdir / "readiness.md"
+            FileExecutionSyncStore(store_path)
+
+            with redirect_stdout(StringIO()):
+                cmd_simulate_production_readiness(
+                    Namespace(
+                        date="2026-05-28",
+                        store=str(store_path),
+                        output=str(output_path),
+                        report_output=str(report_path),
+                        current_time="13:30",
+                        allow_live_trading=False,
+                        manual_approval_token=None,
+                        expected_manual_approval_token=None,
+                        max_pending_orders=0,
+                        disable_cancel_retry_plan=False,
+                    )
+                )
+
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+            markdown = report_path.read_text(encoding="utf-8")
+            self.assertEqual(payload["mode"], "production_readiness")
+            self.assertEqual(payload["status"], "blocked")
+            self.assertIn("outside_regular_session", markdown)
 
 
 if __name__ == "__main__":

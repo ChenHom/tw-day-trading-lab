@@ -1,6 +1,6 @@
 # MVP Roadmap
 
-本文件的 Phase 命名必須和 `docs/development-work.md` 的 P0-P6 保持一致。若實作狀態改變，優先同步這兩份既有文件，不另開新的 phase 狀態文件。
+本文件的 Phase 命名必須和 `docs/development-work.md` 的 P0-P7 保持一致。若實作狀態改變，優先同步這兩份既有文件，不另開新的 phase 狀態文件。
 
 ## Phase Review Rule
 
@@ -80,6 +80,17 @@
 - P6D gated simulation order + cancel smoke：已完成真實 simulation order / callback / cancel smoke。最終 smoke summary total 4、ok 4、blocked 0；order status `submitted`，cancel callback `cancelled`，restart-sync matched 2、needs_review 0。
 - 安全邊界：正式區登入、正式委託與自動下單仍不屬於本階段；P6 只證明 Shioaji simulation 執行鏈路可控，不證明策略 edge。
 
+## P7: Production Readiness Gate
+
+目前狀態：已完成。
+
+- 新增 `simulate production-readiness`，從 execution sync store 產生 production readiness JSON / Markdown report。
+- readiness checks 包含正式 live gate、regular-session policy、pending order limit、partial fill policy、callback ordering、cancel retry plan。
+- 正式 live gate 預設 blocked；只有 `--allow-live-trading` 搭配正確 `--manual-approval-token` 才會讓 readiness report 進入 `ready`，且此命令本身不送單。
+- pending submitted order、partial fill、callback ordering issue、cancel retry 缺口都會轉成 alerts 與 manual actions。
+- P7 smoke 已用 P6 真實 simulation store 驗證：checks 6、ok 5、blocked 1、needs_review 0；唯一 blocker 是未提供正式人工 approval token。
+- 安全邊界：P7 只完成正式營運前的 gate/report/alert contract，不啟用正式下單。
+
 ## Later: Report Loop / Notification
 
 目前狀態：hardening 已完成。
@@ -91,4 +102,4 @@
 - valid / excluded / needs_review 樣本統計：已透過 replay 與 close report 顯示。
 - simulation status summary：已完成，`needs_review` 會明確列出，且 simulation 不納入 replay expectancy。
 - hardening：逐筆 `needs_review` reason、專用 Telegram summary renderer、壞檔 / 缺欄位測試已完成第一版。
-- 下一步：進入 P7 或下一個 phase 前，先整理 production readiness gap：正式 gate、交易時段策略、cancel retry、partial fill policy、report/alert 與人工確認流程。
+- 下一步：若要進正式營運設計，先定義 approval token 流程、實際 live broker adapter、告警發送與人工操作 SOP；不要把這些混回 P7。
