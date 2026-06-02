@@ -608,6 +608,7 @@ def cmd_simulate_shioaji_smoke(args: argparse.Namespace) -> None:
                     ),
                     broker_order_id=args.cancel_broker_order_id or "",
                     enabled=True,
+                    store=store,
                 )
             )
     else:

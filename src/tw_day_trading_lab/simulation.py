@@ -222,6 +222,7 @@ class ShioajiCancelGateway(Protocol):
         self,
         session: dict[str, str],
         broker_order_id: str,
+        order_handle: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Cancel a Shioaji simulation order and return the raw cancel response."""
 
@@ -264,6 +265,8 @@ class ShioajiOrderRequestBroker:
 
     def __init__(self, gateway: ShioajiOrderGateway) -> None:
         self._gateway = gateway
+        self.last_request: ShioajiOrderRequest | None = None
+        self.last_response: dict[str, Any] | None = None
 
     def login(self) -> dict[str, str]:
         return self._gateway.login()
@@ -277,6 +280,8 @@ class ShioajiOrderRequestBroker:
     ) -> BrokerTrade:
         request = build_shioaji_order_request(intent, signal, decision)
         response = self._gateway.place_order(session, request)
+        self.last_request = request
+        self.last_response = dict(response)
         raw_status = str(_first_non_empty(response.get("raw_status"), response.get("status")) or "")
         return BrokerTrade(
             idempotency_key=str(
@@ -357,10 +362,12 @@ class ShioajiSdkSimulationGateway:
         self,
         session: dict[str, str],
         broker_order_id: str,
+        order_handle: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not hasattr(self._api, "cancel_order"):
             raise ValueError("Shioaji API object does not expose cancel_order")
-        raw_cancel = self._api.cancel_order(broker_order_id)
+        cancel_target = order_handle.get("raw") if order_handle else broker_order_id
+        raw_cancel = self._api.cancel_order(cancel_target)
         return {
             "broker_order_id": broker_order_id,
             "status": str(_first_non_empty(_to_plain_mapping(raw_cancel).get("status"), "cancel_requested")),
@@ -729,6 +736,8 @@ class FileExecutionSyncStore:
             "callback_status_by_order": dict(raw.get("callback_status_by_order", {})),
             "callback_ordering_issues": list(raw.get("callback_ordering_issues", [])),
             "custom_field_map": dict(raw.get("custom_field_map", {})),
+            "shioaji_order_handles": dict(raw.get("shioaji_order_handles", {})),
+            "cancel_results": list(raw.get("cancel_results", [])),
         }
 
     def record_result(self, result: SimulationResult) -> None:
@@ -746,6 +755,39 @@ class FileExecutionSyncStore:
                     snapshot["open_positions"],
                     result.position.to_dict(),
                 )
+
+        self._mutate_snapshot(mutate)
+
+    def record_order_handle(
+        self,
+        *,
+        broker_order_id: str,
+        idempotency_key: str,
+        response: dict[str, Any],
+    ) -> None:
+        def mutate(snapshot: dict[str, Any]) -> None:
+            snapshot["shioaji_order_handles"][broker_order_id] = {
+                "broker_order_id": broker_order_id,
+                "idempotency_key": idempotency_key,
+                "raw": _json_safe(response.get("raw", response)),
+            }
+
+        self._mutate_snapshot(mutate)
+
+    def record_cancel_result(
+        self,
+        *,
+        broker_order_id: str,
+        response: dict[str, Any],
+    ) -> None:
+        def mutate(snapshot: dict[str, Any]) -> None:
+            snapshot["cancel_results"].append(
+                {
+                    "broker_order_id": broker_order_id,
+                    "status": str(response.get("status") or ""),
+                    "raw": _json_safe(response.get("raw", response)),
+                }
+            )
 
         self._mutate_snapshot(mutate)
 
@@ -1187,12 +1229,19 @@ def run_gated_shioaji_order_request_smoke(
         report["review_reason"] = "outside_regular_session"
         return report
 
+    broker = ShioajiOrderRequestBroker(gateway)
     adapter = ShioajiSimulationAdapter(
-        broker=ShioajiOrderRequestBroker(gateway),
+        broker=broker,
         ledger=PaperLedger(),
     )
     result = adapter.execute(signal, decision)
     store.record_result(result)
+    if result.trade and broker.last_response:
+        store.record_order_handle(
+            broker_order_id=result.trade.broker_order_id,
+            idempotency_key=result.trade.idempotency_key,
+            response=broker.last_response,
+        )
     snapshot = store.load_snapshot()
     positions = ledger_positions_from_payload(snapshot["open_positions"])
     restart_report = build_restart_sync_report(
@@ -1213,6 +1262,7 @@ def run_gated_shioaji_order_request_smoke(
         "broker_trades": len(snapshot["broker_trades"]),
         "open_positions": len(snapshot["open_positions"]),
         "results": len(snapshot["results"]),
+        "shioaji_order_handles": len(snapshot["shioaji_order_handles"]),
     }
     report["restart_sync"] = {
         "checked": restart_report["checked"],
@@ -1227,6 +1277,7 @@ def run_gated_shioaji_cancel_smoke(
     gateway: ShioajiCancelGateway,
     broker_order_id: str,
     enabled: bool,
+    store: FileExecutionSyncStore | None = None,
 ) -> dict[str, Any]:
     """Cancel one explicitly gated Shioaji simulation order."""
     report: dict[str, Any] = {
@@ -1246,14 +1297,25 @@ def run_gated_shioaji_cancel_smoke(
         report["review_reason"] = "broker_order_id_required"
         return report
 
+    snapshot = store.load_snapshot() if store else _empty_execution_sync_snapshot()
+    order_handle = snapshot["shioaji_order_handles"].get(broker_order_id)
     session = gateway.login()
-    response = gateway.cancel_order(session, broker_order_id)
+    response = gateway.cancel_order(session, broker_order_id, order_handle=order_handle)
+    if store:
+        store.record_cancel_result(broker_order_id=broker_order_id, response=response)
     report["status"] = "ok"
     report["side_effects"] = ["login", "cancel_order"]
     report["result"] = {
         "broker_order_id": str(response.get("broker_order_id") or broker_order_id),
         "status": str(response.get("status") or ""),
+        "used_order_handle": bool(order_handle),
     }
+    if store:
+        final_snapshot = store.load_snapshot()
+        report["store_summary"] = {
+            "shioaji_order_handles": len(final_snapshot["shioaji_order_handles"]),
+            "cancel_results": len(final_snapshot["cancel_results"]),
+        }
     return report
 
 
@@ -1268,6 +1330,8 @@ def _empty_execution_sync_snapshot() -> dict[str, Any]:
         "callback_status_by_order": {},
         "callback_ordering_issues": [],
         "custom_field_map": {},
+        "shioaji_order_handles": {},
+        "cancel_results": [],
     }
 
 
@@ -1277,6 +1341,18 @@ def _to_plain_mapping(value: Any) -> dict[str, Any]:
     if hasattr(value, "__dict__"):
         return dict(vars(value))
     return {}
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if hasattr(value, "__dict__"):
+        return _json_safe(vars(value))
+    return str(value)
 
 
 def _first_non_empty(*values: Any) -> Any:

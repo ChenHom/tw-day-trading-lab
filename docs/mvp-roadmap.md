@@ -72,7 +72,7 @@
 
 ## P6: Shioaji Simulation
 
-目前狀態：dry-run adapter MVP、execution sync MVP、callback normalization MVP、order custom field token mapping、SDK-shaped gateway MVP、callback stream MVP、execution lifecycle policy MVP、duplicate callback dedupe MVP、callback status ordering MVP、execution sync store locking MVP、terminal-state policy MVP、longer callback smoke MVP、gated Shioaji simulation smoke guard MVP、gated simulation login / callback registration smoke、gated order request smoke guard MVP、regular-session gate、cancel smoke guard MVP 已完成。
+目前狀態：dry-run adapter MVP、execution sync MVP、callback normalization MVP、order custom field token mapping、SDK-shaped gateway MVP、callback stream MVP、execution lifecycle policy MVP、duplicate callback dedupe MVP、callback status ordering MVP、execution sync store locking MVP、terminal-state policy MVP、longer callback smoke MVP、gated Shioaji simulation smoke guard MVP、gated simulation login / callback registration smoke、gated order request smoke guard MVP、regular-session gate、cancel smoke guard MVP、order handle persistence MVP 已完成。
 
 - `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition`：已完成 dry-run chain。
 - duplicate intent 會在 broker order 前被 ledger 擋下。
@@ -97,6 +97,7 @@
 - order smoke restart reconciliation 已完成：fake gateway 測試會把 broker trade / open position 寫入 store，並立即產生 restart-sync matched summary。
 - regular-session gate 已完成：order smoke 預設只允許 `09:00-13:20`，盤後需明確 `--allow-outside-session`。
 - cancel smoke guard 已完成：只有 `--enable-cancel-smoke --cancel-broker-order-id ...` 才能進 cancel gateway，預設 blocked。
+- order handle persistence 已完成：order smoke 會把 JSON-safe raw response 保存到 `shioaji_order_handles`，cancel smoke 會優先使用此 handle 並把 cancel response 寫到 `cancel_results`。
 
 ## Later: Report Loop / Notification
 
@@ -109,4 +110,4 @@
 - valid / excluded / needs_review 樣本統計：已透過 replay 與 close report 顯示。
 - simulation status summary：已完成，`needs_review` 會明確列出，且 simulation 不納入 replay expectancy。
 - hardening：逐筆 `needs_review` reason、專用 Telegram summary renderer、壞檔 / 缺欄位測試已完成第一版。
-- 下一步：在人工 gate 下跑真實 Shioaji simulation order request smoke；必須先確認測試委託價格、是否允許盤後 smoke，以及 Shioaji SDK 真實 cancel response shape。
+- 下一步：在人工 gate 下跑真實 Shioaji simulation order request smoke；必須先確認測試委託價格、是否允許盤後 smoke，以及 Shioaji SDK 真實 order / cancel response shape。

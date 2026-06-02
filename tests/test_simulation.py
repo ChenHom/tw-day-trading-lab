@@ -1185,6 +1185,7 @@ class SimulationAdapterTest(unittest.TestCase):
                     "idempotency_key": request.idempotency_key,
                     "status": "Filled",
                     "raw_status": "Filled",
+                    "raw": {"trade": "trade-handle-1"},
                 }
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1209,6 +1210,11 @@ class SimulationAdapterTest(unittest.TestCase):
             self.assertEqual(gateway.requests[0].custom_field, build_shioaji_custom_field(report["result"]["idempotency_key"]))
             self.assertEqual(len(snapshot["broker_trades"]), 1)
             self.assertEqual(len(snapshot["open_positions"]), 1)
+            self.assertEqual(report["store_summary"]["shioaji_order_handles"], 1)
+            self.assertEqual(
+                snapshot["shioaji_order_handles"]["broker-1"]["raw"],
+                {"trade": "trade-handle-1"},
+            )
 
     def test_gated_order_request_smoke_rejects_outside_regular_session(self):
         class FakeGateway:
@@ -1263,7 +1269,7 @@ class SimulationAdapterTest(unittest.TestCase):
             def login(self):
                 raise AssertionError("login must not be called")
 
-            def cancel_order(self, session, broker_order_id):
+            def cancel_order(self, session, broker_order_id, order_handle=None):
                 raise AssertionError("cancel_order must not be called")
 
         blocked = run_gated_shioaji_cancel_smoke(
@@ -1284,25 +1290,55 @@ class SimulationAdapterTest(unittest.TestCase):
         class FakeCancelGateway:
             def __init__(self) -> None:
                 self.cancelled: list[str] = []
+                self.handles: list[dict[str, object] | None] = []
 
             def login(self):
                 return {"mode": "simulation", "session_id": "fake-session"}
 
-            def cancel_order(self, session, broker_order_id):
+            def cancel_order(self, session, broker_order_id, order_handle=None):
                 self.cancelled.append(broker_order_id)
+                self.handles.append(order_handle)
                 return {"broker_order_id": broker_order_id, "status": "cancel_requested"}
 
-        gateway = FakeCancelGateway()
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FileExecutionSyncStore(Path(tmp) / "execution-sync.json")
+            store.record_order_handle(
+                broker_order_id="broker-1",
+                idempotency_key="2026-05-28:mvp:2330:vwap-breakout:buy",
+                response={"raw": {"trade": "trade-handle-1"}},
+            )
+            gateway = FakeCancelGateway()
 
-        report = run_gated_shioaji_cancel_smoke(
-            gateway=gateway,
-            broker_order_id="broker-1",
-            enabled=True,
-        )
+            report = run_gated_shioaji_cancel_smoke(
+                gateway=gateway,
+                broker_order_id="broker-1",
+                enabled=True,
+                store=store,
+            )
 
         self.assertEqual(report["status"], "ok")
         self.assertEqual(report["result"]["status"], "cancel_requested")
+        self.assertTrue(report["result"]["used_order_handle"])
         self.assertEqual(gateway.cancelled, ["broker-1"])
+        self.assertEqual(gateway.handles[0]["raw"], {"trade": "trade-handle-1"})
+        self.assertEqual(report["store_summary"]["cancel_results"], 1)
+
+    def test_order_handle_persistence_serializes_sdk_like_objects(self):
+        class SdkLikeTrade:
+            def __init__(self) -> None:
+                self.ordno = "broker-1"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FileExecutionSyncStore(Path(tmp) / "execution-sync.json")
+
+            store.record_order_handle(
+                broker_order_id="broker-1",
+                idempotency_key="2026-05-28:mvp:2330:vwap-breakout:buy",
+                response={"raw": SdkLikeTrade()},
+            )
+
+            snapshot = store.load_snapshot()
+            self.assertEqual(snapshot["shioaji_order_handles"]["broker-1"]["raw"]["ordno"], "broker-1")
 
     def test_cli_shioaji_smoke_defaults_to_blocked_report_without_import_or_login(self):
         with tempfile.TemporaryDirectory() as tmp:

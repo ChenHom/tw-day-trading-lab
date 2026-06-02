@@ -964,6 +964,44 @@ Grill-me review：
 - must-fix 已處理：盤後 order smoke 預設會擋；缺 cancel broker order id 不會進 gateway；fake cancel 可驗證 side effect 與 result shape。
 - 剩餘風險：`ShioajiSdkSimulationGateway.cancel_order` 目前只定義最小邊界，真實 SDK 可能需要 Trade object 而不是 broker order id；下一步實測時要確認 SDK response shape，再決定是否保存 raw trade handle 或建立 cancel mapping。
 
+### Shioaji Order Handle Persistence / Cancel Mapping MVP
+
+目前狀態：已完成 MVP，尚未跑真實 Shioaji order 或 cancel smoke。
+
+目標：補上真實 simulation order 後取消所需的資料保存。若 Shioaji SDK 取消需要 raw Trade object / response handle，而不是 broker order id，系統需要先把 place order response 保存起來。
+
+實際產出：
+
+- `FileExecutionSyncStore.shioaji_order_handles`
+- `FileExecutionSyncStore.cancel_results`
+- `FileExecutionSyncStore.record_order_handle`
+- `FileExecutionSyncStore.record_cancel_result`
+- `ShioajiOrderRequestBroker.last_request`
+- `ShioajiOrderRequestBroker.last_response`
+- cancel smoke 會從 store 讀取 order handle，並傳給 gateway cancel boundary
+
+設計結果：
+
+- order smoke 成功後，除了原本的 result / broker trade / open position，還會保存 raw order response。
+- cancel smoke 若找到 broker order id 對應的 `shioaji_order_handles`，會優先使用該 handle。
+- cancel response 會保存到 `cancel_results`，方便後續 close report 或 callback reconciliation 使用。
+- raw handle 會先轉成 JSON-safe payload，避免 SDK object 直接寫入 JSON store 失敗。
+- CLI 預設仍 blocked，不送單、不取消。
+
+驗證結果：
+
+- focused raw handle / cancel mapping tests：3 tests OK。
+- full unittest discover：85 tests OK。
+- compile check：OK。
+- diff check：OK。
+- CLI blocked smoke v4：summary total 4、ok 0、blocked 4。
+
+Grill-me review：
+
+- 方向正確：先補保存與映射，不靠 broker order id 猜真實 SDK cancel 行為。
+- must-fix 已處理：fake order response raw handle 能保存；SDK-like object 會轉成 JSON-safe payload；cancel smoke 能讀取 handle；cancel result 能寫回 store。
+- 剩餘風險：JSON-safe payload 不一定等同 SDK 取消所需的 live Trade object；真實 smoke 若需要 live object，應建立 in-memory session-scoped cancel map。
+
 ## 5. Working Commands
 
 ```bash
