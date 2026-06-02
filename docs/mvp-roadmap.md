@@ -114,6 +114,9 @@
 - 支援 dry-run / simulation-on 的雙 gate，預設不送 simulation order。
 - 產生單日 execution bundle，包含 input plan、order report、callback store、restart-sync、production-readiness。
 - 設定 trading-day / regular-session gate 與盤後禁止策略。
+- must-fix：定義 plan builder contract，明確記錄 candidate source、risk decision reason、limit price source、quantity source、blocked reason。
+- must-fix：送 simulation order 前檢查 limit_up / limit_down、reference price、contract loaded、regular session、trading day。
+- must-fix：建立 `ops_run_manifest`，保存 run id、artifact path、input/output checksum、side effects summary。
 - 驗收：可在一個交易日完成 end-to-end simulation run，且所有 side effects、blocked reasons、broker order ids 都可追蹤。
 
 ## P9: Ops Reports / Alerts
@@ -126,6 +129,7 @@
 - Telegram summary 從 dry-run 推進到 gated send；預設仍 blocked。
 - report 需列出 pending orders、partial fills、callback ordering issues、readiness blockers、manual actions。
 - 保存 report artifact path / run id，方便隔日 regression correction。
+- must-fix：alert 必須有 severity、dedupe key、send gate、owner / manual action、重送限制。
 - 驗收：一個命令可產出 operator-ready report，並可在明確 gate 下發送摘要。
 
 ## P10: Regression Correction Loop
@@ -138,6 +142,7 @@
 - 將 failure 分類為 data issue、candidate quality、risk decision、broker/callback lifecycle、reporting issue。
 - 自動產生 replay / simulation regression fixture。
 - 修正後重跑對應 regression suite，避免同一錯誤重演。
+- must-fix：每個 regression case 必須有 source run id、failure type、minimal fixture、expected behavior、closing test command。
 - 驗收：每日問題能進 regression backlog，且可由 tests / smoke command 驗證已修正。
 
 ## P11: Live Execution Design
@@ -150,4 +155,6 @@
 - 設計 live broker adapter，但必須和 simulation gateway 分離。
 - 設計權限控管、部位上限、daily stop、panic cancel、kill switch。
 - 設計正式告警發送與人工確認回寫。
+- must-fix：P11 entry criteria 必須包含連續 N 個 trading days simulation ops 無 blocker、無 unresolved partial fill / ordering issue、report 準時送達、regression backlog 無 P0/P1 open items。
+- must-fix：simulation / readiness 只能證明執行鏈可控，不得當成 strategy edge 或正式交易獲利證明。
 - 驗收：即使 live adapter 存在，沒有正確 approval token / session gate / readiness ready 仍不能送單。

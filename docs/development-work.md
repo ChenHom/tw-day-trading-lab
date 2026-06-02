@@ -1117,6 +1117,55 @@ P11 Live Execution Design：
 - 定義 live approval token、live broker adapter、權限控管、部位上限、daily stop、panic cancel、kill switch、正式告警與人工確認 SOP。
 - 驗收：即使 live adapter 存在，沒有正確 approval token / session gate / readiness ready 仍不能送單。
 
+### P8-P11 Grill-me Review
+
+Verdict：方向正確，但目前 P8-P11 還是 phase headline，不是足夠抗失敗的營運規格。最大風險不是缺功能，而是把「simulation order 可以送出」誤判為「每日營運可以穩定跑」。
+
+Most likely project failure points：
+
+1. P8 沒有明確定義 input plan 來源。
+   - 現在寫 candidate -> risk decision -> simulation order，但 `candidate` 如何變成 approved `RiskDecision` 還沒定義。
+   - 若 P8 直接拿 sample plan 或手工 plan 跑，會造成 simulation ops 看似上線，實際上沒有驗證候選與風控決策鏈。
+   - must-fix：P8 要明確定義 plan builder contract，至少包含 candidate source、risk decision reason、limit price source、quantity source、blocked reason。
+
+2. P8 沒有把價格限制 / 交易時段 / contract readiness 變成第一級 gate。
+   - P6 真實 smoke 已經遇過價格超過漲跌幅，這不是小 bug，是每日 ops 最容易翻車的入口。
+   - must-fix：P8 runner 必須在送 simulation order 前檢查 limit_up / limit_down、reference price、contract loaded、regular session、trading day。
+
+3. P8 如果沒有 run bundle schema，後面 regression 會無法追。
+   - 只產生很多 report path 不夠；每個 daily run 需要唯一 run id、artifact manifest、input/output checksum、side effects summary。
+   - must-fix：P8 要產生 `ops_run_manifest`，把 input plan、order report、callback store、restart-sync、readiness、logs 連起來。
+
+4. P9 的 alert 如果沒有 severity / owner / dedupe，會變成噪音。
+   - Telegram summary gated send 不等於可營運告警。
+   - must-fix：P9 要定義 alert severity、dedupe key、send gate、人工處理狀態、重送限制。
+
+5. P10 regression correction 太容易變成「事後寫文件」，不是修正迴路。
+   - failure classification 不夠，必須能產生可重跑 fixture，並要求修正前紅燈、修正後綠燈。
+   - must-fix：P10 每個 regression case 必須有 source run id、failure type、minimal fixture、expected behavior、closing test command。
+
+6. P11 最大風險是太早碰正式區。
+   - live execution design 應有 entry criteria，不能只因 P8-P10 做完就開。
+   - must-fix：P11 前置條件應包含連續 N 個 trading days simulation ops 無 blocker、無 unresolved partial fill / ordering issue、report 準時送達、regression backlog 無 P0/P1 open items。
+
+7. 整體 roadmap 還沒明確區分「能營運」與「有策略 edge」。
+   - Simulation ops 穩定只能證明執行鏈可控，不證明賺錢。
+   - must-fix：P8-P11 文件要持續保留這句邊界：任何 simulation / live readiness 都不得被當成 strategy expectancy 證明。
+
+Fix priority：
+
+- Must fix before P8 implementation：plan builder contract、price/contract/session gates、ops run manifest。
+- Must fix during P9：alert severity / dedupe / owner / gated send。
+- Must fix during P10：regression case schema 與 red-green verification。
+- Must fix before P11：live entry criteria 與 kill switch / panic cancel / daily stop SOP。
+
+Better version of phase gates：
+
+- P8 is not done when an order can be sent; P8 is done when one daily simulation ops run can be replayed, audited, and explained from manifest alone.
+- P9 is not done when a Telegram message is sent; P9 is done when the alert tells the operator what broke, who owns it, whether it was already sent, and what action closes it.
+- P10 is not done when a bug is documented; P10 is done when the same failure becomes a regression fixture that fails before the fix and passes after.
+- P11 is not allowed to start live execution until simulation ops has stable-day evidence and unresolved P0/P1 operational risks are zero.
+
 ## 5. Working Commands
 
 ```bash
