@@ -1,7 +1,7 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P6 MVP 已完成；Report Loop / Notification hardening 已完成；Execution Sync MVP 已完成；Shioaji callback normalization MVP 已完成；Shioaji order custom field token mapping、SDK-shaped gateway、callback stream、execution lifecycle policy、duplicate callback dedupe、callback status ordering、execution sync store locking、terminal-state policy、longer callback smoke MVP 已完成；下一步 gated Shioaji simulation smoke
+狀態：P0-P6 已完成；P6 可收斂為 P6A 本地 simulation execution chain、P6B callback / restart-sync hardening、P6C gated login + callback registration、P6D gated simulation order + cancel smoke，四段皆已完成。下一步是 production readiness gap。
 預設分支：`master`
 
 ## Phase 對照
@@ -17,7 +17,7 @@
 | P4 | Candidate Engine v1 | 已完成 raw cache candidate builder MVP | `fbdff38` |
 | P4b | Candidate Engine Data Enrichment | 已完成 MVP | `2b56adf` |
 | P5 | Replay / Paper Ledger | 已完成 MVP | `3c998be` |
-| P6 | Shioaji Simulation Adapter | 已完成 dry-run adapter MVP | `a475843` |
+| P6 | Shioaji Simulation Adapter | 已完成 | through P6D smoke |
 
 `P4b Candidate Engine Data Enrichment` 是 P4 的資料強化 sprint，不是獨立大 phase。
 
@@ -1002,6 +1002,40 @@ Grill-me review：
 - must-fix 已處理：fake order response raw handle 能保存；SDK-like object 會轉成 JSON-safe payload；cancel smoke 能讀取 handle；cancel result 能寫回 store。
 - 剩餘風險：JSON-safe payload 不一定等同 SDK 取消所需的 live Trade object；真實 smoke 若需要 live object，應建立 in-memory session-scoped cancel map。
 
+### P6D Gated Simulation Order / Cancel Smoke Complete
+
+目前狀態：已完成。
+
+目標：在人工 gate 下跑真實 Shioaji `simulation=True` order / callback / cancel smoke，確認 P6 執行鏈路不是只停在 fake SDK。
+
+實際結果：
+
+- 真實 simulation login：OK。
+- callback registration：OK。
+- simulation order：OK，測試委託為 2330 buy 1000 股、limit price 2120，狀態 `submitted`。
+- callback ingestion：OK，收到 `New -> submitted` 與 `Cancel -> cancelled` callback，且 idempotency key 可由 6 字元 custom field mapping 還原。
+- cancel smoke：OK，同一輪使用 live raw Trade handle 完成 cancel。
+- restart-sync：matched 2、needs_review 0。
+
+最終 smoke report：
+
+- `reports/2026-06-02-p6-complete-smoke-v2.json`
+- summary：total 4、ok 4、blocked 0
+- broker order id：已保存於本地 report/store，不在外部回報暴露更多帳戶細節。
+
+驗證結果：
+
+- focused real-payload / submitted / handle tests：4 tests OK。
+- full unittest discover：89 tests OK。
+- compile check：OK。
+- diff check：OK。
+
+Grill-me review：
+
+- 方向正確：P6 只驗證 Shioaji simulation 執行鏈路，沒有碰正式區，沒有把 simulation 結果混進 strategy edge。
+- must-fix 已處理：真實 callback payload 的 dict / operation shape 已修正；`PendingSubmit` 不再被當成 filled；submitted 不建立 open position；cancel 使用 live Trade handle。
+- 剩餘風險：P6 尚未處理 production readiness，包括正式 gate、交易時段策略、partial fill、cancel retry、失敗告警、人工確認流程與正式下單權限控管。這些應進下一 phase，不再塞進 P6。
+
 ## 5. Working Commands
 
 ```bash
@@ -1024,6 +1058,7 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-smoke --date 2
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-smoke --date 2026-06-02 --enable-login-smoke --enable-callback-stream --store reports/2026-06-02-shioaji-callback-smoke-store.json --output reports/2026-06-02-shioaji-callback-stream-smoke.json
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-smoke --date 2026-06-02 --enable-login-smoke --enable-order-smoke --input examples/simulation-plan.sample.json --store reports/2026-06-02-shioaji-order-smoke-store.json --output reports/2026-06-02-shioaji-order-smoke.json --max-order-quantity 1000
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-smoke --date 2026-06-02 --enable-login-smoke --enable-order-smoke --input examples/simulation-plan.sample.json --store reports/2026-06-02-shioaji-order-smoke-store.json --output reports/2026-06-02-shioaji-order-smoke.json --max-order-quantity 1000 --allow-outside-session
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-smoke --date 2026-06-02 --enable-login-smoke --enable-callback-stream --enable-order-smoke --enable-cancel-smoke --fetch-contract --subscribe-trade --input reports/2026-06-02-p6-real-order-plan-low.json --store reports/2026-06-02-p6-complete-smoke-store-v2.json --output reports/2026-06-02-p6-complete-smoke-v2.json --max-order-quantity 1000
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli report close --date 2026-05-28 --candidates reports/2026-05-28-candidates-from-raw.json --replay reports/2026-03-25-replay.json --simulation reports/2026-05-28-simulation.json --output reports/2026-05-28-close.md --telegram-summary-output reports/2026-05-28-telegram-summary.txt
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli notify telegram --date 2026-05-28 --report reports/2026-05-28-close.md --dry-run
 ```
@@ -1035,7 +1070,4 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli notify telegram --date 2026-05-
 - 設計 TiDB schema migration 流程。
 - 決定 raw data 儲存先用 JSONL 還是直接導入 Parquet library。
 - 設計 Telegram 正式發送 gate。
-- 接真正 Shioaji SDK simulation login / callback streaming。
-- 在真正 place order 時將 `idempotency_key` 寫入 order `custom_field`。
-- 將 execution sync store 從 dry-run file contract 推進到 callback event ingestion。
-- 建立 execution sync persistence，用於 restart 後比對 broker open state 與 ledger state。
+- Production readiness：正式 gate、交易時段策略、partial fill、cancel retry、失敗告警、人工確認流程與正式下單權限控管。

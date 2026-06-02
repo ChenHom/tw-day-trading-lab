@@ -92,6 +92,19 @@ class SimulationAdapterTest(unittest.TestCase):
         self.assertEqual(broker.place_order_count, 1)
         self.assertIn("duplicate", duplicate.review_reason)
 
+    def test_submitted_order_does_not_create_open_position(self):
+        broker = DryRunSimulationBroker(raw_status="Status.PendingSubmit")
+        adapter = ShioajiSimulationAdapter(broker=broker, ledger=PaperLedger())
+
+        result = adapter.execute(
+            self.make_signal(),
+            RiskDecision(approved=True, reason="risk_ok", quantity=1000),
+        )
+
+        self.assertEqual(result.status, "submitted")
+        self.assertEqual(result.trade.status, "submitted")
+        self.assertIsNone(result.position)
+
     def test_rejected_risk_decision_does_not_place_order(self):
         broker = DryRunSimulationBroker()
         adapter = ShioajiSimulationAdapter(broker=broker, ledger=PaperLedger())
@@ -127,9 +140,29 @@ class SimulationAdapterTest(unittest.TestCase):
         self.assertEqual(summary["samples"][0]["validity"], "needs_review")
         self.assertIn("ledger_missing_open_intent", summary["samples"][0]["review_reason"])
 
+    def test_submitted_trade_does_not_require_open_ledger_position(self):
+        submitted_trade = BrokerTrade(
+            idempotency_key="2026-05-28:mvp:2330:vwap-breakout:buy",
+            broker_order_id="sim-1",
+            trading_date="2026-05-28",
+            symbol="2330",
+            side="buy",
+            quantity=1000,
+            price=900.0,
+            status="submitted",
+            raw_status="Status.PendingSubmit",
+        )
+
+        summary = reconcile_broker_trades([submitted_trade], PaperLedger())
+
+        self.assertEqual(summary["matched"], 1)
+        self.assertEqual(summary["needs_review"], 0)
+        self.assertEqual(summary["samples"][0]["status"], "submitted")
+
     def test_broker_status_normalization(self):
         self.assertEqual(normalize_broker_status("Filled"), "filled")
         self.assertEqual(normalize_broker_status("PartFilled"), "partial_filled")
+        self.assertEqual(normalize_broker_status("Status.PendingSubmit"), "submitted")
         self.assertEqual(normalize_broker_status("Cancelled"), "cancelled")
         self.assertEqual(normalize_broker_status("unknown-new-status"), "needs_review")
 
@@ -183,7 +216,8 @@ class SimulationAdapterTest(unittest.TestCase):
             RiskDecision(approved=True, reason="risk_ok", quantity=1000),
         )
 
-        self.assertEqual(result.status, "simulated")
+        self.assertEqual(result.status, "submitted")
+        self.assertIsNone(result.position)
         self.assertEqual(len(gateway.requests), 1)
         self.assertEqual(gateway.requests[0].idempotency_key, result.order_intent.idempotency_key)
         self.assertLessEqual(len(gateway.requests[0].custom_field), 6)
@@ -242,6 +276,7 @@ class SimulationAdapterTest(unittest.TestCase):
                 self.login_calls: list[dict[str, object]] = []
                 self.orders: list[object] = []
                 self.place_order_calls: list[tuple[object, object]] = []
+                self.cancel_order_calls: list[object] = []
 
             def login(self, **kwargs):
                 self.login_calls.append(kwargs)
@@ -260,6 +295,10 @@ class SimulationAdapterTest(unittest.TestCase):
                     },
                     "status": {"status": "Submitted"},
                 }
+
+            def cancel_order(self, trade):
+                self.cancel_order_calls.append(trade)
+                return {"status": "CancelRequested"}
 
         api = FakeApi()
         gateway = ShioajiSdkSimulationGateway(
@@ -282,6 +321,9 @@ class SimulationAdapterTest(unittest.TestCase):
         self.assertEqual(api.orders[0]["account"], "stock-account")
         self.assertEqual(response["custom_field"], request.custom_field)
         self.assertEqual(response["broker_order_id"], "broker-1")
+        cancel = gateway.cancel_order(session, "broker-1")
+        self.assertEqual(cancel["status"], "CancelRequested")
+        self.assertEqual(api.cancel_order_calls[0]["order"]["id"], "broker-1")
 
     def test_shioaji_sdk_gateway_rejects_non_simulation_api(self):
         class LiveLikeApi:
@@ -529,6 +571,52 @@ class SimulationAdapterTest(unittest.TestCase):
         self.assertEqual(event.idempotency_key, "2026-05-28:mvp:2330:vwap-breakout:buy")
         self.assertEqual(event.symbol, "2330")
         self.assertEqual(event.normalized_status, "filled")
+        self.assertEqual(event.review_reason, "")
+
+    def test_normalizes_real_shioaji_callback_payload_with_operation_dict(self):
+        event = normalize_shioaji_order_callback(
+            {"op_type": "New", "op_code": "00"},
+            {
+                "operation": {"op_type": "New", "op_code": "00", "op_msg": ""},
+                "order": {
+                    "id": "broker-1",
+                    "custom_field": "ABC123",
+                    "action": "Buy",
+                    "price": 2355.0,
+                    "quantity": 1000,
+                },
+                "contract": {"code": "2330"},
+                "status": {"status": "PendingSubmit"},
+            },
+            trading_date="2026-06-02",
+            custom_field_map={"ABC123": "2026-06-02:mvp:2330:vwap-breakout:buy"},
+        )
+
+        self.assertEqual(event.idempotency_key, "2026-06-02:mvp:2330:vwap-breakout:buy")
+        self.assertEqual(event.normalized_status, "submitted")
+        self.assertEqual(event.review_reason, "")
+
+    def test_normalizes_real_shioaji_cancel_callback_from_operation_type(self):
+        event = normalize_shioaji_order_callback(
+            "OrderState.StockOrder",
+            {
+                "operation": {"op_type": "Cancel", "op_code": "00", "op_msg": ""},
+                "order": {
+                    "id": "broker-1",
+                    "custom_field": "ABC123",
+                    "action": "Buy",
+                    "price": 2120.0,
+                    "quantity": 1000,
+                },
+                "contract": {"code": "2330"},
+                "status": {"cancel_quantity": 1000},
+            },
+            trading_date="2026-06-02",
+            custom_field_map={"ABC123": "2026-06-02:mvp:2330:vwap-breakout:buy"},
+        )
+
+        self.assertEqual(event.idempotency_key, "2026-06-02:mvp:2330:vwap-breakout:buy")
+        self.assertEqual(event.normalized_status, "cancelled")
         self.assertEqual(event.review_reason, "")
 
     def test_callback_event_to_broker_trade_requires_idempotency_key(self):

@@ -449,12 +449,23 @@ def cmd_simulate_callback_smoke(args: argparse.Namespace) -> None:
     print(output)
 
 
+def _last_order_report_id(reports: list[dict[str, object]]) -> str:
+    for report in reversed(reports):
+        if report.get("mode") != "shioaji_order_request":
+            continue
+        result = report.get("result")
+        if isinstance(result, dict):
+            return str(result.get("broker_order_id") or "")
+    return ""
+
+
 def cmd_simulate_shioaji_smoke(args: argparse.Namespace) -> None:
     """Run explicitly gated Shioaji simulation smoke checks."""
     reports: list[dict[str, object]] = []
     api = None
     api_key = None
     secret_key = None
+    sdk_gateway = None
     store = FileExecutionSyncStore(Path(args.store)) if args.store else None
 
     if args.enable_login_smoke:
@@ -473,6 +484,14 @@ def cmd_simulate_shioaji_smoke(args: argparse.Namespace) -> None:
             api_key = os.getenv(args.api_key_env)
             secret_key = os.getenv(args.secret_key_env)
             api = sj.Shioaji(simulation=True)
+            if api_key and secret_key:
+                sdk_gateway = ShioajiSdkSimulationGateway(
+                    api=api,
+                    api_key=api_key,
+                    secret_key=secret_key,
+                    fetch_contract=args.fetch_contract,
+                    subscribe_trade=args.subscribe_trade,
+                )
             reports.append(
                 run_gated_shioaji_simulation_login_smoke(
                     api_factory=lambda simulation: api,
@@ -520,7 +539,7 @@ def cmd_simulate_shioaji_smoke(args: argparse.Namespace) -> None:
             report.get("mode") == "shioaji_simulation_login" and report.get("status") == "ok"
             for report in reports
         )
-        if not login_ok or api is None or not api_key or not secret_key:
+        if not login_ok or sdk_gateway is None:
             reports.append(
                 {
                     "status": "blocked",
@@ -558,13 +577,7 @@ def cmd_simulate_shioaji_smoke(args: argparse.Namespace) -> None:
                 signal, decision = plan[0]
                 reports.append(
                     run_gated_shioaji_order_request_smoke(
-                        gateway=ShioajiSdkSimulationGateway(
-                            api=api,
-                            api_key=api_key,
-                            secret_key=secret_key,
-                            fetch_contract=args.fetch_contract,
-                            subscribe_trade=args.subscribe_trade,
-                        ),
+                        gateway=sdk_gateway,
                         store=store,
                         signal=signal,
                         decision=decision,
@@ -588,7 +601,7 @@ def cmd_simulate_shioaji_smoke(args: argparse.Namespace) -> None:
             report.get("mode") == "shioaji_simulation_login" and report.get("status") == "ok"
             for report in reports
         )
-        if not login_ok or api is None or not api_key or not secret_key:
+        if not login_ok or sdk_gateway is None:
             reports.append(
                 {
                     "status": "blocked",
@@ -597,16 +610,11 @@ def cmd_simulate_shioaji_smoke(args: argparse.Namespace) -> None:
                 }
             )
         else:
+            cancel_broker_order_id = args.cancel_broker_order_id or _last_order_report_id(reports)
             reports.append(
                 run_gated_shioaji_cancel_smoke(
-                    gateway=ShioajiSdkSimulationGateway(
-                        api=api,
-                        api_key=api_key,
-                        secret_key=secret_key,
-                        fetch_contract=args.fetch_contract,
-                        subscribe_trade=args.subscribe_trade,
-                    ),
-                    broker_order_id=args.cancel_broker_order_id or "",
+                    gateway=sdk_gateway,
+                    broker_order_id=cancel_broker_order_id,
                     enabled=True,
                     store=store,
                 )

@@ -72,32 +72,13 @@
 
 ## P6: Shioaji Simulation
 
-目前狀態：dry-run adapter MVP、execution sync MVP、callback normalization MVP、order custom field token mapping、SDK-shaped gateway MVP、callback stream MVP、execution lifecycle policy MVP、duplicate callback dedupe MVP、callback status ordering MVP、execution sync store locking MVP、terminal-state policy MVP、longer callback smoke MVP、gated Shioaji simulation smoke guard MVP、gated simulation login / callback registration smoke、gated order request smoke guard MVP、regular-session gate、cancel smoke guard MVP、order handle persistence MVP 已完成。
+目前狀態：已完成。
 
-- `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition`：已完成 dry-run chain。
-- duplicate intent 會在 broker order 前被 ledger 擋下。
-- broker status normalization 已完成 MVP：`Filled`、`PartFilled`、`Cancelled`、`Rejected` 等轉成內部狀態。
-- broker / ledger state mismatch 會被 reconcile 成 `needs_review`，且 `expectancy_eligible=false`。
-- simulation 樣本與 replay 樣本分開統計，simulation 不納入 replay expectancy。
-- execution sync store 可保存 dry-run broker trades / open positions，restart-sync 可重建 ledger open state 並比對 broker / ledger 一致性。
-- callback normalization 可將 Shioaji `{stat, msg}` payload 轉成穩定內部 event，缺 key / 缺欄位會進 `needs_review`。
-- order request contract 會把 `OrderIntent.idempotency_key` 轉成 6 字元 `custom_field` token，並透過 execution sync store mapping 還原 callback intent。
-- `ShioajiSdkSimulationGateway` 已用 fake SDK 測試 login / `api.Order` / `api.place_order` 邊界，且會拒絕 `api.simulation=False`；真實登入與真實委託仍未啟用。
-- `ShioajiCallbackStream` 可註冊 `set_order_callback`，把 callback normalize 後寫入 execution sync store，且會拒絕 `api.simulation=False`。
-- execution lifecycle policy 已先記錄 callback 對 ledger 的決策：filled 確認開倉，cancelled / rejected 釋放 intent，partial fill 先進人工檢查。
-- duplicate callback dedupe 已完成：相同 callback key 不會重複寫 callback event、broker trade 或 lifecycle decision。
-- callback status ordering 已完成：同一 broker order 若先收到 `filled`，後到的 `submitted` 會被視為 stale 並跳過，避免狀態倒退。
-- execution sync store locking 已完成：file lock 包住 read-modify-write，JSON 寫入使用 temp file + atomic replace。
-- terminal-state policy 已完成：`filled / cancelled / rejected` 之間若出現不同終態衝突，會寫入 `terminal_state_conflict` 並跳過。
-- longer callback smoke 已完成：`simulate callback-smoke` 可用 sample callback sequence 驗證 submitted / filled / stale / terminal conflict 多事件序列。
-- gated Shioaji simulation smoke guard 已完成：`simulate shioaji-smoke` 預設 blocked，不 import Shioaji、不登入；明確 gate 後只允許 `sj.Shioaji(simulation=True)` login smoke 與 callback registration smoke，仍不送單。
-- gated simulation login smoke 已實測通過：`simulation_only=true`、`orders_allowed=false`，不 fetch contracts、不 subscribe trade。
-- gated callback registration smoke 已實測通過：`set_order_callback` 可註冊，尚未產生 callback event。
-- gated order request smoke guard 已完成：只有 `--enable-order-smoke` 才會允許 place order；必須有成功 login smoke、execution sync store、單筆 input plan、risk approved、limit price、quantity 不超過 smoke limit。
-- order smoke restart reconciliation 已完成：fake gateway 測試會把 broker trade / open position 寫入 store，並立即產生 restart-sync matched summary。
-- regular-session gate 已完成：order smoke 預設只允許 `09:00-13:20`，盤後需明確 `--allow-outside-session`。
-- cancel smoke guard 已完成：只有 `--enable-cancel-smoke --cancel-broker-order-id ...` 才能進 cancel gateway，預設 blocked。
-- order handle persistence 已完成：order smoke 會把 JSON-safe raw response 保存到 `shioaji_order_handles`，cancel smoke 會優先使用此 handle 並把 cancel response 寫到 `cancel_results`。
+- P6A 本地 simulation execution chain：已完成 `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition` dry-run chain，simulation 與 replay expectancy 分開，duplicate intent 會在 broker order 前被 ledger 擋下。
+- P6B callback / restart-sync hardening：已完成 execution sync store、restart-sync、callback normalization / stream、lifecycle policy、duplicate dedupe、status ordering、store locking、terminal-state policy、longer callback smoke。
+- P6C gated Shioaji simulation login + callback registration：已完成真實 `sj.Shioaji(simulation=True)` login smoke，`set_order_callback` 可註冊，且所有 gateway 都拒絕 `api.simulation=False`。
+- P6D gated simulation order + cancel smoke：已完成真實 simulation order / callback / cancel smoke。最終 smoke summary total 4、ok 4、blocked 0；order status `submitted`，cancel callback `cancelled`，restart-sync matched 2、needs_review 0。
+- 安全邊界：正式區登入、正式委託與自動下單仍不屬於本階段；P6 只證明 Shioaji simulation 執行鏈路可控，不證明策略 edge。
 
 ## Later: Report Loop / Notification
 
@@ -110,4 +91,4 @@
 - valid / excluded / needs_review 樣本統計：已透過 replay 與 close report 顯示。
 - simulation status summary：已完成，`needs_review` 會明確列出，且 simulation 不納入 replay expectancy。
 - hardening：逐筆 `needs_review` reason、專用 Telegram summary renderer、壞檔 / 缺欄位測試已完成第一版。
-- 下一步：在人工 gate 下跑真實 Shioaji simulation order request smoke；必須先確認測試委託價格、是否允許盤後 smoke，以及 Shioaji SDK 真實 order / cancel response shape。
+- 下一步：進入 P7 或下一個 phase 前，先整理 production readiness gap：正式 gate、交易時段策略、cancel retry、partial fill policy、report/alert 與人工確認流程。

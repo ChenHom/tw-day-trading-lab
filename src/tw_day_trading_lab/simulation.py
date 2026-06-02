@@ -326,6 +326,7 @@ class ShioajiSdkSimulationGateway:
         self._account = account
         self._fetch_contract = fetch_contract
         self._subscribe_trade = subscribe_trade
+        self._raw_trade_by_order_id: dict[str, Any] = {}
 
     def login(self) -> dict[str, str]:
         accounts = self._api.login(
@@ -356,7 +357,10 @@ class ShioajiSdkSimulationGateway:
             custom_field=request.custom_field,
         )
         raw_trade = self._api.place_order(contract, order)
-        return _normalize_shioaji_place_order_response(raw_trade, request)
+        response = _normalize_shioaji_place_order_response(raw_trade, request)
+        if response["broker_order_id"]:
+            self._raw_trade_by_order_id[response["broker_order_id"]] = raw_trade
+        return response
 
     def cancel_order(
         self,
@@ -366,7 +370,9 @@ class ShioajiSdkSimulationGateway:
     ) -> dict[str, Any]:
         if not hasattr(self._api, "cancel_order"):
             raise ValueError("Shioaji API object does not expose cancel_order")
-        cancel_target = order_handle.get("raw") if order_handle else broker_order_id
+        cancel_target = self._raw_trade_by_order_id.get(broker_order_id)
+        if cancel_target is None:
+            cancel_target = order_handle.get("raw") if order_handle else broker_order_id
         raw_cancel = self._api.cancel_order(cancel_target)
         return {
             "broker_order_id": broker_order_id,
@@ -491,17 +497,28 @@ def _normalize_shioaji_place_order_response(
 
 
 def normalize_broker_status(raw_status: str) -> str:
-    normalized = raw_status.strip().lower().replace("_", "").replace(" ", "")
+    normalized = (
+        raw_status.strip()
+        .lower()
+        .replace("_", "")
+        .replace(" ", "")
+        .replace(".", "")
+    )
     status_map = {
         "filled": "filled",
         "partfilled": "partial_filled",
         "partialfilled": "partial_filled",
         "submitted": "submitted",
+        "new": "submitted",
+        "pendingsubmit": "submitted",
+        "statuspendingsubmit": "submitted",
         "pending": "submitted",
         "cancelled": "cancelled",
         "canceled": "cancelled",
+        "cancel": "cancelled",
         "rejected": "rejected",
         "failed": "rejected",
+        "statusfailed": "rejected",
     }
     return status_map.get(normalized, "needs_review")
 
@@ -567,6 +584,8 @@ class ShioajiSimulationAdapter:
             return "needs_review", "broker_idempotency_mismatch"
         if trade.status == "needs_review":
             return "needs_review", "broker_status_needs_review"
+        if trade.status == "submitted":
+            return "submitted", ""
         if trade.status in {"cancelled", "rejected"}:
             return "broker_rejected", trade.status
         return "simulated", ""
@@ -594,7 +613,7 @@ def reconcile_broker_trades(trades: list[BrokerTrade], ledger: PaperLedger) -> d
         review_reasons: list[str] = []
         if normalized_status == "needs_review":
             review_reasons.append("broker_status_needs_review")
-        if not ledger.has_open_key(trade.idempotency_key):
+        if normalized_status == "filled" and not ledger.has_open_key(trade.idempotency_key):
             review_reasons.append("ledger_missing_open_intent")
 
         validity = "needs_review" if review_reasons else "valid"
@@ -755,6 +774,12 @@ class FileExecutionSyncStore:
                     snapshot["open_positions"],
                     result.position.to_dict(),
                 )
+
+        self._mutate_snapshot(mutate)
+
+    def record_custom_field_mapping(self, custom_field: str, idempotency_key: str) -> None:
+        def mutate(snapshot: dict[str, Any]) -> None:
+            snapshot["custom_field_map"][custom_field] = idempotency_key
 
         self._mutate_snapshot(mutate)
 
@@ -963,11 +988,13 @@ def normalize_shioaji_order_callback(
     order = _to_plain_mapping(payload.get("order", {}))
     contract = _to_plain_mapping(payload.get("contract", {}))
     status = _to_plain_mapping(payload.get("status", {}))
+    operation = _to_plain_mapping(payload.get("operation", {}))
 
     raw_status = str(
         _first_non_empty(
             status.get("status"),
             status.get("order_status"),
+            operation.get("op_type"),
             payload.get("status"),
             stat,
         )
@@ -1229,6 +1256,11 @@ def run_gated_shioaji_order_request_smoke(
         report["review_reason"] = "outside_regular_session"
         return report
 
+    intent = signal.to_order_intent()
+    store.record_custom_field_mapping(
+        build_shioaji_custom_field(intent.idempotency_key),
+        intent.idempotency_key,
+    )
     broker = ShioajiOrderRequestBroker(gateway)
     adapter = ShioajiSimulationAdapter(
         broker=broker,
@@ -1249,7 +1281,7 @@ def run_gated_shioaji_order_request_smoke(
         positions,
         restore_ledger_from_positions(positions),
     )
-    report["status"] = "ok" if result.status == "simulated" else "needs_review"
+    report["status"] = "ok" if result.status in {"simulated", "submitted"} else "needs_review"
     report["side_effects"] = ["login", "place_order"]
     report["result"] = {
         "status": result.status,
@@ -1300,7 +1332,19 @@ def run_gated_shioaji_cancel_smoke(
     snapshot = store.load_snapshot() if store else _empty_execution_sync_snapshot()
     order_handle = snapshot["shioaji_order_handles"].get(broker_order_id)
     session = gateway.login()
-    response = gateway.cancel_order(session, broker_order_id, order_handle=order_handle)
+    try:
+        response = gateway.cancel_order(session, broker_order_id, order_handle=order_handle)
+    except Exception as error:
+        report["status"] = "needs_review"
+        report["side_effects"] = ["login", "cancel_order"]
+        report["review_reason"] = "cancel_order_failed"
+        report["result"] = {
+            "broker_order_id": broker_order_id,
+            "status": "needs_review",
+            "error": str(error),
+            "used_order_handle": bool(order_handle),
+        }
+        return report
     if store:
         store.record_cancel_result(broker_order_id=broker_order_id, response=response)
     report["status"] = "ok"
@@ -1357,7 +1401,13 @@ def _json_safe(value: Any) -> Any:
 
 def _first_non_empty(*values: Any) -> Any:
     for value in values:
-        if value not in {None, ""}:
+        if value is None:
+            continue
+        if isinstance(value, str) and value == "":
+            continue
+        if isinstance(value, (dict, list, tuple)) and not value:
+            continue
+        if value != "":
             return value
     return None
 
