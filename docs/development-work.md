@@ -1,12 +1,12 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P7 已完成；P6 可收斂為 P6A 本地 simulation execution chain、P6B callback / restart-sync hardening、P6C gated login + callback registration、P6D gated simulation order + cancel smoke，四段皆已完成；P7 Production Readiness Gate 已完成。下一步是正式營運設計，不再拆 P7。
+狀態：P0-P7 已完成；P6 可收斂為 P6A 本地 simulation execution chain、P6B callback / restart-sync hardening、P6C gated login + callback registration、P6D gated simulation order + cancel smoke，四段皆已完成；P7 Production Readiness Gate 已完成。剩餘 P8-P11：simulation ops go-live、ops reports / alerts、regression correction loop、live execution design。
 預設分支：`master`
 
 ## Phase 對照
 
-本文件採用 P0-P7 作為唯一開發 phase 命名。`docs/mvp-roadmap.md` 必須與本文件保持一致。
+本文件採用 P0-P11 作為目前開發 phase 命名。`docs/mvp-roadmap.md` 必須與本文件保持一致。
 
 | Phase | 名稱 | 目前狀態 | 對應 commit |
 |---|---|---|---|
@@ -19,6 +19,10 @@
 | P5 | Replay / Paper Ledger | 已完成 MVP | `3c998be` |
 | P6 | Shioaji Simulation Adapter | 已完成 | through P6D smoke |
 | P7 | Production Readiness Gate | 已完成 | P7 readiness gate |
+| P8 | Simulation Ops Go-live | 待處理 | - |
+| P9 | Ops Reports / Alerts | 待處理 | - |
+| P10 | Regression Correction Loop | 待處理 | - |
+| P11 | Live Execution Design | 待處理 | - |
 
 `P4b Candidate Engine Data Enrichment` 是 P4 的資料強化 sprint，不是獨立大 phase。
 
@@ -1079,8 +1083,39 @@ Grill-me review：
 
 - 方向正確：P7 只做正式營運前 gate/report/alert contract，沒有偷開正式區，也沒有把 readiness 當成策略 edge。
 - must-fix 已處理：live gate 預設 blocked；人工 token 才能讓 report ready；pending / partial / ordering / cancel retry 都可被 report 揭露。
-- should-fix：下一 phase 若要進正式營運，必須把 approval token 流程、實際 live broker adapter、告警發送、人工操作 SOP 與權限控管獨立成新 phase。
+- should-fix：下一 phase 不是直接正式下單，而是先做 P8 simulation ops go-live；後面再接 P9 reports / alerts、P10 regression correction loop、P11 live execution design。
 - 結論：P7 完成；不要再拆 P7。
+
+### Remaining Phase Map
+
+目前剩餘 4 個 phase。
+
+P8 Simulation Ops Go-live：
+
+- 把 P6/P7 的 gated simulation order chain 變成每日可執行的 simulation ops。
+- 仍只使用 Shioaji simulation，不啟用正式區。
+- 產出 execution bundle：input plan、order report、callback store、restart-sync、readiness report。
+- 驗收：一個交易日可完成 end-to-end simulation run，且所有 side effects / blocked reasons / broker order ids 可追蹤。
+
+P9 Ops Reports / Alerts：
+
+- 把 candidate / replay / simulation / restart-sync / readiness 合成 daily ops close report。
+- Telegram summary 從 dry-run 推進到 gated send；預設仍 blocked。
+- report 必須列 pending orders、partial fills、callback ordering issues、readiness blockers、manual actions。
+- 驗收：一個命令可產出 operator-ready report，並可在明確 gate 下發送摘要。
+
+P10 Regression Correction Loop：
+
+- 將每日 simulation ops 的錯誤、mismatch 與 missed cases 轉成 regression cases。
+- 分類 data issue、candidate quality、risk decision、broker/callback lifecycle、reporting issue。
+- 自動產生 replay / simulation regression fixture。
+- 驗收：每日問題能進 regression backlog，且可由 tests / smoke command 驗證已修正。
+
+P11 Live Execution Design：
+
+- 在 simulation ops 穩定後才設計正式區下單。
+- 定義 live approval token、live broker adapter、權限控管、部位上限、daily stop、panic cancel、kill switch、正式告警與人工確認 SOP。
+- 驗收：即使 live adapter 存在，沒有正確 approval token / session gate / readiness ready 仍不能送單。
 
 ## 5. Working Commands
 
@@ -1117,4 +1152,7 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli notify telegram --date 2026-05-
 - 設計 TiDB schema migration 流程。
 - 決定 raw data 儲存先用 JSONL 還是直接導入 Parquet library。
 - 設計 Telegram 正式發送 gate。
-- 正式營運設計：approval token 流程、實際 live broker adapter、告警發送、人工操作 SOP 與正式下單權限控管。
+- P8 Simulation Ops Go-live。
+- P9 Ops Reports / Alerts。
+- P10 Regression Correction Loop。
+- P11 Live Execution Design。
