@@ -1166,6 +1166,60 @@ Better version of phase gates：
 - P10 is not done when a bug is documented; P10 is done when the same failure becomes a regression fixture that fails before the fix and passes after.
 - P11 is not allowed to start live execution until simulation ops has stable-day evidence and unresolved P0/P1 operational risks are zero.
 
+### P0-P11 Full Grill-me Review
+
+Verdict：整體 phase order 是對的，但目前最容易失敗的地方是「完成的 phase 被後續誤當成可靠基礎」。P0-P7 已完成的是 MVP / gate / smoke，不是完整 production proof；P8-P11 必須把 residual risks 當作輸入，而不是把它們當作已消失。
+
+Most likely full-project failure points：
+
+1. P0 bootstrap 缺少安裝 / packaging / entrypoint smoke 的長期保證。
+   - 風險：CLI 在 repo 內能跑，不代表排程或別的 shell 環境能跑。
+   - correction：P8 ops runner 要明確記錄 Python path、cwd、env file source、command line 與 version / commit hash。
+
+2. P1 old log importer 證明了舊錯誤可分類，但舊資料 schema drift 仍可能讓 regression 偏掉。
+   - 風險：後續 P10 若只靠單一 sample schema，會漏掉新型態錯誤。
+   - correction：P10 regression case 必須保存 raw source row / payload，不只保存 normalized result。
+
+3. P2 TiDB integration 是 MVP，不是 migration system。
+   - 風險：P8-P10 若大量寫入 ops artifacts，schema drift / 重跑 / migration 會變成隱性風險。
+   - correction：P9/P10 若要保存 ops result，必須先定義 migration/version strategy，不要直接擴張現有 schema。
+
+4. P3/P4/P4b candidate pipeline 仍缺「候選品質回饋」閉環。
+   - 風險：P8 每天能送 simulation order，但送的是低品質 candidate，最後只得到穩定執行低品質交易。
+   - correction：P9 report 必須把 candidate source、downgrade reasons、data gaps 與 simulation outcome 放在同一份 ops report；P10 要能把 candidate quality failure 回寫成 regression case。
+
+5. P5 replay 仍依賴 valid sample quality 與 cost assumptions。
+   - 風險：後續把 replay output 當成策略 edge 時，會高估系統。
+   - correction：P9/P10 report 必須繼續分離 replay expectancy、simulation execution health、live readiness，不可合成單一健康分數來誤導。
+
+6. P6 真實 simulation smoke 只驗證一筆 order/cancel。
+   - 風險：單筆 2330 limit order/cancel 成功，不能代表多標的、多價格、不同交易狀態、partial fill、異常 callback 都穩。
+   - correction：P8 不可把 P6 smoke 當 production proof；P8 要做 daily runner + manifest，P10 要把新的 broker/callback shape 轉 regression fixture。
+
+7. P7 readiness report 是 advisory contract，不是硬性 broker enforcement。
+   - 風險：後續若 live adapter 只讀 P7 report 的 `live_execution_allowed`，會形成單點誤判。
+   - correction：P11 live adapter 必須自己重新驗證 approval token、session gate、risk limits、readiness state，不可只信 report。
+
+8. P7 approval token 預設值可預測。
+   - 風險：如果沿用 `{date}:LIVE-TRADING-APPROVED` 到正式流程，gate 等於假 gate。
+   - correction：P11 必須改為不可預測、短效、可稽核的人工 approval token；P7 預設 token 僅限測試。
+
+9. P8-P11 仍缺明確 entry / exit criteria。
+   - 風險：phase 看似完成，但實際只完成命令或文件，未達到可營運。
+   - correction：每個 phase close-out 必須列出 command gate、artifact gate、regression gate、operator gate。
+
+10. 最大系統性風險：把 execution stability 誤認為 strategy profitability。
+    - 風險：系統穩定送 simulation order，但策略本身沒有 edge，仍會導向錯誤決策。
+    - correction：所有 report 都必須保持三層分離：strategy evidence、execution health、operational readiness。
+
+Corrected phase guardrails：
+
+- P8 must start with plan builder contract + price/contract/session gates + ops run manifest before any daily runner expansion.
+- P9 must not send alerts until alert severity / dedupe / owner / manual action are defined.
+- P10 must require raw source payload + minimal fixture + closing test command for every regression case.
+- P11 must enforce approval / readiness / risk limits at broker boundary, not only in reports.
+- P0-P7 residual risks must remain visible in P8-P11 documents; completed phase means usable baseline, not proof of production safety.
+
 ## 5. Working Commands
 
 ```bash

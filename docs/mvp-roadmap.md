@@ -6,6 +6,23 @@
 
 每個 phase / sprint 完成後，必須執行 grill-me review，確認實作方向、驗證範圍與文件狀態沒有偏離。review 結論必須寫回 `docs/development-work.md` 對應 phase；若 roadmap 狀態改變，才同步更新本文件。
 
+P8 之後每個 phase close-out 不能只列「新增命令」或「新增文件」，必須同時通過：
+
+- command gate：有可重跑命令。
+- artifact gate：產出可追蹤 artifact / manifest。
+- regression gate：失敗情境可轉成測試或 fixture。
+- operator gate：報告或 alert 明確告訴操作者下一步。
+
+## Cross-phase Failure Controls
+
+這些控制點橫跨 P0-P11，不屬於單一 phase，但任何後續 phase 都必須遵守。
+
+- 已完成不等於無風險：P0-P7 仍可能有 residual risk，後續 phase 不可假設舊 phase 完美。
+- 每個 ops artifact 必須可追溯到 run id / source input / command / checksum，否則 P10 regression 無法成立。
+- simulation / readiness / live execution 都不得被當成 strategy edge；strategy edge 只能由合格 replay / research sample 證明。
+- readiness report 在 P7 只是 report contract；真正的 live execution enforcement 必須在 P11 broker boundary 再做一次，不可只信 report。
+- approval token 不可使用可預測字串作為正式密鑰；P7 的預設 token 只適合測試 gate，不適合正式營運。
+
 ## P0: Repo Bootstrap
 
 目前狀態：已完成。
@@ -44,7 +61,7 @@
 - planned calls 預設上限 540/hr。
 - 無 token 不 crash，回報 `auth_missing`。
 - 真實 FinMind smoke 已確認第一次 actual=1、第二次 skipped=1。
-- 下一步需把單日擷取擴成 20-50 日窗口。
+- 20-50 日窗口已在 P4b enrichment 完成；P3 不再保留此待辦。
 
 ## P4: Candidate Engine v1
 
@@ -90,6 +107,8 @@
 - pending submitted order、partial fill、callback ordering issue、cancel retry 缺口都會轉成 alerts 與 manual actions。
 - P7 smoke 已用 P6 真實 simulation store 驗證：checks 6、ok 5、blocked 1、needs_review 0；唯一 blocker 是未提供正式人工 approval token。
 - 安全邊界：P7 只完成正式營運前的 gate/report/alert contract，不啟用正式下單。
+- residual risk：P7 readiness 目前是 report，不是 broker boundary enforcement；P11 必須在 live adapter 再實作硬阻擋。
+- residual risk：P7 預設 expected token 是可預測字串，只能用於測試；正式 approval token 必須改成不可預測、短效、可稽核的人工授權。
 
 ## Later: Report Loop / Notification
 
@@ -117,6 +136,7 @@
 - must-fix：定義 plan builder contract，明確記錄 candidate source、risk decision reason、limit price source、quantity source、blocked reason。
 - must-fix：送 simulation order 前檢查 limit_up / limit_down、reference price、contract loaded、regular session、trading day。
 - must-fix：建立 `ops_run_manifest`，保存 run id、artifact path、input/output checksum、side effects summary。
+- must-fix：P8 完成條件不是「能送 simulation order」，而是 daily run 可從 manifest replay / audit / explain。
 - 驗收：可在一個交易日完成 end-to-end simulation run，且所有 side effects、blocked reasons、broker order ids 都可追蹤。
 
 ## P9: Ops Reports / Alerts
@@ -130,6 +150,7 @@
 - report 需列出 pending orders、partial fills、callback ordering issues、readiness blockers、manual actions。
 - 保存 report artifact path / run id，方便隔日 regression correction。
 - must-fix：alert 必須有 severity、dedupe key、send gate、owner / manual action、重送限制。
+- must-fix：P9 report 必須分離 strategy evidence、execution health、operational readiness，避免一個總分誤導。
 - 驗收：一個命令可產出 operator-ready report，並可在明確 gate 下發送摘要。
 
 ## P10: Regression Correction Loop
@@ -143,6 +164,7 @@
 - 自動產生 replay / simulation regression fixture。
 - 修正後重跑對應 regression suite，避免同一錯誤重演。
 - must-fix：每個 regression case 必須有 source run id、failure type、minimal fixture、expected behavior、closing test command。
+- must-fix：每個 regression case 必須保存 raw source row / payload，不能只保存 normalized result。
 - 驗收：每日問題能進 regression backlog，且可由 tests / smoke command 驗證已修正。
 
 ## P11: Live Execution Design
@@ -157,4 +179,6 @@
 - 設計正式告警發送與人工確認回寫。
 - must-fix：P11 entry criteria 必須包含連續 N 個 trading days simulation ops 無 blocker、無 unresolved partial fill / ordering issue、report 準時送達、regression backlog 無 P0/P1 open items。
 - must-fix：simulation / readiness 只能證明執行鏈可控，不得當成 strategy edge 或正式交易獲利證明。
+- must-fix：live adapter 必須自行驗證 readiness / approval / session / risk limits，不可只依賴 P7 report 的 `live_execution_allowed`。
+- must-fix：正式 approval token 必須不可預測、短效、可稽核，不能使用日期格式預設 token。
 - 驗收：即使 live adapter 存在，沒有正確 approval token / session gate / readiness ready 仍不能送單。
