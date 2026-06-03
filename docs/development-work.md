@@ -1334,3 +1334,51 @@ Grill-me close-out verdict：
 1. **多維度流動性過濾**：闡明單純以成交金額過濾會造成「高價低量股假流動性」與「低價高量股被誤殺」的失真現象，建議改用 20 日均成交金額 (20-day ADV) 結合成交張數與 Spread% 作為 Universe 篩選指標。
 2. **自動化防呆運行**：釐清自動化流程之觸發時序（Ingestion -> Candidate Build -> Ops Run Plan -> Close Report），並詳細定義 Git Clean Check、Lock File 機制、Checksum/Manifest 軌跡記錄、資料完整性門禁等生產環境安全要求，以硬化自動化執行鏈。
 3. **自動化環境變數與憑證加載優化**：程式已重構，支持在 CLI 入口點自動調用 `python-dotenv` 加載專案根目錄下的 `.env` 檔案；並在 Shioaji 模擬登入時，自動偵測並調用 `activate_ca` 方法啟用本地的 `Sinopac.pfx` 憑證（支援環境變數 `CERT_PATH` / `CA_PASSWORD` / `CA_ID`），無須再在 CLI 前手動附加複雜的 `env` 宣告指令。
+
+## 12. Post-Market Hardening Sprints - 2026-06-03
+
+### Sprint 3-A: 多維度流動性過濾升級
+
+目前狀態：已完成。commit `658c02c`
+
+- **20日均成交金額 (ADV-20d) filter**：在 `build_candidates_from_raw_cache` 中新增 `min_adv_20d_money=50_000_000` 參數，計算最近 20 根 K 棒的 `Trading_money` 平均；若低於門檻則過濾，summary 記錄 `filtered_low_adv`。防禦單日新聞暴量假流動性。
+- **最低成交張數 filter**：新增 `min_volume_lots=500` 參數（1 張 = 1000 股），目標日成交量不足 500 張則過濾，summary 記錄 `filtered_low_volume_lots`。防禦高價低量股的委託簿稀疏問題。
+- **高價股 Spread% 警告**：close > 500 且 intraday_range_pct < 0.3% 時，summary 記錄 `warned_high_price_spread`（不過濾，僅警告）。
+- 新增 3 個單元測試，全數通過，總計 111 tests。
+
+殘餘風險：
+- ADV-20d 使用 JSONL 現有筆數；若 cache < 20 筆，以現有筆數平均（與 ATR-20d 行為一致）。
+- 高價 Spread% 目前只記錄於 summary，尚未作為 `downgrade_reason` 傳入 CandidateInput；如需進入排名邏輯，需後續 sprint 補充。
+
+### Sprint 3-B: Ops-run 前置安全驗證
+
+目前狀態：已完成。commit `455be7e`
+
+- **Git clean check** (`check_git_clean`)：執行 `git status --porcelain` 與 `git diff --check`，回傳 `{clean, uncommitted_files, whitespace_issues}`。dirty repo 時在 manifest 的 `blocked_reasons` 加入 `uncommitted_changes`，但不中斷執行（警告+記錄）。
+- **Lock file 偵測** (`check_ops_lock`)：偵測 `.ops.lock` 是否存在，存在時加入 `ops_lock_file_exists` 到 `blocked_reasons`；ops-run 開始時建立 lock，結束時清除（盡力清除，不拋例外）。
+- **Manifest `git_status` 欄位**：manifest dict 新增 `git_status` 鍵，記錄 git 狀態摘要，確保每日 run 可從 manifest 獨立稽核環境狀態。
+- 新增 `tests/test_ops_run.py`，8 個測試，全數通過，總計 120 tests。
+
+殘餘風險：
+- SIGKILL 後 `.ops.lock` 殘留，需手動清除（intentional，可稽核）。
+- 兩個 pre-flight check 均為 warning-only，不硬阻擋；若未來需強制 clean repo 才能送單，可升級為 hard abort。
+
+### Sprint 3-C: 大盤環境過濾器（Market Regime Filter）
+
+目前狀態：已完成。commit `c45579b`
+
+- 新增 `src/tw_day_trading_lab/market_regime.py`，純函數模組：
+  - `compute_market_regime(price_rows, *, min_atr5d_pct=0.5, gap_down_threshold_pct=-1.5)`
+  - EMA20：前 20 根收盤均值為種子，k = 2/(20+1) 指數平滑
+  - 5日 ATR%：最近 5 根 true range 均值 / 收盤價 × 100
+  - gap_open_pct：今日開盤 vs 前日收盤漲跌幅
+  - 判斷邏輯：`bearish_skip`（任一條件成立）/ `bullish`（全清）/ `neutral`（其他）
+  - < 21 筆資料時回傳 `neutral`，reasons 含 `insufficient_history`
+- 使用 **0050 元大台灣50 ETF** 作為大盤環境 proxy（FinMind TaiwanStockTotalReturnIndex API 在目前 token 下不可用）
+- `build_candidates_from_raw_cache` 整合：ranking 後載入 0050 proxy，regime 結果記錄於 `summary['market_regime']`；`bearish_skip` 時將 `next_day_actionable=True` 的候選全部標為 `next_day_actionable=False` 並附加 `market_regime_blocked` downgrade reason。
+- 新增 `tests/test_market_regime.py`（7 個測試）與 `test_candidate_builder.py` 補 2 個 Sprint 3-C 測試，全數通過，總計 129 tests。
+
+殘餘風險：
+- 0050 proxy 需在 ingestion 時一起抓取（需在 finmind request list 加入 `stock_id='0050'`）；若 cache 無 0050，系統 fallback 為 `neutral`（不阻擋）。
+- EMA20 在剛好 21 筆時僅 1 筆參與指數平滑，訊號不穩定；操作者應確保 cache 有足夠歷史窗口（建議 ≥ 30 筆）。
+- `CandidateScore.downgrade_reasons` 在 bearish 修補後為 list（原始為 tuple），若下游需要 tuple 型別，後續 sprint 可補 `tuple(...)` wrap。
