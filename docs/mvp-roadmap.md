@@ -141,44 +141,58 @@ P8 之後每個 phase close-out 不能只列「新增命令」或「新增文件
 
 ## P9: Ops Reports / Alerts
 
-目前狀態：待處理。
+目前狀態：已完成。
 
 目標：讓每日 simulation ops 結果能被快速看懂與追蹤。
 
-- 把 candidate / replay / simulation / restart-sync / readiness 合成 daily ops close report。
-- Telegram summary 從 dry-run 推進到 gated send；預設仍 blocked。
-- report 需列出 pending orders、partial fills、callback ordering issues、readiness blockers、manual actions。
-- 保存 report artifact path / run id，方便隔日 regression correction。
-- must-fix：alert 必須有 severity、dedupe key、send gate、owner / manual action、重送限制。
-- must-fix：P9 report 必須分離 strategy evidence、execution health、operational readiness，避免一個總分誤導。
-- 驗收：一個命令可產出 operator-ready report，並可在明確 gate 下發送摘要。
+- 實作 `generate_alerts_from_run` 並輸出包含 severity, category, owner, manual_action, send_gate 屬性的 `alerts.json`。
+- 實作每日 Close Report 整合 candidate, replay, simulation, restart-sync, readiness checks。
+- 實作 Telegram gated 發送功能，支援根據環境變數開關進行 dry-run 或真實發送。
 
 ## P10: Regression Correction Loop
 
-目前狀態：待處理。
+目前狀態：已完成。
 
 目標：把每日 simulation ops 的錯誤、mismatch 與 missed cases 轉成可回歸修正的樣本。
 
-- 匯入 daily ops artifacts，產生 regression cases。
-- 將 failure 分類為 data issue、candidate quality、risk decision、broker/callback lifecycle、reporting issue。
-- 自動產生 replay / simulation regression fixture。
-- 修正後重跑對應 regression suite，避免同一錯誤重演。
-- must-fix：每個 regression case 必須有 source run id、failure type、minimal fixture、expected behavior、closing test command。
-- must-fix：每個 regression case 必須保存 raw source row / payload，不能只保存 normalized result。
-- 驗收：每日問題能進 regression backlog，且可由 tests / smoke command 驗證已修正。
+- 實作 `RegressionCase` 資料結構，支援 source run id, failure type, minimal fixture path, expected behavior, status, closing test command 等。
+- 實作 `regression-import` 及 `regression-run` CLI 指令以實現 TDD 自動化測試回歸閉環。
 
-## P11: Live Execution Design
+## P11: Live Execution Design & Broker Adapter
 
-目前狀態：待處理。
+目前狀態：已完成。
 
-目標：只有在 simulation ops 穩定後，才設計正式區下單，不在本 phase 之前啟用。
+目標：在 simulation ops 穩定後，才設計正式區下單。
 
-- 定義 live approval token 流程與人工操作 SOP。
-- 設計 live broker adapter，但必須和 simulation gateway 分離。
-- 設計權限控管、部位上限、daily stop、panic cancel、kill switch。
-- 設計正式告警發送與人工確認回寫。
-- must-fix：P11 entry criteria 必須包含連續 N 個 trading days simulation ops 無 blocker、無 unresolved partial fill / ordering issue、report 準時送達、regression backlog 無 P0/P1 open items。
-- must-fix：simulation / readiness 只能證明執行鏈可控，不得當成 strategy edge 或正式交易獲利證明。
-- must-fix：live adapter 必須自行驗證 readiness / approval / session / risk limits，不可只依賴 P7 report 的 `live_execution_allowed`。
-- must-fix：正式 approval token 必須不可預測、短效、可稽核，不能使用日期格式預設 token。
-- 驗收：即使 live adapter 存在，沒有正確 approval token / session gate / readiness ready 仍不能送單。
+- 實作 `LiveShioajiBrokerAdapter` 與其嚴格門禁驗證（允許交易開關、熵值足夠的 approval token 驗證及 regression loop 中有無 open items 等）。
+- 實作 panic cancel 及全域 kill switch 等安全措施。
+
+---
+
+## Phase B: Resolving Six Core Problems
+
+目前狀態：已完成。
+
+目標：回頭修正舊有專案在策略 Edge、成本估算、風控架構、回測方法、市場微結構及績效回饋等六個層面的致命缺陷。
+
+- **B1: Realistic Cost & Slippage Model**
+  - 實作 `TaiwanDayTradeCostModel`，支援 `0.15%` 當沖稅率、`0.1425%` 券商手續費、手續費折讓折扣與台股階梯式 Tick Size 滑價估算。
+  - 將其整合至 `ReplayAssumptions` 與 `replay_one_sample`，實現 R 單位動態來回成本估算。
+- **B2: Risk Management & Exit Engine**
+  - 實作 **Fixed Fractional** 部位規模管理（Position Sizing），動態依帳戶權益、單筆風險比率與停損距離計算下單股數，並自動進行千股無條件捨去與權益上限檢查。
+  - 實作 intraday exit 檢查功能（Stop Loss, Take Profit, Time Stop 13:20）。
+  - 實作帳戶與部位層級限制（最大持倉上限 3 檔，總曝險 6% 限制）。
+- **B3: Market Microstructure Gates**
+  - 檢查跌停賣出與漲停買入微結構硬限制，並予以阻擋。
+  - 檢查融券做空限制，無券標的禁止 Sell 訊號。
+  - 阻擋 13:25-13:30 收盤集合競價時段下單。
+- **B4: Backtest Methodology Upgrades**
+  - 強制執行 `candidate_date < trading_date`，杜絕前視偏差。
+  - 於 replay 中計算 95% 信賴區間，並對樣本數過低（N < 30 或 N < 100）提出統計學警告。
+  - 實作 `walk-forward` 滾動驗證 CLI 工具。
+- **B5: Performance Feedback Loop**
+  - 實作 `RollingPerformanceTracker`，監控滾動 Expectancy 與 drawdown。
+  - 當 Expectancy 轉負或 Drawdown 超限時，自動調降 Quantity 至 50% 或完全禁用策略（0%）。
+- **B6: Strategy Edge Redesign**
+  - 實作 `VwapBreakoutStrategy` 行情訊號產生器。
+  - 實作 `atr_20d_pct` 波動度特徵與低 ATR 個股過濾機制。

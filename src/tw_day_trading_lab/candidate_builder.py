@@ -208,6 +208,7 @@ def enrich_candidate(
         structure_quality=candidate.structure_quality,
         crowding_risk=round(crowding_risk, 4),
         data_quality=data_quality,
+        atr_20d_pct=candidate.atr_20d_pct,
     )
 
 
@@ -242,6 +243,23 @@ def candidate_from_price_rows(
     close_position = ((close - low) / day_range) if day_range > 0 else 0.5
     data_quality = "ok" if previous is not None else "degraded"
 
+    # Calculate 20-day ATR%
+    atr_val = 0.0
+    if len(sorted_rows) >= 2:
+        true_ranges = []
+        for i in range(max(1, len(sorted_rows) - 20), len(sorted_rows)):
+            curr = sorted_rows[i]
+            prev = sorted_rows[i - 1]
+            c_high = float(curr.get("max", curr.get("high", 0)))
+            c_low = float(curr.get("min", curr.get("low", 0)))
+            p_close = float(prev.get("close", 0))
+            tr = max(c_high - c_low, abs(c_high - p_close), abs(c_low - p_close))
+            true_ranges.append(tr)
+        if true_ranges:
+            atr_val = sum(true_ranges) / len(true_ranges)
+
+    atr_20d_pct = round((atr_val / close * 100), 4) if close > 0 else 0.0
+
     return CandidateInput(
         symbol=str(current["stock_id"]),
         name=str(current.get("name") or current["stock_id"]),
@@ -253,6 +271,7 @@ def candidate_from_price_rows(
         structure_quality=round(close_position, 4),
         crowding_risk=round(min(abs(change_pct) / 10, 1), 4),
         data_quality=data_quality,
+        atr_20d_pct=atr_20d_pct,
     )
 
 

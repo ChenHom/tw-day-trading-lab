@@ -8,6 +8,7 @@ from .models import CandidateInput, CandidateScore
 MIN_TRADING_MONEY = 80_000_000
 MIN_INTRADAY_RANGE_PCT = 1.5
 MAX_CROWDING_RISK = 0.8
+MIN_ATR_20D_PCT = 1.5
 
 
 def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
@@ -64,6 +65,12 @@ def score_candidate(candidate: CandidateInput, rank: int = 0) -> CandidateScore:
     if candidate.data_quality != "ok":
         downgrade_reasons.append(f"data_quality_{candidate.data_quality}")
 
+    if candidate.atr_20d_pct >= MIN_ATR_20D_PCT or candidate.atr_20d_pct == 0.0:
+        if candidate.atr_20d_pct > 0.0:
+            reasons.append("sufficient_atr")
+    else:
+        downgrade_reasons.append("low_atr_volatility")
+
     next_day_actionable = (
         total_score >= 55
         and candidate.trading_money >= MIN_TRADING_MONEY
@@ -71,6 +78,7 @@ def score_candidate(candidate: CandidateInput, rank: int = 0) -> CandidateScore:
         and candidate.structure_quality >= 0.45
         and candidate.crowding_risk <= MAX_CROWDING_RISK
         and candidate.data_quality == "ok"
+        and (candidate.atr_20d_pct >= MIN_ATR_20D_PCT or candidate.atr_20d_pct == 0.0)
     )
 
     return CandidateScore(
@@ -87,6 +95,7 @@ def score_candidate(candidate: CandidateInput, rank: int = 0) -> CandidateScore:
         next_day_actionable=next_day_actionable,
         reasons=tuple(reasons),
         downgrade_reasons=tuple(downgrade_reasons),
+        atr_20d_pct=candidate.atr_20d_pct,
     )
 
 

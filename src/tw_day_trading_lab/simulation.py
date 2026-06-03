@@ -15,6 +15,7 @@ from typing import Any, Protocol
 
 from .ledger import DuplicateIntentError, OrderIntent, PaperLedger
 from .models import CandidateScore
+from .performance import RollingPerformanceTracker
 
 
 @dataclass(frozen=True)
@@ -233,6 +234,102 @@ class SimulationResult:
             "ledger_position": self.position.to_dict() if self.position else None,
             "review_reason": self.review_reason,
         }
+
+
+@dataclass(frozen=True)
+class Alert:
+    alert_id: str
+    run_id: str
+    severity: str  # 'info' | 'warning' | 'error' | 'critical'
+    category: str  # 'candidate_quality' | 'execution_health' | 'readiness' | 'reporting' | 'regression'
+    dedupe_key: str
+    owner: str
+    manual_action: str
+    send_gate: bool
+    sent_at: str | None = None
+    resolved_at: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def generate_alerts_from_run(
+    run_id: str,
+    candidates: list[CandidateScore],
+    simulation_results: list[SimulationResult],
+    readiness_report: dict[str, Any],
+) -> list[Alert]:
+    """Generate alerts from a daily ops run based on data gaps, execution anomalies, and readiness blocker checks."""
+    alerts = []
+
+    # 1. Candidate Quality Alert
+    degraded = [c for c in candidates if c.downgrade_reasons]
+    if degraded:
+        alerts.append(
+            Alert(
+                alert_id=f"alert-{run_id}-cand-degraded",
+                run_id=run_id,
+                severity="warning",
+                category="candidate_quality",
+                dedupe_key=f"cand_degraded_{run_id}",
+                owner="research_analyst",
+                manual_action="Review degraded candidate data files for gaps.",
+                send_gate=False,
+            )
+        )
+
+    # 2. Execution Health Alert
+    needs_review_sim = [r for r in simulation_results if r.status in {"needs_review", "gate_blocked"}]
+    if needs_review_sim:
+        alerts.append(
+            Alert(
+                alert_id=f"alert-{run_id}-exec-review",
+                run_id=run_id,
+                severity="error",
+                category="execution_health",
+                dedupe_key=f"exec_review_{run_id}",
+                owner="execution_operator",
+                manual_action="Check execution sync store for mismatched order statuses.",
+                send_gate=False,
+            )
+        )
+
+    # 3. Readiness Alerts
+    for item in readiness_report.get("alerts", []):
+        alert_name = item.get("name", "unknown")
+        severity_val = "error" if item.get("severity") == "blocker" else "warning"
+        alerts.append(
+            Alert(
+                alert_id=f"alert-{run_id}-readiness-{alert_name}",
+                run_id=run_id,
+                severity=severity_val,
+                category="readiness",
+                dedupe_key=f"readiness_{alert_name}_{run_id}",
+                owner="execution_operator",
+                manual_action=f"Resolve readiness issue: {item.get('review_reason')}. Details: {item.get('detail')}",
+                send_gate=False,
+            )
+        )
+
+    return alerts
+
+
+@dataclass(frozen=True)
+class RegressionCase:
+    case_id: str
+    source_run_id: str
+    failure_type: str  # 'data_issue' | 'candidate_quality' | 'risk_decision' | 'broker_callback_lifecycle' | 'reporting_issue'
+    raw_source_payload: dict[str, Any]
+    minimal_fixture_path: str
+    expected_behavior: str
+    red_command: str
+    closing_test_command: str
+    status: str  # 'open' | 'fixed' | 'wont_fix' | 'needs_manual_review'
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 
 
 class SimulationBroker(Protocol):
@@ -651,6 +748,7 @@ class ShioajiSimulationAdapter:
             )
 
         if not bypass_gates:
+            open_count = len(self._ledger._open_keys) if hasattr(self._ledger, "_open_keys") else 0
             gate_res = check_pre_order_gates(
                 self._broker,
                 signal,
@@ -658,6 +756,7 @@ class ShioajiSimulationAdapter:
                 current_time=current_time,
                 allow_outside_session=allow_outside_session,
                 max_quantity_cap=max_quantity_cap,
+                open_positions_count=open_count,
             )
             if not gate_res["approved"]:
                 return SimulationResult(
@@ -1501,6 +1600,9 @@ def check_pre_order_gates(
     current_time: str | None = None,
     allow_outside_session: bool = False,
     max_quantity_cap: int = 1000,
+    open_positions_count: int = 0,
+    equity: float = 1_000_000.0,
+    total_open_risk: float = 0.0,
 ) -> dict[str, Any]:
     """Run pre-order gates and return checks status and blocked reasons."""
     blocked_reasons = []
@@ -1514,10 +1616,21 @@ def check_pre_order_gates(
     if not is_trading_day:
         blocked_reasons.append("not_a_trading_day")
 
-    # 2. Regular session
+    # 2. Regular session and 13:25-13:30 Special Matching Rule
     session_allowed = allow_outside_session or is_regular_day_order_smoke_time(current_time)
     if not session_allowed:
         blocked_reasons.append("outside_regular_session")
+
+    if current_time and not allow_outside_session:
+        try:
+            parts = current_time.split(":")
+            if len(parts) >= 2:
+                hour = int(parts[0])
+                minute = int(parts[1])
+                if hour == 13 and 25 <= minute <= 30:
+                    blocked_reasons.append("final_match_collection_period")
+        except Exception:
+            pass
 
     # 3. Contract loaded, Reference price, Limit up/down
     contract = broker.fetch_contract_details(signal.symbol)
@@ -1543,12 +1656,34 @@ def check_pre_order_gates(
             if limit_up is not None and price > limit_up:
                 blocked_reasons.append("price_above_limit_up")
 
-    # 4. Quantity cap
+            # Limit Up / Limit Down micro-structure checks
+            side = signal.side.lower()
+            if side == "buy" and limit_up is not None and price >= limit_up:
+                blocked_reasons.append("buying_at_limit_up_is_forbidden")
+            if side == "sell" and limit_down is not None and price <= limit_down:
+                blocked_reasons.append("selling_at_limit_down_is_forbidden")
+
+        # Check margin short-selling eligibility
+        if signal.side.lower() == "sell":
+            short_eligible = contract.get("short_selling_eligible", True)
+            if not short_eligible:
+                blocked_reasons.append("short_selling_not_eligible")
+
+    # 4. Quantity cap and Portfolio limits
     quantity = decision.quantity if decision.quantity is not None else signal.quantity
     if quantity <= 0:
         blocked_reasons.append("quantity_must_be_positive")
     elif quantity > max_quantity_cap:
         blocked_reasons.append("quantity_exceeds_cap")
+
+    if open_positions_count >= 3:
+        blocked_reasons.append("max_concurrent_positions_limit_reached")
+
+    price = decision.price if decision.price is not None else signal.price
+    if price is not None and quantity > 0:
+        trade_risk = 0.01 * price * quantity
+        if total_open_risk + trade_risk > equity * 0.06:
+            blocked_reasons.append("max_total_exposure_limit_exceeded")
 
     # 5. Simulation-only broker boundary
     is_simulation = False
@@ -1583,9 +1718,20 @@ def build_simulation_plan(
     candidates: list[CandidateScore],
     cache_dir: Path,
     candidate_source: str,
+    equity: float = 1_000_000.0,
+    risk_pct: float = 0.01,
+    stop_pct: float = 0.01,
+    use_fixed_fractional: bool = False,
+    performance_tracker: RollingPerformanceTracker | None = None,
 ) -> list[SimulationPlanItem]:
     """Build a simulation plan from candidates using the plan builder contract."""
     plan: list[SimulationPlanItem] = []
+
+    multiplier = 1.0
+    tracker_drawdown_limit = 0.05
+    if performance_tracker is not None:
+        multiplier = performance_tracker.get_risk_multiplier(max_drawdown_limit=tracker_drawdown_limit)
+
     for candidate in candidates:
         symbol = candidate.symbol
         price_file = cache_dir / "finmind" / "TaiwanStockPrice" / candidate_date / f"{symbol}.jsonl"
@@ -1601,9 +1747,6 @@ def build_simulation_plan(
             except Exception:
                 pass
 
-        quantity = 1000
-        quantity_source = "fixed_size_1000"
-
         blocked_reason = None
         risk_decision_reason = "risk_ok"
         approved = True
@@ -1617,13 +1760,51 @@ def build_simulation_plan(
             risk_decision_reason = "close_price_missing"
             blocked_reason = "close_price_missing"
 
+        # Position Sizing
+        if approved and close_price is not None:
+            if multiplier == 0.0:
+                approved = False
+                quantity = 0
+                risk_decision_reason = "drawdown_limit_breached"
+                blocked_reason = "drawdown_limit_breached"
+                quantity_source = "disabled_by_performance"
+            elif use_fixed_fractional:
+                risk_amount = equity * risk_pct
+                stop_price = close_price * (1.0 - stop_pct)
+                risk_per_share = close_price - stop_price
+                raw_qty = risk_amount / risk_per_share if risk_per_share > 0 else 0
+                quantity = int(raw_qty // 1000) * 1000
+                quantity = int(quantity * multiplier)
+
+                if multiplier == 0.5:
+                    risk_decision_reason = "downsized_due_to_negative_expectancy"
+
+                if quantity * close_price > equity:
+                    approved = False
+                    quantity = 0
+                    risk_decision_reason = "insufficient_equity"
+                    blocked_reason = "insufficient_equity"
+                elif quantity <= 0:
+                    approved = False
+                    quantity = 0
+                    risk_decision_reason = "quantity_rounded_to_zero"
+                    blocked_reason = "quantity_rounded_to_zero"
+
+                quantity_source = "fixed_fractional"
+            else:
+                quantity = 1000
+                quantity_source = "fixed_size_1000"
+        else:
+            quantity = 0 if not approved else 1000
+            quantity_source = "fixed_size_1000" if approved else "not_approved"
+
         signal = SignalIntent(
             trading_date=trading_date,
             strategy_id="mvp",
             symbol=symbol,
             setup_id=candidate.archetype,
             side="buy",
-            quantity=quantity,
+            quantity=quantity if quantity > 0 else 1000,
             price=close_price,
         )
 

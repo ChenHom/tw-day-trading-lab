@@ -3,12 +3,21 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 
+from .cost import TaiwanDayTradeCostModel
+
 
 @dataclass(frozen=True)
 class ReplayAssumptions:
-    """Cost and slippage assumptions expressed in R units."""
+    """Cost and slippage assumptions."""
 
     cost_r: float = 0.0
+    cost_model: TaiwanDayTradeCostModel | None = None
+
+    def get_cost_r(self, entry_price: float | None, stop_price: float | None, quantity: int = 1000) -> float:
+        if self.cost_model is not None and entry_price is not None and stop_price is not None:
+            return self.cost_model.cost_r(entry_price, stop_price, quantity)
+        return self.cost_r
+
 
 
 @dataclass(frozen=True)
@@ -102,8 +111,10 @@ def replay_one_sample(
     gross_r = parse_number(sample.get("realized_r_gross"))
     if gross_r is None and risk is not None and entry_price is not None and exit_price is not None:
         gross_r = round((exit_price - entry_price) / risk, 4)
-    cost_r = assumptions.cost_r if gross_r is not None else None
-    net_r = round(gross_r - assumptions.cost_r, 4) if gross_r is not None else None
+
+    quantity = int(sample.get("quantity") or 1000)
+    cost_r = assumptions.get_cost_r(entry_price, stop_price, quantity) if gross_r is not None else None
+    net_r = round(gross_r - cost_r, 4) if gross_r is not None and cost_r is not None else None
     mfe_r = parse_number(sample.get("mfe_r"))
     mae_r = parse_number(sample.get("mae_r"))
     if (mfe_r is None or mae_r is None) and risk is not None and entry_price is not None:
@@ -134,6 +145,27 @@ def summarize_replay(
     gross_values = [trade.realized_r_gross for trade in trades if trade.realized_r_gross is not None]
     net_values = [trade.realized_r_net for trade in trades if trade.realized_r_net is not None]
     cost_values = [trade.estimated_cost_r for trade in trades if trade.estimated_cost_r is not None]
+
+    import math
+    n = len(net_values)
+    ci_lower = None
+    ci_upper = None
+    warning = None
+
+    if n >= 2:
+        mean_val = sum(net_values) / n
+        variance = sum((x - mean_val) ** 2 for x in net_values) / (n - 1)
+        std_dev = math.sqrt(variance)
+        se = std_dev / math.sqrt(n)
+        margin = 1.96 * se
+        ci_lower = round(mean_val - margin, 4)
+        ci_upper = round(mean_val + margin, 4)
+
+    if n < 30:
+        warning = f"Extremely small sample size (N={n} < 30). Expectancy lacks statistical significance."
+    elif n < 100:
+        warning = f"Small sample size (N={n} < 100). Use caution when evaluating strategy expectancy."
+
     return {
         "total_samples": len(samples),
         "replayed": len(trades),
@@ -143,6 +175,9 @@ def summarize_replay(
         "expectancy_gross_r": average(gross_values),
         "average_cost_r": average(cost_values),
         "expectancy_net_r": average(net_values),
+        "net_expectancy_ci_lower": ci_lower,
+        "net_expectancy_ci_upper": ci_upper,
+        "statistical_warning": warning,
     }
 
 
@@ -162,12 +197,20 @@ def render_replay_markdown(trading_date: str, result: ReplayResult) -> str:
         f"- expectancy Gross R: {_format_optional(summary['expectancy_gross_r'])}",
         f"- average Cost R: {_format_optional(summary['average_cost_r'])}",
         f"- expectancy Net R: {_format_optional(summary['expectancy_net_r'])}",
+        f"- 95% Confidence Interval for Net R: [{_format_optional(summary.get('net_expectancy_ci_lower'))}, {_format_optional(summary.get('net_expectancy_ci_upper'))}]",
         "",
+    ]
+    if summary.get("statistical_warning"):
+        lines.append(f"> [!WARNING]")
+        lines.append(f"> {summary['statistical_warning']}")
+        lines.append("")
+
+    lines.extend([
         "## Trades",
         "",
         "| Sample | Symbol | Gross R | Cost R | Net R | MFE R | MAE R |",
         "|---|---|---:|---:|---:|---:|---:|",
-    ]
+    ])
     for trade in result.trades:
         lines.append(
             "| "
@@ -219,3 +262,39 @@ def average(values: Sequence[float]) -> float | None:
 
 def _format_optional(value: float | None) -> str:
     return "-" if value is None else f"{value:.4f}"
+
+
+def check_exits(
+    *,
+    entry_price: float,
+    stop_price: float,
+    target_price: float,
+    price_bars: Sequence[Mapping[str, Any]],
+    exit_time: str = "13:20",
+) -> tuple[float, str]:
+    """
+    Simulate exits on price bars.
+    Returns (exit_price, exit_reason).
+    """
+    for bar in price_bars:
+        # Check time exit first if bar contains time
+        bar_time = bar.get("time")
+        if bar_time and bar_time >= exit_time:
+            return float(bar.get("close", bar.get("close_price", entry_price))), "time_exit"
+
+        # Check Stop Loss
+        low_val = bar.get("low", bar.get("min"))
+        if low_val is not None and float(low_val) <= stop_price:
+            return stop_price, "stop_loss"
+
+        # Check Take Profit
+        high_val = bar.get("high", bar.get("max"))
+        if high_val is not None and float(high_val) >= target_price:
+            return target_price, "take_profit"
+
+    # Default time exit at the end of the bars
+    if price_bars:
+        last_bar = price_bars[-1]
+        return float(last_bar.get("close", last_bar.get("close_price", entry_price))), "time_exit"
+
+    return entry_price, "no_bars"

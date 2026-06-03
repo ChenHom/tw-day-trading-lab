@@ -1306,3 +1306,22 @@ Grill-me close-out verdict：
 4. **CLI Subcommand `simulate ops-run`**:
    - `tw-daytrade simulate ops-run` 命令整合了從載入 candidates -> 建 plan -> 檢查 gates -> Adapter 執行 -> 記錄 sync state -> 產出 readiness report -> 生成 manifests 的完整 Daily Ops Flow。
    - 新增 3 個單元測試覆蓋了 gates、plan builder 與 `ops-run` CLI 功能，所有測試全數通過且無 any 格式/排版警告。
+
+## 9. Phase Close-out - P9-P11 Infrastructure Hardening - 2026-06-03
+
+### 達成項目：
+- **P9: Ops Reports / Alerts**: 實作每日 Close Report 整合 candidate, replay, simulation, restart-sync, readiness checks。實作 `generate_alerts_from_run` 並輸出 `alerts.json`。實作 Telegram gated 發送。
+- **P10: Regression Loop**: 實作 `RegressionCase` 資料結構，並新增 `regression-import` 及 `regression-run` CLI 指令，實現測試回歸閉環。
+- **P11: Live Gateway Boundary**: 實作 `LiveShioajiBrokerAdapter` 與其嚴格門禁驗證（允許交易開關、熵值足夠的 approval token 驗證及 regression loop 中無 open items 等）及 panic cancel 等安全措施。
+
+## 10. Phase Close-out - Phase B: Resolving Six Core Problems - 2026-06-03
+
+### 達成項目：
+- **B1: Realistic Cost & Slippage Model**: 實作 `TaiwanDayTradeCostModel` 與其來回成本 R 單位換算，整合至 `ReplayAssumptions` 與 `replay_one_sample`，並新增 `cost-analysis` 命令。
+- **B2: Risk Management & Exit Engine**: 實作 Fixed Fractional Position Sizing 與其捨去千股、權益上限檢查；實作 intraday exit 檢查功能（Stop Loss, Take Profit, Time Stop 13:20）；實作持倉上限 (3) 與總曝險限制 (6%)。
+- **B3: Microstructure Gates**: 實作跌停賣出與漲停買入微結構限制、融券做空限制、13:25-13:30 收盤集合競價限制。
+- **B4: Backtest Methodology Upgrades**: 強制執行 `candidate_date < trading_date`，計算 95% 信賴區間與樣本數警告，並實作 `walk-forward` 滾動驗證 CLI 工具。
+- **B5: Performance Feedback Loop**: 實作 `RollingPerformanceTracker` 控制，當 rolling expectancy 為負或 Drawdown 超限時自動調降 Quantity 或停用策略。
+- **B6: Strategy Edge Redesign**: 實作 `VwapBreakoutStrategy` 行情訊號產生器與 ATR 波動度過濾機制。
+
+新增 8 個測試覆蓋了以上所有 B1-B6 之邏輯，所有 108 個單元測試全數通過，且 `git diff --check` 完全通過。

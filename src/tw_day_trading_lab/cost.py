@@ -1,0 +1,51 @@
+from __future__ import annotations
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class TaiwanDayTradeCostModel:
+    """来回交易成本模型 (Taiwan Day-Trading Cost Model)"""
+    commission_rate: float = 0.001425       # 1.425‰
+    commission_discount: float = 0.3        # 3折
+    day_trade_tax_rate: float = 0.0015      # 減半當沖稅 0.15%
+    slippage_ticks_per_side: float = 1.0    # 買賣各滑 1 tick
+
+    def tick_size(self, price: float) -> float:
+        """台股最小升降單位 (Tick Size)"""
+        if price < 10.0:
+            return 0.01
+        elif price < 50.0:
+            return 0.05
+        elif price < 100.0:
+            return 0.10
+        elif price < 500.0:
+            return 0.50
+        elif price < 1000.0:
+            return 1.00
+        else:
+            return 5.00
+
+    def round_trip_cost(self, entry_price: float, quantity: int = 1000) -> float:
+        """計算一趟來回的總成本 (元/股)"""
+        buy_comm = entry_price * self.commission_rate * self.commission_discount
+        sell_comm = entry_price * self.commission_rate * self.commission_discount
+
+        # Minimum commission is 20 TWD. Convert to per-share cost.
+        if quantity > 0:
+            min_comm_per_share = 20.0 / quantity
+            buy_comm = max(buy_comm, min_comm_per_share)
+            sell_comm = max(sell_comm, min_comm_per_share)
+
+        sell_tax = entry_price * self.day_trade_tax_rate
+
+        tick = self.tick_size(entry_price)
+        slippage = tick * self.slippage_ticks_per_side * 2  # 買賣雙邊各滑價 ticks
+
+        return buy_comm + sell_comm + sell_tax + slippage
+
+    def cost_r(self, entry_price: float, stop_price: float, quantity: int = 1000) -> float:
+        """將來回成本換算為 R 單位"""
+        risk = abs(entry_price - stop_price)
+        if risk <= 0:
+            return float("inf")
+        total_cost = self.round_trip_cost(entry_price, quantity)
+        return round(total_cost / risk, 4)

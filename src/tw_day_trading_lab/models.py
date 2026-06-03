@@ -16,6 +16,7 @@ class CandidateInput:
     structure_quality: float
     crowding_risk: float
     data_quality: str = "ok"
+    atr_20d_pct: float = 0.0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CandidateInput":
@@ -30,6 +31,7 @@ class CandidateInput:
             structure_quality=float(data.get("structure_quality", 0)),
             crowding_risk=float(data.get("crowding_risk", 0)),
             data_quality=str(data.get("data_quality", "ok")),
+            atr_20d_pct=float(data.get("atr_20d_pct", 0.0)),
         )
 
 
@@ -48,6 +50,7 @@ class CandidateScore:
     next_day_actionable: bool
     reasons: tuple[str, ...]
     downgrade_reasons: tuple[str, ...]
+    atr_20d_pct: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)

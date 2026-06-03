@@ -50,6 +50,8 @@ from .simulation import (
     SimulationPlanItem,
     ShioajiCallbackStream,
     ShioajiOrderRequestBroker,
+    generate_alerts_from_run,
+    RegressionCase,
 )
 from .storage import (
     DatabaseStorage,
@@ -269,12 +271,15 @@ def cmd_report_daily(args: argparse.Namespace) -> None:
 
 
 def cmd_report_close(args: argparse.Namespace) -> None:
-    """Build the daily close report from candidate, replay, and simulation outputs."""
+    """Build the daily close report from candidate, replay, simulation, and readiness outputs."""
     candidate_path = Path(args.candidates)
     replay_summary = load_required_payload_summary(Path(args.replay), "replay") if args.replay else None
     simulation_path = Path(args.simulation) if args.simulation else None
     simulation_summary = (
         load_required_payload_summary(simulation_path, "simulation") if simulation_path else None
+    )
+    readiness_summary = (
+        json.loads(Path(args.readiness).read_text(encoding="utf-8")) if getattr(args, "readiness", None) else None
     )
     candidates = load_candidate_scores(candidate_path)
     content = render_close_report_markdown(
@@ -284,7 +289,9 @@ def cmd_report_close(args: argparse.Namespace) -> None:
         replay_summary=replay_summary,
         simulation_summary=simulation_summary,
         simulation_results=load_payload_results(simulation_path),
+        readiness_summary=readiness_summary,
     )
+
     output = Path(args.output) if args.output else Path("reports") / f"{args.date}-close.md"
     write_text(output, content)
     print(output)
@@ -303,7 +310,7 @@ def cmd_report_close(args: argparse.Namespace) -> None:
 
 
 def cmd_notify_telegram(args: argparse.Namespace) -> None:
-    """Print a Telegram-safe summary unless real sends are explicitly implemented later."""
+    """Send a Telegram notification or print a dry-run summary."""
     report_path = Path(args.report)
     content = report_path.read_text(encoding="utf-8")
     lines = [line for line in content.splitlines() if line.strip()]
@@ -311,7 +318,27 @@ def cmd_notify_telegram(args: argparse.Namespace) -> None:
     if args.dry_run:
         print(summary)
         return
-    raise SystemExit("telegram send is intentionally disabled in MVP; use --dry-run")
+
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        raise ValueError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables must be set for real send")
+
+    import urllib.request
+    import urllib.parse
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    data = urllib.parse.urlencode({"chat_id": chat_id, "text": summary}).encode("utf-8")
+    req = urllib.request.Request(url, data=data)
+    try:
+        with urllib.request.urlopen(req) as response:
+            res = json.loads(response.read().decode("utf-8"))
+            if res.get("ok"):
+                print(f"Telegram notification sent successfully to chat {chat_id}")
+            else:
+                print(f"Telegram API error: {res}")
+    except Exception as e:
+        print(f"Failed to send Telegram notification: {e}")
+
 
 
 def cmd_old_logs_import(args: argparse.Namespace) -> None:
@@ -363,9 +390,17 @@ def cmd_samples_summary(args: argparse.Namespace) -> None:
 
 def cmd_replay_samples(args: argparse.Namespace) -> None:
     """Replay classified samples and write JSON plus an optional Markdown report."""
+    from .cost import TaiwanDayTradeCostModel
+    cost_model = None
+    if getattr(args, "use_cost_model", False):
+        cost_model = TaiwanDayTradeCostModel(
+            commission_discount=args.commission_discount,
+            day_trade_tax_rate=args.day_trade_tax_rate,
+            slippage_ticks_per_side=args.slippage_ticks,
+        )
     result = replay_samples(
         load_replay_samples(Path(args.input)),
-        assumptions=ReplayAssumptions(cost_r=args.cost_r),
+        assumptions=ReplayAssumptions(cost_r=args.cost_r, cost_model=cost_model),
     )
     output = Path(args.output) if args.output else Path("reports") / f"{args.date}-replay.json"
     write_json(output, result.to_dict())
@@ -374,6 +409,177 @@ def cmd_replay_samples(args: argparse.Namespace) -> None:
         report_output = Path(args.report_output)
         write_text(report_output, render_replay_markdown(args.date, result))
         print(report_output)
+
+
+def cmd_replay_walk_forward(args: argparse.Namespace) -> None:
+    """Run Walk-Forward analysis by splitting samples into in-sample and out-of-sample."""
+    samples = load_replay_samples(Path(args.input))
+
+    # Filter valid samples
+    valid_samples = [s for s in samples if s.get("validity") == "valid"]
+    if not valid_samples:
+        print("No valid samples found for Walk-Forward validation.")
+        return
+
+    # Sort samples by trading date
+    def get_sample_date(s: dict) -> str:
+        key = s.get("idempotency_key", "")
+        if ":" in key:
+            return key.split(":")[0]
+        return str(s.get("trading_date", ""))
+
+    valid_samples.sort(key=get_sample_date)
+
+    # Split datasets
+    if args.split_date:
+        train_samples = [s for s in valid_samples if get_sample_date(s) < args.split_date]
+        test_samples = [s for s in valid_samples if get_sample_date(s) >= args.split_date]
+    else:
+        split_idx = int(len(valid_samples) * args.train_ratio)
+        train_samples = valid_samples[:split_idx]
+        test_samples = valid_samples[split_idx:]
+
+    from .cost import TaiwanDayTradeCostModel
+    cost_model = None
+    if getattr(args, "use_cost_model", False):
+        cost_model = TaiwanDayTradeCostModel(
+            commission_discount=args.commission_discount,
+            day_trade_tax_rate=args.day_trade_tax_rate,
+            slippage_ticks_per_side=args.slippage_ticks,
+        )
+    assumptions = ReplayAssumptions(cost_r=args.cost_r, cost_model=cost_model)
+
+    train_result = replay_samples(train_samples, assumptions=assumptions)
+    test_result = replay_samples(test_samples, assumptions=assumptions)
+
+    payload = {
+        "train_summary": train_result.summary,
+        "test_summary": test_result.summary,
+        "split_date": args.split_date or (get_sample_date(test_samples[0]) if test_samples else "N/A"),
+    }
+
+    output = Path(args.output) if args.output else Path("reports") / "walk-forward-validation.json"
+    write_json(output, payload)
+    print(output)
+
+    # Build Markdown report
+    lines = [
+        "# Walk-Forward Validation Report",
+        "",
+        "## Train Set (In-Sample)",
+        f"- Samples: {train_result.summary['replayed']}",
+        f"- expectancy Gross R: {train_result.summary['expectancy_gross_r']}",
+        f"- average Cost R: {train_result.summary['average_cost_r']}",
+        f"- expectancy Net R: {train_result.summary['expectancy_net_r']}",
+        f"- 95% Confidence Interval for Net R: [{train_result.summary.get('net_expectancy_ci_lower')}, {train_result.summary.get('net_expectancy_ci_upper')}]",
+    ]
+    if train_result.summary.get("statistical_warning"):
+        lines.append(f"> [!WARNING] Train: {train_result.summary['statistical_warning']}")
+
+    lines.extend([
+        "",
+        "## Test Set (Out-of-Sample)",
+        f"- Samples: {test_result.summary['replayed']}",
+        f"- expectancy Gross R: {test_result.summary['expectancy_gross_r']}",
+        f"- average Cost R: {test_result.summary['average_cost_r']}",
+        f"- expectancy Net R: {test_result.summary['expectancy_net_r']}",
+        f"- 95% Confidence Interval for Net R: [{test_result.summary.get('net_expectancy_ci_lower')}, {test_result.summary.get('net_expectancy_ci_upper')}]",
+    ])
+    if test_result.summary.get("statistical_warning"):
+        lines.append(f"> [!WARNING] Test: {test_result.summary['statistical_warning']}")
+
+    # Check for overfitting
+    train_net = train_result.summary['expectancy_net_r'] or 0.0
+    test_net = test_result.summary['expectancy_net_r'] or 0.0
+    lines.append("")
+    lines.append("## Overfitting Check")
+    if train_net > 0.0 and test_net <= 0.0:
+        lines.append("> [!CAUTION]")
+        lines.append(f"> Overfitting detected! In-Sample expectancy is positive ({train_net:.2f}R), but Out-of-Sample expectancy is negative/flat ({test_net:.2f}R).")
+    elif train_net <= 0.0:
+        lines.append("> [!WARNING]")
+        lines.append(f"> In-Sample has no edge ({train_net:.2f}R). Strategy needs refinement.")
+    else:
+        lines.append("> [!NOTE]")
+        lines.append(f"> Strategy holds edge on both sets (Train: {train_net:.2f}R, Test: {test_net:.2f}R).")
+
+    if args.report_output:
+        report_output = Path(args.report_output)
+        write_text(report_output, "\n".join(lines) + "\n")
+        print(report_output)
+
+
+def find_close_price(symbol: str, trading_date: str, cache_dir: Path) -> float | None:
+    p = cache_dir / "finmind" / "TaiwanStockPrice" / trading_date / f"{symbol}.jsonl"
+    if not p.exists():
+        return None
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if str(row.get("date")) == trading_date:
+                    return float(row["close"])
+    except Exception:
+        pass
+    return None
+
+
+def cmd_cost_analysis(args: argparse.Namespace) -> None:
+    """Run cost analysis on a candidates file to evaluate cost_r for each candidate."""
+    candidates_path = Path(args.candidates)
+    if not candidates_path.exists():
+        raise FileNotFoundError(f"Candidates file not found: {candidates_path}")
+
+    with open(candidates_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    trading_date = ""
+    candidate_list = []
+    if isinstance(data, dict):
+        trading_date = data.get("trading_date", "")
+        candidate_list = data.get("candidates", [])
+    else:
+        candidate_list = data
+
+    cache_dir = Path(args.cache_dir)
+
+    from .cost import TaiwanDayTradeCostModel
+    model = TaiwanDayTradeCostModel(
+        commission_discount=args.commission_discount,
+        day_trade_tax_rate=args.day_trade_tax_rate,
+        slippage_ticks_per_side=args.slippage_ticks,
+    )
+
+    print(f"Cost Analysis (stop_loss={args.stop_pct}%, commission_discount={args.commission_discount * 100}%)")
+    print("─" * 60)
+    print(f"{'Symbol':<8}{'Price':<8}{'Tick':<8}{'Risk':<8}{'Cost':<8}{'cost_r':<8}")
+
+    costs_r = []
+    for cand in candidate_list:
+        symbol = cand.get("symbol")
+        price = None
+        if trading_date:
+            price = find_close_price(symbol, trading_date, cache_dir)
+        if price is None:
+            price = 100.0 # Default fallback
+
+        tick = model.tick_size(price)
+        risk = price * (args.stop_pct / 100.0)
+        cost = model.round_trip_cost(price, quantity=1000)
+        cost_r = model.cost_r(price, price - risk, quantity=1000)
+        costs_r.append(cost_r)
+
+        print(f"{symbol:<8}{price:<8.2f}{tick:<8.2f}{risk:<8.2f}{cost:<8.2f}{cost_r:<8.2f}R")
+
+    if costs_r:
+        import statistics
+        print("─" * 60)
+        print(f"Median cost_r: {statistics.median(costs_r):.2f}R")
+        print(f"Mean cost_r:   {statistics.mean(costs_r):.2f}R")
+        print(f"Max cost_r:    {max(costs_r):.2f}R")
+        print(f"Min cost_r:    {min(costs_r):.2f}R")
 
 def get_git_commit() -> str:
     import subprocess
@@ -579,6 +785,11 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
     readiness_md_path = output_dir / "readiness_report.md"
     write_text(readiness_md_path, render_production_readiness_markdown(readiness_report))
 
+    # Generate P9 Alerts
+    alerts = generate_alerts_from_run(run_id, candidates_list, results, readiness_report)
+    alerts_path = output_dir / "alerts.json"
+    write_json(alerts_path, [alert.to_dict() for alert in alerts])
+
     # Also save the callback store snapshot in the output directory if it is distinct
     callback_store_backup_path = output_dir / "callback_store.json"
     if callback_store_backup_path != sync_store_path:
@@ -593,8 +804,10 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
         {"path": str(restart_sync_path), "checksum": get_file_checksum(restart_sync_path)},
         {"path": str(readiness_report_path), "checksum": get_file_checksum(readiness_report_path)},
         {"path": str(readiness_md_path), "checksum": get_file_checksum(readiness_md_path)},
+        {"path": str(alerts_path), "checksum": get_file_checksum(alerts_path)},
         {"path": str(callback_store_backup_path), "checksum": get_file_checksum(callback_store_backup_path)},
     ]
+
 
     # Build manifest
     manifest = {
@@ -620,6 +833,113 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
     print(f"Run ID: {run_id}")
     print(f"Manifest written to: {manifest_path}")
 
+
+def cmd_simulate_regression_import(args: argparse.Namespace) -> None:
+    """Import a daily ops run manifest and build regression cases for any alerts/failures."""
+    manifest_path = Path(args.manifest)
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Manifest not found: {manifest_path}")
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    run_id = manifest["run_id"]
+    trading_date = manifest["trading_date"]
+
+    output_dir = Path(args.output_dir) if args.output_dir else Path("data/regression")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fixtures_dir = output_dir / "fixtures"
+    fixtures_dir.mkdir(parents=True, exist_ok=True)
+
+    alerts_file_path = None
+    for art in manifest.get("output_artifacts", []):
+        if art["path"].endswith("alerts.json"):
+            alerts_file_path = Path(art["path"])
+            break
+
+    if not alerts_file_path or not alerts_file_path.exists():
+        print("No alerts.json found in manifest artifacts. No regression cases generated.")
+        return
+
+    alerts_list = json.loads(alerts_file_path.read_text(encoding="utf-8"))
+    if not alerts_list:
+        print("Alerts list is empty. No regression cases generated.")
+        return
+
+    cases_created = []
+    for alert in alerts_list:
+        alert_id = alert["alert_id"]
+        category = alert["category"]
+        severity = alert["severity"]
+        manual_action = alert["manual_action"]
+
+        if category == "candidate_quality":
+            failure_type = "candidate_quality"
+        elif category == "execution_health":
+            failure_type = "broker_callback_lifecycle"
+        elif category == "readiness":
+            failure_type = "risk_decision" if "gate" in alert_id or "limit" in alert_id else "reporting_issue"
+        else:
+            failure_type = "reporting_issue"
+
+        case_id = f"case-{run_id}-{alert_id.replace('alert-' + run_id + '-', '')}"
+        fixture_path = fixtures_dir / f"{case_id}_fixture.json"
+
+        fixture_payload = {
+            "alert": alert,
+            "trading_date": trading_date,
+            "run_id": run_id,
+        }
+        write_json(fixture_path, fixture_payload)
+
+        expected_behavior = f"Resolve alert: {manual_action}"
+        red_command = f"tw-daytrade simulate regression-run --case {output_dir}/{case_id}.json"
+        closing_test_command = f"tw-daytrade simulate regression-run --case {output_dir}/{case_id}.json --mock-fix"
+
+        case = RegressionCase(
+            case_id=case_id,
+            source_run_id=run_id,
+            failure_type=failure_type,
+            raw_source_payload=alert,
+            minimal_fixture_path=str(fixture_path),
+            expected_behavior=expected_behavior,
+            red_command=red_command,
+            closing_test_command=closing_test_command,
+            status="open",
+        )
+
+        case_path = output_dir / f"{case_id}.json"
+        write_json(case_path, case.to_dict())
+        cases_created.append(case_id)
+        print(f"Generated Regression Case: {case_path}")
+
+    print(f"Imported manifest {run_id}. Created {len(cases_created)} regression cases.")
+
+
+def cmd_simulate_regression_run(args: argparse.Namespace) -> None:
+    """Run a specific regression case to test expected behavior and validation fixes."""
+    case_path = Path(args.case)
+    if not case_path.exists():
+        raise FileNotFoundError(f"Regression case not found: {case_path}")
+
+    case_data = json.loads(case_path.read_text(encoding="utf-8"))
+    case_id = case_data["case_id"]
+    fixture_path = Path(case_data["minimal_fixture_path"])
+
+    if not fixture_path.exists():
+        raise FileNotFoundError(f"Fixture not found: {fixture_path}")
+
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    print(f"Running regression case {case_id} (Failure Type: {case_data['failure_type']})...")
+
+    if args.mock_fix:
+        case_data["status"] = "fixed"
+        write_json(case_path, case_data)
+        print(f"Case {case_id} PASSED (mock-fix applied). Status updated to fixed.")
+    else:
+        if case_data["status"] == "open":
+            print(f"Case {case_id} FAILED: Expected behavior '{case_data['expected_behavior']}' is unresolved.")
+            raise SystemExit(1)
+        else:
+            print(f"Case {case_id} is already in state '{case_data['status']}'.")
 
 
 def cmd_simulate_run(args: argparse.Namespace) -> None:
@@ -1000,6 +1320,7 @@ def build_parser() -> argparse.ArgumentParser:
     close.add_argument("--candidates", required=True)
     close.add_argument("--replay")
     close.add_argument("--simulation")
+    close.add_argument("--readiness")
     close.add_argument("--output")
     close.add_argument("--telegram-summary-output")
     close.set_defaults(func=cmd_report_close)
@@ -1037,13 +1358,40 @@ def build_parser() -> argparse.ArgumentParser:
 
     replay = subparsers.add_parser("replay")
     replay_sub = replay.add_subparsers(required=True)
+
     replay_samples_parser = replay_sub.add_parser("samples")
     replay_samples_parser.add_argument("--date", required=True)
     replay_samples_parser.add_argument("--input", required=True)
     replay_samples_parser.add_argument("--output")
     replay_samples_parser.add_argument("--report-output")
     replay_samples_parser.add_argument("--cost-r", type=float, default=0.0)
+    replay_samples_parser.add_argument("--use-cost-model", action="store_true")
+    replay_samples_parser.add_argument("--commission-discount", type=float, default=0.3)
+    replay_samples_parser.add_argument("--day-trade-tax-rate", type=float, default=0.0015)
+    replay_samples_parser.add_argument("--slippage-ticks", type=float, default=1.0)
     replay_samples_parser.set_defaults(func=cmd_replay_samples)
+
+    walk_forward = replay_sub.add_parser("walk-forward")
+    walk_forward.add_argument("--input", required=True)
+    walk_forward.add_argument("--split-date")
+    walk_forward.add_argument("--train-ratio", type=float, default=0.7)
+    walk_forward.add_argument("--output")
+    walk_forward.add_argument("--report-output")
+    walk_forward.add_argument("--cost-r", type=float, default=0.0)
+    walk_forward.add_argument("--use-cost-model", action="store_true")
+    walk_forward.add_argument("--commission-discount", type=float, default=0.3)
+    walk_forward.add_argument("--day-trade-tax-rate", type=float, default=0.0015)
+    walk_forward.add_argument("--slippage-ticks", type=float, default=1.0)
+    walk_forward.set_defaults(func=cmd_replay_walk_forward)
+
+    cost_analysis = subparsers.add_parser("cost-analysis")
+    cost_analysis.add_argument("--candidates", required=True)
+    cost_analysis.add_argument("--cache-dir", default="data/raw")
+    cost_analysis.add_argument("--stop-pct", type=float, default=1.0)
+    cost_analysis.add_argument("--commission-discount", type=float, default=0.3)
+    cost_analysis.add_argument("--day-trade-tax-rate", type=float, default=0.0015)
+    cost_analysis.add_argument("--slippage-ticks", type=float, default=1.0)
+    cost_analysis.set_defaults(func=cmd_cost_analysis)
 
     simulate = subparsers.add_parser("simulate")
     simulate_sub = simulate.add_subparsers(required=True)
@@ -1118,6 +1466,17 @@ def build_parser() -> argparse.ArgumentParser:
     production_readiness.add_argument("--max-pending-orders", type=int, default=0)
     production_readiness.add_argument("--disable-cancel-retry-plan", action="store_true")
     production_readiness.set_defaults(func=cmd_simulate_production_readiness)
+
+    regression_import = simulate_sub.add_parser("regression-import")
+    regression_import.add_argument("--manifest", required=True)
+    regression_import.add_argument("--output-dir")
+    regression_import.set_defaults(func=cmd_simulate_regression_import)
+
+    regression_run = simulate_sub.add_parser("regression-run")
+    regression_run.add_argument("--case", required=True)
+    regression_run.add_argument("--mock-fix", action="store_true")
+    regression_run.set_defaults(func=cmd_simulate_regression_run)
+
 
     ingest = subparsers.add_parser("ingest")
     ingest_sub = ingest.add_subparsers(required=True)

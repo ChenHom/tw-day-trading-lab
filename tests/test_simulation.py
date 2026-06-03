@@ -32,6 +32,7 @@ from tw_day_trading_lab.simulation import (
     ShioajiSdkSimulationGateway,
     ShioajiSimulationAdapter,
     SignalIntent,
+    SimulationResult,
     build_shioaji_order_request,
     build_shioaji_custom_field,
     build_production_readiness_report,
@@ -1957,5 +1958,177 @@ class SimulationAdapterTest(unittest.TestCase):
             self.assertGreater(len(manifest["input_artifacts"]), 0)
             self.assertGreater(len(manifest["output_artifacts"]), 0)
             self.assertIn("place_order_2330", manifest["side_effects"])
+
+    def test_generate_alerts_from_run(self):
+        from tw_day_trading_lab.simulation import generate_alerts_from_run, Alert
+
+        candidates = [
+            CandidateScore(
+                symbol="2330", name="TSMC", rank=1, archetype="theme_follower",
+                total_score=50.0, liquidity_score=50.0, event_score=50.0,
+                structure_score=50.0, continuity_score=50.0, crowding_penalty=0.0,
+                next_day_actionable=True, reasons=(), downgrade_reasons=("low_trading_money",)
+            )
+        ]
+
+        sim_results = [
+            SimulationResult(
+                status="gate_blocked", sample_type="simulation", expectancy_eligible=False,
+                signal=SignalIntent(trading_date="2026-05-28", strategy_id="mvp", symbol="2330", setup_id="breakout", side="buy", quantity=1000, price=900.0),
+                risk_decision=RiskDecision(approved=True, reason="risk_ok", quantity=1000, price=900.0),
+                review_reason="outside_regular_session"
+            )
+        ]
+
+        readiness_report = {
+            "alerts": [
+                {"severity": "blocker", "name": "formal_live_gate", "review_reason": "live_trading_requires_explicit_manual_approval", "detail": {}}
+            ]
+        }
+
+        alerts = generate_alerts_from_run("run-test-123", candidates, sim_results, readiness_report)
+        self.assertEqual(len(alerts), 3)
+        self.assertEqual(alerts[0].category, "candidate_quality")
+        self.assertEqual(alerts[1].category, "execution_health")
+        self.assertEqual(alerts[2].category, "readiness")
+
+    def test_regression_import_and_run_tdd_cycle(self):
+        from tw_day_trading_lab.cli import cmd_simulate_regression_import, cmd_simulate_regression_run
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+
+            alerts_path = tmpdir / "alerts.json"
+            alerts_path.write_text(
+                json.dumps([
+                    {
+                        "alert_id": "alert-run-test-readiness-formal_live_gate",
+                        "run_id": "run-test",
+                        "severity": "error",
+                        "category": "readiness",
+                        "dedupe_key": "readiness_formal_live_gate_run-test",
+                        "owner": "execution_operator",
+                        "manual_action": "Resolve formal live gate issue",
+                        "send_gate": False
+                    }
+                ]),
+                encoding="utf-8"
+            )
+
+            manifest_path = tmpdir / "ops_run_manifest.json"
+            manifest_path.write_text(
+                json.dumps({
+                    "run_id": "run-test",
+                    "trading_date": "2026-05-28",
+                    "output_artifacts": [
+                        {"path": str(alerts_path), "checksum": "abc"}
+                    ]
+                }),
+                encoding="utf-8"
+            )
+
+            output_dir = tmpdir / "regression"
+
+            cmd_simulate_regression_import(
+                Namespace(
+                    manifest=str(manifest_path),
+                    output_dir=str(output_dir)
+                )
+            )
+
+            case_file = output_dir / "case-run-test-readiness-formal_live_gate.json"
+            self.assertTrue(case_file.exists())
+
+            with self.assertRaises(SystemExit):
+                cmd_simulate_regression_run(
+                    Namespace(
+                        case=str(case_file),
+                        mock_fix=False
+                    )
+                )
+
+            cmd_simulate_regression_run(
+                Namespace(
+                    case=str(case_file),
+                    mock_fix=True
+                )
+            )
+
+            case_data = json.loads(case_file.read_text(encoding="utf-8"))
+            self.assertEqual(case_data["status"], "fixed")
+
+    def test_live_broker_adapter_strict_gates(self):
+        from tw_day_trading_lab.live import LiveShioajiBrokerAdapter
+
+        class MockLiveApi:
+            simulation = False
+
+        api = MockLiveApi()
+
+        import hashlib
+        token = "secure_token_value_at_least_32_chars_long"
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+        adapter = LiveShioajiBrokerAdapter(api, token_hash)
+
+        # 1. Blocked if allow_live_trading=False
+        res = adapter.check_live_execution_gate(
+            allow_live_trading=False,
+            manual_approval_token=token,
+            regression_dir=Path("non_existent_path")
+        )
+        self.assertFalse(res.allowed)
+        self.assertIn("allow_live_trading_is_false", res.blocked_reasons)
+
+        # 2. Blocked if token is too short (predictable/date-based)
+        res = adapter.check_live_execution_gate(
+            allow_live_trading=True,
+            manual_approval_token="short_token",
+            regression_dir=Path("non_existent_path")
+        )
+        self.assertFalse(res.allowed)
+        self.assertIn("manual_approval_token_is_too_weak_must_be_at_least_32_chars", res.blocked_reasons)
+
+        # 3. Blocked if token hash mismatches
+        res = adapter.check_live_execution_gate(
+            allow_live_trading=True,
+            manual_approval_token="another_secure_token_value_at_least_32_chars",
+            regression_dir=Path("non_existent_path")
+        )
+        self.assertFalse(res.allowed)
+        self.assertIn("manual_approval_token_hash_mismatch", res.blocked_reasons)
+
+        # 4. Blocked if there are open regression cases
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            (tmpdir / "case_1.json").write_text(json.dumps({"case_id": "case_1", "status": "open"}), encoding="utf-8")
+
+            res = adapter.check_live_execution_gate(
+                allow_live_trading=True,
+                manual_approval_token=token,
+                regression_dir=tmpdir
+            )
+            self.assertFalse(res.allowed)
+            self.assertIn("open_regression_case_present_case_1", res.blocked_reasons)
+
+        # 5. Approved if all conditions match
+        res = adapter.check_live_execution_gate(
+            allow_live_trading=True,
+            manual_approval_token=token,
+            regression_dir=Path("non_existent_path")
+        )
+        self.assertTrue(res.allowed)
+
+        sig = SignalIntent(trading_date="2026-05-28", strategy_id="mvp", symbol="2330", setup_id="breakout", side="buy", quantity=1000, price=900.0)
+        dec = RiskDecision(approved=True, reason="risk_ok", quantity=1000, price=900.0)
+        trade = adapter.place_live_order(sig, dec, res)
+        self.assertEqual(trade.source, "live")
+        self.assertEqual(trade.status, "submitted")
+
+        class MockSimApi:
+            simulation = True
+        with self.assertRaises(ValueError):
+            LiveShioajiBrokerAdapter(MockSimApi(), token_hash)
+
+
 if __name__ == "__main__":
     unittest.main()

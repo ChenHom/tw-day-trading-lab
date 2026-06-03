@@ -118,8 +118,9 @@ def render_close_report_markdown(
     replay_summary: dict[str, Any] | None = None,
     simulation_summary: dict[str, Any] | None = None,
     simulation_results: list[dict[str, Any]] | None = None,
+    readiness_summary: dict[str, Any] | None = None,
 ) -> str:
-    """Render one close report across candidate, replay, and simulation outputs."""
+    """Render one close report across candidate, replay, simulation, and readiness outputs."""
     actionable = [item for item in candidates if item.next_day_actionable]
     lines = [
         f"# 台股當沖 Close Report {trading_date}",
@@ -161,9 +162,30 @@ def render_close_report_markdown(
             "- simulation 不納入 replay expectancy",
             _format_simulation_summary_markdown(simulation_summary),
             _format_needs_review_details_markdown(simulation_results),
+            "",
+            "## Operational Readiness",
+            "",
+            _format_readiness_summary_markdown(readiness_summary),
         ]
     )
     return "\n".join(lines) + "\n"
+
+
+def _format_readiness_summary_markdown(readiness_summary: dict[str, Any] | None) -> str:
+    """Format operational readiness checks for Close Report."""
+    if not readiness_summary:
+        return "- readiness checks: N/A"
+    status = readiness_summary.get("status", "unknown")
+    summary = readiness_summary.get("summary", {})
+    checks_str = f"status: {status} (checks: {summary.get('checks', 0)}, ok: {summary.get('ok', 0)}, blocked: {summary.get('blocked', 0)}, needs_review: {summary.get('needs_review', 0)})"
+
+    manual_actions = readiness_summary.get("manual_actions", [])
+    manual_actions_str = ""
+    if manual_actions:
+        manual_actions_str = "\n\n### Manual Actions Required:\n" + "\n".join(f"- {action}" for action in manual_actions)
+
+    return f"- {checks_str}{manual_actions_str}"
+
 
 
 def render_close_report_telegram_summary(
