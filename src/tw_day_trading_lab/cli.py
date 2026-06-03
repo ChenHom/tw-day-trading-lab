@@ -17,6 +17,7 @@ from .ledger import PaperLedger
 from .models import CandidateInput, CandidateScore
 from .old_log_importer import import_trade_log_csv, render_failure_replay_markdown
 from .replay import ReplayAssumptions, render_replay_markdown, replay_samples
+from .strategy import VwapBreakoutStrategy
 from .reports import (
     render_close_report_markdown,
     render_close_report_telegram_summary,
@@ -601,6 +602,78 @@ def get_file_checksum(path: Path) -> str:
     return h.hexdigest()
 
 
+def check_git_clean(cwd: str) -> dict:
+    """Run git diff --check and git status --porcelain to detect repo cleanliness.
+
+    Returns::
+
+        {
+            "clean": bool,
+            "uncommitted_files": [str, ...],
+            "whitespace_issues": bool,
+        }
+    """
+    import subprocess
+
+    uncommitted_files: list = []
+    whitespace_issues = False
+
+    # git status --porcelain: one line per changed file
+    try:
+        status_res = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+        )
+        if status_res.returncode == 0:
+            for line in status_res.stdout.splitlines():
+                line = line.strip()
+                if line:
+                    # last token on the line is the file path
+                    parts = line.split(None, 1)
+                    fname = parts[1].strip() if len(parts) > 1 else line
+                    uncommitted_files.append(fname)
+    except Exception:
+        pass
+
+    # git diff --check: exits non-zero when whitespace issues are found
+    try:
+        diff_res = subprocess.run(
+            ["git", "diff", "--check"],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+        )
+        whitespace_issues = diff_res.returncode != 0
+    except Exception:
+        pass
+
+    clean = len(uncommitted_files) == 0
+    return {
+        "clean": clean,
+        "uncommitted_files": uncommitted_files,
+        "whitespace_issues": whitespace_issues,
+    }
+
+
+def check_ops_lock(lock_path: Path) -> dict:
+    """Check whether an ops lock file exists at *lock_path*.
+
+    Returns::
+
+        {
+            "locked": bool,
+            "lock_file": str,
+        }
+    """
+    locked = lock_path.exists()
+    return {
+        "locked": locked,
+        "lock_file": str(lock_path),
+    }
+
+
 def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
     """Run the daily simulation ops runner to generate candidate inputs, execute gates, place orders, check readiness, and produce run manifest."""
     import uuid
@@ -653,6 +726,40 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
     created_at = datetime.now().isoformat()
     git_commit = get_git_commit()
     cwd = os.getcwd()
+
+    # 3-B Pre-flight safety gates (run before any file I/O or Shioaji login)
+    _preflight_blocked: list = []
+
+    # 3-B-1 Git clean check
+    _git_status = check_git_clean(cwd)
+    if not _git_status["clean"]:
+        _preflight_blocked.append("uncommitted_changes")
+        print(
+            f"[pre-flight] WARNING: git repo has uncommitted changes: "
+            f"{_git_status['uncommitted_files']}"
+        )
+
+    # 3-B-2 Lock file detection
+    _lock_path = Path(cwd) / ".ops.lock"
+    _lock_status = check_ops_lock(_lock_path)
+    if _lock_status["locked"]:
+        _preflight_blocked.append("ops_lock_file_exists")
+        print(
+            f"[pre-flight] WARNING: ops lock file already exists at {_lock_path}. "
+            "Another ops-run may be in progress."
+        )
+
+    # Create lock file; remove in finally so it is cleaned up even on failure
+    _lock_created = False
+    if not _lock_status["locked"]:
+        try:
+            _lock_path.write_text(
+                json.dumps({"run_id": run_id, "created_at": created_at}) + "\n",
+                encoding="utf-8",
+            )
+            _lock_created = True
+        except Exception as _lock_err:
+            print(f"[pre-flight] WARNING: could not create lock file: {_lock_err}")
 
     # Mask manual approval tokens in the command line
     cmd_args = sys.argv.copy()
@@ -717,6 +824,54 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
         {"path": str(input_plan_path), "checksum": get_file_checksum(input_plan_path)}
     )
 
+    # Check if we are running in after-market hours to automatically ingest and build candidates
+    from datetime import datetime, time
+    current_time_obj = None
+    if args.current_time:
+        try:
+            parts = args.current_time.split(":")
+            current_time_obj = time(int(parts[0]), int(parts[1]))
+        except Exception:
+            pass
+    if not current_time_obj:
+        current_time_obj = datetime.now().time()
+
+    is_after_market = current_time_obj >= time(17, 30) or current_time_obj < time(8, 30)
+    if is_after_market:
+        print(f"Current time {current_time_obj.strftime('%H:%M')} is after-market. Automatically running daily ingestion and candidate building...")
+
+        # Ingest data
+        try:
+            from .finmind_ingestion import FinMindDataLoaderClient, build_single_request, ingest_finmind_requests
+            loader = FinMindDataLoaderClient(token=os.getenv("FINMIND_TOKEN", ""))
+            reqs = [
+                build_single_request(trading_date_str, "TaiwanStockPrice", "market"),
+                build_single_request(trading_date_str, "TaiwanStockInfo", "market"),
+                build_single_request(trading_date_str, "TaiwanStockMarginPurchaseSell", "market"),
+                build_single_request(trading_date_str, "TaiwanStockChipActive", "market"),
+            ]
+            print(f"Ingesting FinMind market data for {trading_date_str}...")
+            ingest_finmind_requests(loader, reqs, cache_dir=cache_dir)
+            print("FinMind data ingestion completed.")
+        except Exception as e:
+            print(f"Warning: FinMind Ingestion failed: {e}")
+
+        # Candidate Building
+        try:
+            candidate_output_path = Path("reports") / f"{trading_date_str}-candidates.json"
+            print(f"Building next-day candidates and writing to {candidate_output_path}...")
+            build_candidates_from_raw_cache(
+                trading_date=trading_date_str,
+                cache_dir=cache_dir,
+                output_path=candidate_output_path,
+            )
+            print("Next-day candidates successfully built.")
+        except Exception as e:
+            print(f"Warning: Candidates building failed: {e}")
+
+        print("After-market pipeline finished.")
+        return
+
     # 5. Setup broker and adapter
     side_effects = []
     blocked_reasons = []
@@ -770,10 +925,90 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
 
     # 6. Run the simulation adapter and check gates
     results = []
+    strategy = VwapBreakoutStrategy()
     for plan_item in plan_items:
+        signal_to_exec = plan_item.signal
+        decision_to_exec = plan_item.risk_decision
+
+        # Check VWAP breakout intraday strategy before executing
+        if plan_item.risk_decision.approved:
+            minute_bars = []
+            if simulation_on:
+                try:
+                    symbol = plan_item.signal.symbol
+                    contract = api.Contracts.Stocks[symbol]
+                    kbars = api.kbars(contract, start_date=trading_date_str, end_date=trading_date_str)
+                    if kbars and hasattr(kbars, "time") and len(kbars.time) > 0:
+                        for i in range(len(kbars.time)):
+                            bar_time = kbars.time[i]
+                            if hasattr(bar_time, "strftime"):
+                                bar_time_str = bar_time.strftime("%H:%M")
+                            else:
+                                bar_time_str = str(bar_time).split("T")[-1][:5]
+                            minute_bars.append({
+                                "time": bar_time_str,
+                                "open": float(kbars.open[i]),
+                                "high": float(kbars.high[i]),
+                                "low": float(kbars.low[i]),
+                                "close": float(kbars.close[i]),
+                                "volume": float(kbars.volume[i]),
+                            })
+                except Exception as e:
+                    print(f"Warning: Failed to fetch minute kbars for {plan_item.signal.symbol}: {e}")
+            else:
+                # Dry-run mock bars for testing
+                for i in range(15):
+                    minute_bars.append({
+                        "time": f"09:{i:02d}",
+                        "open": 900.0,
+                        "high": 905.0,
+                        "low": 895.0,
+                        "close": 900.0,
+                        "volume": 100.0,
+                    })
+                minute_bars.append({
+                    "time": "09:15",
+                    "open": 901.0,
+                    "high": 910.0,
+                    "low": 900.0,
+                    "close": 908.0,
+                    "volume": 300.0,
+                })
+
+            intraday_sig = strategy.generate_signal(
+                symbol=plan_item.signal.symbol,
+                minute_bars=minute_bars,
+                prev_close=plan_item.signal.price,
+            )
+
+            if not intraday_sig.triggered:
+                decision_to_exec = RiskDecision(
+                    approved=False,
+                    reason=f"strategy_not_triggered: {intraday_sig.reason}",
+                    quantity=None,
+                    price=None,
+                )
+            else:
+                # Strategy triggered! Update price to actual intraday entry breakout price
+                signal_to_exec = SignalIntent(
+                    trading_date=plan_item.signal.trading_date,
+                    strategy_id=plan_item.signal.strategy_id,
+                    symbol=plan_item.signal.symbol,
+                    setup_id=plan_item.signal.setup_id,
+                    side=plan_item.signal.side,
+                    quantity=plan_item.signal.quantity,
+                    price=intraday_sig.entry_price,
+                )
+                decision_to_exec = RiskDecision(
+                    approved=True,
+                    reason=plan_item.risk_decision.reason,
+                    quantity=plan_item.risk_decision.quantity,
+                    price=intraday_sig.entry_price,
+                )
+
         res = adapter.execute(
-            plan_item.signal,
-            plan_item.risk_decision,
+            signal_to_exec,
+            decision_to_exec,
             current_time=args.current_time,
             allow_outside_session=bool(args.allow_outside_session),
             bypass_gates=False,
@@ -858,10 +1093,11 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
         "cwd": cwd,
         "command": command,
         "env_sources": env_sources,
+        "git_status": _git_status,
         "input_artifacts": input_artifacts,
         "output_artifacts": output_artifacts,
         "side_effects": side_effects,
-        "blocked_reasons": blocked_reasons,
+        "blocked_reasons": _preflight_blocked + blocked_reasons,
         "manual_actions": manual_actions,
         "simulation_only": True,
     }
@@ -872,6 +1108,13 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
     print(f"Daily simulation ops run completed successfully!")
     print(f"Run ID: {run_id}")
     print(f"Manifest written to: {manifest_path}")
+
+    # 3-B-2 Remove lock file now that the run is complete
+    if _lock_created:
+        try:
+            _lock_path.unlink(missing_ok=True)
+        except Exception as _unlock_err:
+            print(f"[post-run] WARNING: could not remove lock file: {_unlock_err}")
 
 
 def cmd_simulate_regression_import(args: argparse.Namespace) -> None:

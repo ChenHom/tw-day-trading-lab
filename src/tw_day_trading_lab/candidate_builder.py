@@ -61,6 +61,8 @@ def build_candidates_from_raw_cache(
     trading_date: str,
     limit: int = 80,
     min_trading_money: float = 80_000_000,
+    min_adv_20d_money: float = 50_000_000,
+    min_volume_lots: int = 500,
 ) -> CandidateBuildResult:
     """Build ranked candidates from FinMind price raw cache."""
     price_dir = cache_dir / "finmind" / "TaiwanStockPrice" / trading_date
@@ -71,12 +73,15 @@ def build_candidates_from_raw_cache(
         "input_files": 0,
         "built_candidates": 0,
         "filtered_low_liquidity": 0,
+        "filtered_low_adv": 0,
+        "filtered_low_volume_lots": 0,
         "filtered_non_common_stock": 0,
         "degraded_candidates": 0,
         "data_gap_files": 0,
         "missing_stock_info": 0,
         "missing_chip_files": 0,
         "missing_margin_files": 0,
+        "warned_high_price_spread": 0,
     }
     candidates: list[CandidateInput] = []
     for path in sorted(price_dir.glob("*.jsonl")) if price_dir.exists() else []:
@@ -90,6 +95,29 @@ def build_candidates_from_raw_cache(
         if candidate.trading_money < min_trading_money:
             summary["filtered_low_liquidity"] += 1
             continue
+
+        # --- ADV-20d filter ---
+        sorted_rows = sorted(rows, key=lambda r: str(r.get("date", "")))
+        last_20 = sorted_rows[-20:]
+        adv_20d_money = (
+            sum(float(r.get("Trading_money", 0) or 0) for r in last_20) / len(last_20)
+            if last_20 else 0.0
+        )
+        if adv_20d_money < min_adv_20d_money:
+            summary["filtered_low_adv"] += 1
+            continue
+
+        # --- Min volume lots filter (1 lot = 1000 shares) ---
+        target_rows = [r for r in sorted_rows if str(r.get("date")) == trading_date]
+        current_row = target_rows[-1] if target_rows else (sorted_rows[-1] if sorted_rows else {})
+        latest_volume_lots = float(current_row.get("Trading_Volume", 0) or 0) / 1000
+        if latest_volume_lots < min_volume_lots:
+            summary["filtered_low_volume_lots"] += 1
+            continue
+
+        # --- High-price low-spread warning (no skip) ---
+        latest_close = float(current_row.get("close", 0) or 0)
+
         stock_info = stock_info_by_id.get(candidate.symbol)
         if stock_info and is_non_common_stock(stock_info):
             summary["filtered_non_common_stock"] += 1
@@ -116,6 +144,8 @@ def build_candidates_from_raw_cache(
         candidates.append(candidate)
         if candidate.data_quality != "ok":
             summary["degraded_candidates"] += 1
+        if latest_close > 500 and candidate.intraday_range_pct < 0.3:
+            summary["warned_high_price_spread"] += 1
 
     ranked = rank_candidates(candidates, limit=limit)
     summary["built_candidates"] = len(candidates)

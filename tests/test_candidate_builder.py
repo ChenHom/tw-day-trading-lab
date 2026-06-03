@@ -307,5 +307,110 @@ class CandidateBuilderTest(unittest.TestCase):
         self.assertEqual(result.candidates[0].data_quality, "degraded")
 
 
+    # ------------------------------------------------------------------ Sprint 3-A
+
+    def _make_price_row(self, date, stock_id, trading_money=100_000_000,
+                        trading_volume=600_000, close=100,
+                        open_=99, high=101, low=98, spread=1):
+        return {
+            "date": date,
+            "stock_id": stock_id,
+            "Trading_Volume": trading_volume,
+            "Trading_money": trading_money,
+            "open": open_,
+            "max": high,
+            "min": low,
+            "close": close,
+            "spread": spread,
+        }
+
+    def test_low_adv_20d_is_filtered(self):
+        """Stock whose 20-day average Trading_money < 50 M is dropped."""
+        # Build 21 rows: 20 historical days at 10 M each + target day at 80 M.
+        # ADV-20 over the last 20 rows = (19 * 10 M + 80 M) / 20 = 13.5 M < 50 M
+        rows = []
+        for i in range(20, 0, -1):
+            rows.append(self._make_price_row(
+                f"2026-05-{i:02d}", "8888",
+                trading_money=10_000_000,
+                trading_volume=600_000,
+                close=100,
+            ))
+        rows.append(self._make_price_row(
+            "2026-05-28", "8888",
+            trading_money=80_000_000,
+            trading_volume=600_000,
+            close=100,
+        ))
+        path = self.cache_dir / "finmind" / "TaiwanStockPrice" / "2026-05-28" / "8888.jsonl"
+        write_jsonl(path, rows)
+
+        result = build_candidates_from_raw_cache(
+            cache_dir=self.cache_dir,
+            trading_date="2026-05-28",
+            min_trading_money=50_000_000,   # today's money passes
+            min_adv_20d_money=50_000_000,
+            min_volume_lots=0,
+        )
+
+        self.assertEqual(result.summary["filtered_low_adv"], 1)
+        self.assertEqual(result.candidates, [])
+
+    def test_low_volume_lots_is_filtered(self):
+        """Stock with Trading_Volume = 400_000 shares (400 lots) is filtered (< 500 lots)."""
+        rows = [
+            self._make_price_row(
+                "2026-05-27", "7777",
+                trading_money=100_000_000, trading_volume=600_000, close=100,
+            ),
+            self._make_price_row(
+                "2026-05-28", "7777",
+                trading_money=100_000_000, trading_volume=400_000, close=100,
+            ),
+        ]
+        path = self.cache_dir / "finmind" / "TaiwanStockPrice" / "2026-05-28" / "7777.jsonl"
+        write_jsonl(path, rows)
+
+        result = build_candidates_from_raw_cache(
+            cache_dir=self.cache_dir,
+            trading_date="2026-05-28",
+            min_trading_money=50_000_000,
+            min_adv_20d_money=0,
+            min_volume_lots=500,
+        )
+
+        self.assertEqual(result.summary["filtered_low_volume_lots"], 1)
+        self.assertEqual(result.candidates, [])
+
+    def test_high_price_low_range_warns_in_summary(self):
+        """Close > 500 with intraday_range_pct < 0.3 increments warned_high_price_spread."""
+        # close=600, high=601.5, low=600 → range = 1.5, range_pct = 1.5/600*100 = 0.25 < 0.3
+        rows = [
+            self._make_price_row(
+                "2026-05-27", "6666",
+                trading_money=200_000_000, trading_volume=600_000,
+                close=600, open_=600, high=601, low=600, spread=0,
+            ),
+            self._make_price_row(
+                "2026-05-28", "6666",
+                trading_money=200_000_000, trading_volume=600_000,
+                close=600, open_=600, high=601, low=600, spread=0,
+            ),
+        ]
+        path = self.cache_dir / "finmind" / "TaiwanStockPrice" / "2026-05-28" / "6666.jsonl"
+        write_jsonl(path, rows)
+
+        result = build_candidates_from_raw_cache(
+            cache_dir=self.cache_dir,
+            trading_date="2026-05-28",
+            min_trading_money=50_000_000,
+            min_adv_20d_money=0,
+            min_volume_lots=0,
+        )
+
+        self.assertGreater(result.summary["warned_high_price_spread"], 0)
+        self.assertGreater(len(result.candidates), 0)  # NOT filtered
+
+
 if __name__ == "__main__":
     unittest.main()
