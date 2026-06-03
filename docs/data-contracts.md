@@ -298,6 +298,83 @@ Checks：
 - 未提供人工 approval token 時，`formal_live_gate` 必須 blocked。
 - P7 只輸出 JSON / Markdown report；正式告警發送、live broker adapter 與人工操作 SOP 留下一個 phase。
 
+## P8 Ops Run Manifest Contract
+
+P8 daily simulation ops 的完成條件不是「能送 simulation order」，而是任何一次 daily run 都能從 manifest 回放、稽核與解釋。`ops_run_manifest` 是 P8-P10 的共同追蹤邊界。
+
+必要欄位：
+
+| 欄位 | 說明 |
+|---|---|
+| `run_id` | 單次 ops run 的唯一 id |
+| `trading_date` | 交易日 |
+| `created_at` | manifest 建立時間 |
+| `git_commit` | 執行時 repo commit hash |
+| `cwd` | 執行時工作目錄 |
+| `command` | 完整命令列，不包含 secrets |
+| `env_sources` | 使用的 env file / config 來源摘要，不輸出 secret 值 |
+| `input_artifacts[]` | input plan / candidates / settings path 與 checksum |
+| `output_artifacts[]` | order report / callback store / restart-sync / readiness / close report path 與 checksum |
+| `side_effects[]` | login / set_order_callback / place_order / cancel_order / send_alert 等 side effect 摘要 |
+| `blocked_reasons[]` | gate 擋下的原因 |
+| `manual_actions[]` | operator 下一步 |
+
+規則：
+
+- manifest 必須先於 P10 regression case 存在；沒有 manifest 的 run 不得當成 regression source。
+- checksum 至少覆蓋 input plan、simulation output、callback store、restart-sync、readiness report。
+- manifest 不得保存 API key、secret、CA password 或可用 approval token。
+- 若 run 使用 Shioaji simulation，manifest 必須標明 `simulation_only=true`。
+
+## P9 Alert Contract
+
+P9 alert 必須讓 operator 知道「壞在哪、誰處理、是否已發過、如何關閉」，不能只是一段摘要文字。
+
+必要欄位：
+
+| 欄位 | 說明 |
+|---|---|
+| `alert_id` | 穩定 alert id |
+| `run_id` | 來源 ops run id |
+| `severity` | `info` / `warning` / `error` / `critical` |
+| `category` | `candidate_quality` / `execution_health` / `readiness` / `reporting` / `regression` |
+| `dedupe_key` | 同類告警去重 key |
+| `owner` | 預期處理角色或人工負責人 |
+| `manual_action` | operator 要做的具體下一步 |
+| `send_gate` | 是否允許真實發送 |
+| `sent_at` | 實際發送時間，未發送則為 null |
+| `resolved_at` | 人工或系統關閉時間，未關閉則為 null |
+
+規則：
+
+- Telegram 真實發送必須有明確 gate；預設仍 blocked / dry-run。
+- 同一 `dedupe_key` 不得無限制重送。
+- alert report 必須分離 strategy evidence、execution health、operational readiness，不能用單一總分掩蓋問題。
+
+## P10 Regression Case Contract
+
+P10 regression correction loop 必須把每日問題轉成可重跑 fixture，而不是只寫事後說明。
+
+必要欄位：
+
+| 欄位 | 說明 |
+|---|---|
+| `case_id` | regression case id |
+| `source_run_id` | 來源 ops run id |
+| `failure_type` | `data_issue` / `candidate_quality` / `risk_decision` / `broker_callback_lifecycle` / `reporting_issue` |
+| `raw_source_payload` | 原始 row / callback / report payload，必要時可外部 path + checksum |
+| `minimal_fixture_path` | 最小重現 fixture |
+| `expected_behavior` | 修正後應符合的行為 |
+| `red_command` | 修正前應失敗的命令或測試 |
+| `closing_test_command` | 修正後必須通過的命令或測試 |
+| `status` | `open` / `fixed` / `wont_fix` / `needs_manual_review` |
+
+規則：
+
+- regression case 必須保留 raw source row / payload；只有 normalized result 不足以回溯 schema drift。
+- 每個 fixed case 必須有 closing test command。
+- P10 不得把 simulation result 納入 strategy expectancy；它只修正資料、候選、風控、broker lifecycle 或 reporting 問題。
+
 ## Persisted Strategy Samples
 
 TiDB `valid_samples` table 目前保存 classified strategy samples。雖然沿用 `valid_samples` 名稱，實際內容包含：

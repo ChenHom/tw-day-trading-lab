@@ -1259,3 +1259,20 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli notify telegram --date 2026-05-
 - P9 Ops Reports / Alerts。
 - P10 Regression Correction Loop。
 - P11 Live Execution Design。
+
+## 7. Documentation Close-out - 2026-06-03
+
+本輪目標：將 P8-P11 must-fix、P0-P11 full grill-me review 與目前專案狀態同步到 README / docs，作為推上 GitHub 前的文件基準。
+
+已完成文件更新：
+
+- `README.md`：補 Remaining Phase Map、P8 前 must-fix、Documentation Map，並明確標示下一步是 P8 daily simulation ops go-live，不是繼續拆 P7 或直接正式下單。
+- `docs/data-contracts.md`：補 P8 `ops_run_manifest`、P9 alert、P10 regression case 的契約草案，讓後續實作有可驗收邊界。
+- `docs/development-work.md`：保留 P8-P11 grill-me review、P0-P11 full review，並補本 close-out 紀錄。
+
+Grill-me close-out verdict：
+
+- 方向正確：文件已把 P8-P11 的失敗點轉成具體契約，避免後續只做「能跑命令」的假完成。
+- must-fix 已寫回：plan builder contract、price / contract / session gates、ops manifest、alert severity / dedupe / owner、regression raw payload / closing test、P11 live boundary enforcement。
+- 剩餘風險：這仍是文件與契約層，尚未完成 P8 實作；下一輪 coding 應先從 `ops_run_manifest` 與 plan builder contract 開始。
+- 下一步：P8 Simulation Ops Go-live 第一刀，先做 manifest + input plan builder + pre-order gates，再擴 daily runner。
