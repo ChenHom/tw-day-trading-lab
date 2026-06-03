@@ -63,6 +63,8 @@ from .storage import (
     load_import_payload,
     persist_candidate_run,
     persist_import_samples,
+    get_schema_version,
+    apply_migration,
 )
 
 
@@ -316,6 +318,13 @@ def cmd_notify_telegram(args: argparse.Namespace) -> None:
     content = report_path.read_text(encoding="utf-8")
     lines = [line for line in content.splitlines() if line.strip()]
     summary = "\n".join(lines[: min(12, len(lines))])
+
+    telegram_enabled = os.getenv("TELEGRAM_ENABLED", "").lower() in ("true", "1", "yes")
+    if not telegram_enabled:
+        print("Telegram notifications are disabled via TELEGRAM_ENABLED. Skipping real send.")
+        print(summary)
+        return
+
     if args.dry_run:
         print(summary)
         return
@@ -362,6 +371,59 @@ def cmd_db_init(args: argparse.Namespace) -> None:
     try:
         apply_schema_file(connection, Path(args.schema), database=config.database)
         print(f"schema applied: {config.database}")
+    finally:
+        connection.close()
+
+
+def cmd_db_migrate(args: argparse.Namespace) -> None:
+    """Scan and apply pending migrations under --schema-dir."""
+    schema_dir = Path(args.schema_dir)
+    if not schema_dir.exists():
+        raise FileNotFoundError(f"Schema directory not found: {schema_dir}")
+
+    import re
+    migration_files = []
+    for p in schema_dir.glob("*.sql"):
+        match = re.match(r"^(\d+)_(.*)\.sql$", p.name)
+        if match:
+            version = int(match.group(1))
+            description = match.group(2)
+            migration_files.append((version, description, p))
+
+    migration_files.sort(key=lambda x: x[0])
+
+    config = TiDBConfig.from_env()
+    connection = connect_tidb(config, use_database=False)
+    try:
+        from .storage import validate_sql_identifier, render_schema_script
+        is_sqlite = "sqlite" in str(type(connection)).lower()
+        if not is_sqlite:
+            try:
+                safe_database = validate_sql_identifier(config.database)
+                cursor = connection.cursor()
+                cursor.execute(f"CREATE DATABASE IF NOT EXISTS {safe_database}")
+                cursor.execute(f"USE {safe_database}")
+                cursor.close()
+            except Exception:
+                pass
+
+        current_version = get_schema_version(connection)
+        print(f"Current schema version: {current_version}")
+
+        applied_count = 0
+        for version, description, path in migration_files:
+            if version > current_version:
+                print(f"Applying migration {path.name} (version {version})...")
+                sql = path.read_text(encoding="utf-8")
+                sql = render_schema_script(sql, config.database)
+
+                apply_migration(connection, version, sql, description)
+                applied_count += 1
+
+        if applied_count == 0:
+            print("No pending migrations to apply.")
+        else:
+            print(f"Successfully applied {applied_count} migrations.")
     finally:
         connection.close()
 
@@ -1063,6 +1125,8 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
 
     # Generate P9 Alerts
     alerts = generate_alerts_from_run(run_id, candidates_list, results, readiness_report)
+    from .simulation import send_alerts_telegram
+    alerts = send_alerts_telegram(alerts, dry_run=False)
     alerts_path = output_dir / "alerts.json"
     write_json(alerts_path, [alert.to_dict() for alert in alerts])
 
@@ -1502,7 +1566,7 @@ def cmd_simulate_shioaji_smoke(args: argparse.Namespace) -> None:
 def cmd_simulate_production_readiness(args: argparse.Namespace) -> None:
     """Build the P7 production readiness gate report from execution sync state."""
     store = FileExecutionSyncStore(Path(args.store))
-    expected_token = args.expected_manual_approval_token or f"{args.date}:LIVE-TRADING-APPROVED"
+    expected_token = args.expected_manual_approval_token or ""
     report = build_production_readiness_report(
         store.load_snapshot(),
         ProductionReadinessPolicy(
@@ -1522,6 +1586,18 @@ def cmd_simulate_production_readiness(args: argparse.Namespace) -> None:
         report_output = Path(args.report_output)
         write_text(report_output, render_production_readiness_markdown(report))
         print(report_output)
+
+
+def cmd_generate_approval_token(args: argparse.Namespace) -> None:
+    """Generate a 5-minute valid HMAC manual approval token."""
+    import sys
+    secret = os.getenv("LIVE_APPROVAL_SECRET", "")
+    if not secret:
+        print("Error: LIVE_APPROVAL_SECRET environment variable is not set.", file=sys.stderr)
+        sys.exit(1)
+    from .live import generate_live_approval_token
+    token = generate_live_approval_token(secret)
+    print(token)
 
 
 def cmd_ingest_finmind(args: argparse.Namespace) -> None:
@@ -1630,6 +1706,10 @@ def build_parser() -> argparse.ArgumentParser:
     db_init = db_sub.add_parser("init")
     db_init.add_argument("--schema", default="sql/001_init.sql")
     db_init.set_defaults(func=cmd_db_init)
+
+    db_migrate = db_sub.add_parser("migrate")
+    db_migrate.add_argument("--schema-dir", default="sql")
+    db_migrate.set_defaults(func=cmd_db_migrate)
 
     samples = subparsers.add_parser("samples")
     samples_sub = samples.add_subparsers(required=True)
@@ -1749,6 +1829,9 @@ def build_parser() -> argparse.ArgumentParser:
     production_readiness.add_argument("--max-pending-orders", type=int, default=0)
     production_readiness.add_argument("--disable-cancel-retry-plan", action="store_true")
     production_readiness.set_defaults(func=cmd_simulate_production_readiness)
+
+    generate_approval_token = simulate_sub.add_parser("generate-approval-token")
+    generate_approval_token.set_defaults(func=cmd_generate_approval_token)
 
     regression_import = simulate_sub.add_parser("regression-import")
     regression_import.add_argument("--manifest", required=True)

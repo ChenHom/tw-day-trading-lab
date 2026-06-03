@@ -15,10 +15,62 @@ class LiveGateCheckResult:
     blocked_reasons: list[str]
 
 
+def generate_live_approval_token(secret: str, timestamp: int | None = None) -> str:
+    """Generate a 5-minute valid HMAC-SHA256 token."""
+    import hmac
+    import hashlib
+    import time
+    ts = timestamp if timestamp is not None else int(time.time())
+    ts_str = str(ts)
+    token_hmac = hmac.new(
+        secret.encode("utf-8"),
+        ts_str.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
+    return f"{ts_str}:{token_hmac}"
+
+
+def get_hmac_token_error_reason(token: str, secret: str, current_time_unix: int | None = None) -> str | None:
+    """Validate token and return error reason, or None if valid."""
+    import hmac
+    import hashlib
+    import time
+    if not secret:
+        return "live_approval_secret_missing"
+    if not token:
+        return "manual_approval_token_invalid_format"
+    try:
+        parts = token.split(":")
+        if len(parts) != 2:
+            return "manual_approval_token_invalid_format"
+        ts_str, token_hmac = parts
+        ts = int(ts_str)
+        now = current_time_unix if current_time_unix is not None else int(time.time())
+
+        expected = hmac.new(
+            secret.encode("utf-8"),
+            ts_str.encode("utf-8"),
+            hashlib.sha256
+        ).hexdigest()
+
+        if not hmac.compare_digest(expected, token_hmac):
+            return "manual_approval_token_hash_mismatch"
+        if abs(now - ts) > 300:
+            return "manual_approval_token_expired"
+        return None
+    except Exception:
+        return "manual_approval_token_invalid_format"
+
+
+def validate_hmac_token(token: str, secret: str, current_time_unix: int | None = None) -> bool:
+    """Check if token is valid."""
+    return get_hmac_token_error_reason(token, secret, current_time_unix) is None
+
+
 class LiveShioajiBrokerAdapter:
     """Rigid security boundary and order gateway for live trading. Decoupled from simulation adapter."""
 
-    def __init__(self, api: Any, expected_token_hash: str) -> None:
+    def __init__(self, api: Any, expected_token_hash: str = "") -> None:
         # Crucial P11 rule: Never allow api.simulation = True in live execution!
         if getattr(api, "simulation", False) is True:
             raise ValueError("LiveShioajiBrokerAdapter forbids api.simulation=True")
@@ -31,6 +83,7 @@ class LiveShioajiBrokerAdapter:
         allow_live_trading: bool,
         manual_approval_token: str,
         regression_dir: Path = Path("data/regression"),
+        current_time_unix: int | None = None,
     ) -> LiveGateCheckResult:
         """Evaluate the strict entrance gates for live orders."""
         blocked_reasons = []
@@ -39,15 +92,21 @@ class LiveShioajiBrokerAdapter:
         if not allow_live_trading:
             blocked_reasons.append("allow_live_trading_is_false")
 
-        # 2. Token complexity check (must not be date-based or short/predictable)
-        if len(manual_approval_token) < 32:
-            blocked_reasons.append("manual_approval_token_is_too_weak_must_be_at_least_32_chars")
-
-        # 3. Token hash verification
-        import hashlib
-        token_hash = hashlib.sha256(manual_approval_token.encode("utf-8")).hexdigest()
-        if token_hash != self._expected_token_hash:
-            blocked_reasons.append("manual_approval_token_hash_mismatch")
+        # 2. Token hmac verification or fallback
+        secret = os.getenv("LIVE_APPROVAL_SECRET", "")
+        if not secret and self._expected_token_hash:
+            if len(manual_approval_token) < 32:
+                blocked_reasons.append("manual_approval_token_is_too_weak_must_be_at_least_32_chars")
+            import hashlib
+            token_hash = hashlib.sha256(manual_approval_token.encode("utf-8")).hexdigest()
+            if token_hash != self._expected_token_hash:
+                blocked_reasons.append("manual_approval_token_hash_mismatch")
+        elif not secret:
+            blocked_reasons.append("live_approval_secret_missing")
+        else:
+            reason = get_hmac_token_error_reason(manual_approval_token, secret, current_time_unix)
+            if reason:
+                blocked_reasons.append(reason)
 
         # 4. Check for open regression cases
         if regression_dir.exists():

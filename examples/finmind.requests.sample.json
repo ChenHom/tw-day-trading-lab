@@ -21,5 +21,11 @@
     "start_date": "2026-04-08",
     "trading_date": "2026-05-28",
     "stock_id": "2330"
+  },
+  {
+    "dataset": "TaiwanStockPrice",
+    "start_date": "2026-03-01",
+    "trading_date": "2026-06-03",
+    "stock_id": "0050"
   }
 ]

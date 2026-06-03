@@ -1992,6 +1992,85 @@ class SimulationAdapterTest(unittest.TestCase):
         self.assertEqual(alerts[1].category, "execution_health")
         self.assertEqual(alerts[2].category, "readiness")
 
+    def test_send_alerts_telegram(self):
+        from tw_day_trading_lab.simulation import send_alerts_telegram, Alert
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch, MagicMock
+
+        alerts = [
+            Alert(
+                alert_id="alert-warning",
+                run_id="run-1",
+                severity="warning",
+                category="candidate_quality",
+                dedupe_key="key-warning",
+                owner="operator",
+                manual_action="Review",
+                send_gate=False,
+            ),
+            Alert(
+                alert_id="alert-error",
+                run_id="run-1",
+                severity="error",
+                category="execution_health",
+                dedupe_key="key-error",
+                owner="operator",
+                manual_action="Check",
+                send_gate=False,
+            )
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "telegram_send_log.json"
+
+            # 1. TELEGRAM_ENABLED=false
+            with patch.dict("os.environ", {"TELEGRAM_ENABLED": "false", "TELEGRAM_BOT_TOKEN": "mock-token", "TELEGRAM_CHAT_ID": "mock-id"}):
+                res = send_alerts_telegram(alerts, log_path=log_path)
+                self.assertFalse(res[0].send_gate)
+                self.assertFalse(res[1].send_gate)
+                self.assertFalse(log_path.exists())
+
+            # 2. TELEGRAM_ENABLED=true (warning no, error yes)
+            mock_response = MagicMock()
+            mock_response.read.return_value = b'{"ok": true}'
+            mock_response.__enter__.return_value = mock_response
+
+            with patch("urllib.request.urlopen", return_value=mock_response) as mock_urlopen:
+                with patch.dict("os.environ", {"TELEGRAM_ENABLED": "true", "TELEGRAM_BOT_TOKEN": "mock-token", "TELEGRAM_CHAT_ID": "mock-id"}):
+                    res = send_alerts_telegram(alerts, log_path=log_path, current_time="2026-06-03T12:00:00+00:00")
+                    self.assertFalse(res[0].send_gate)
+                    self.assertTrue(res[1].send_gate)
+                    self.assertIsNotNone(res[1].sent_at)
+                    self.assertTrue(log_path.exists())
+                    mock_urlopen.assert_called_once()
+
+            # 3. Deduplicate within 24h
+            with patch("urllib.request.urlopen") as mock_urlopen_dedupe:
+                with patch.dict("os.environ", {"TELEGRAM_ENABLED": "true", "TELEGRAM_BOT_TOKEN": "mock-token", "TELEGRAM_CHAT_ID": "mock-id"}):
+                    res_dedupe = send_alerts_telegram(
+                        alerts,
+                        log_path=log_path,
+                        current_time="2026-06-03T22:00:00+00:00"
+                    )
+                    self.assertFalse(res_dedupe[1].send_gate)
+                    mock_urlopen_dedupe.assert_not_called()
+
+            # 4. Over 24h expires deduplication
+            mock_response_expire = MagicMock()
+            mock_response_expire.read.return_value = b'{"ok": true}'
+            mock_response_expire.__enter__.return_value = mock_response_expire
+
+            with patch("urllib.request.urlopen", return_value=mock_response_expire) as mock_urlopen_expire:
+                with patch.dict("os.environ", {"TELEGRAM_ENABLED": "true", "TELEGRAM_BOT_TOKEN": "mock-token", "TELEGRAM_CHAT_ID": "mock-id"}):
+                    res_expire = send_alerts_telegram(
+                        alerts,
+                        log_path=log_path,
+                        current_time="2026-06-04T18:00:00+00:00"
+                    )
+                    self.assertTrue(res_expire[1].send_gate)
+                    mock_urlopen_expire.assert_called_once()
+
     def test_regression_import_and_run_tdd_cycle(self):
         from tw_day_trading_lab.cli import cmd_simulate_regression_import, cmd_simulate_regression_run
         with tempfile.TemporaryDirectory() as tmp:

@@ -314,6 +314,121 @@ def generate_alerts_from_run(
     return alerts
 
 
+def send_alerts_telegram(
+    alerts: list[Alert],
+    *,
+    dry_run: bool = False,
+    log_path: Path | None = None,
+    current_time: str | None = None,
+) -> list[Alert]:
+    """Send qualifying alerts via Telegram with 24h deduplication and severity gate."""
+    import os
+    import json
+    import urllib.request
+    import urllib.parse
+    import dataclasses
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    telegram_enabled = os.getenv("TELEGRAM_ENABLED", "").lower() in ("true", "1", "yes")
+
+    if log_path is None:
+        log_path = Path("data/telegram_send_log.json")
+
+    send_log = {}
+    if log_path.exists():
+        try:
+            send_log = json.loads(log_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    updated_alerts = []
+
+    if current_time is not None:
+        try:
+            now = datetime.fromisoformat(current_time)
+        except Exception:
+            now = datetime.now(timezone.utc)
+    else:
+        now = datetime.now(timezone.utc)
+
+    for alert in alerts:
+        # 1. 只有 severity = "error" 或 "critical" 才發送
+        if alert.severity not in ("error", "critical"):
+            updated_alerts.append(alert)
+            continue
+
+        # 2. 檢查 dedupe
+        is_deduped = False
+        if alert.dedupe_key in send_log:
+            try:
+                sent_time = datetime.fromisoformat(send_log[alert.dedupe_key])
+                # 如果小於 24 小時則 dedupe (86400 秒)
+                if (now - sent_time).total_seconds() < 86400:
+                    is_deduped = True
+            except Exception:
+                pass
+
+        if is_deduped:
+            updated_alerts.append(alert)
+            continue
+
+        # 3. 檢查 Telegram 啟用開關或 dry-run
+        if not telegram_enabled or dry_run:
+            updated_alerts.append(alert)
+            continue
+
+        # 4. 實際發送
+        token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+        if not token or not chat_id:
+            print(f"TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing. Cannot send alert: {alert.alert_id}")
+            updated_alerts.append(alert)
+            continue
+
+        msg = (
+            f"⚠️ [Alert] {alert.category.upper()} - {alert.severity.upper()}\n"
+            f"Run ID: {alert.run_id}\n"
+            f"Manual Action: {alert.manual_action}"
+        )
+
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        data = urllib.parse.urlencode({"chat_id": chat_id, "text": msg}).encode("utf-8")
+        req = urllib.request.Request(url, data=data)
+        success = False
+        try:
+            with urllib.request.urlopen(req, timeout=10) as response:
+                res = json.loads(response.read().decode("utf-8"))
+                if res.get("ok"):
+                    success = True
+                    print(f"Telegram alert sent successfully: {alert.alert_id}")
+                else:
+                    print(f"Telegram API error for alert {alert.alert_id}: {res}")
+        except Exception as e:
+            print(f"Failed to send Telegram alert {alert.alert_id}: {e}")
+
+        if success:
+            send_log[alert.dedupe_key] = now.isoformat()
+            new_alert = dataclasses.replace(
+                alert,
+                send_gate=True,
+                sent_at=now.isoformat()
+            )
+            updated_alerts.append(new_alert)
+        else:
+            updated_alerts.append(alert)
+
+    # 寫入儲存 log
+    if send_log and not dry_run and telegram_enabled:
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(json.dumps(send_log, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    return updated_alerts
+
+
 @dataclass(frozen=True)
 class RegressionCase:
     case_id: str
@@ -1203,6 +1318,16 @@ def build_restart_sync_report(
     }
 
 
+def validate_live_approval_token_in_policy(policy: ProductionReadinessPolicy) -> bool:
+    """Verify manual approval token with HMAC-SHA256."""
+    import os
+    secret = os.getenv("LIVE_APPROVAL_SECRET", "")
+    if not secret:
+        return bool(policy.manual_approval_token) and policy.manual_approval_token == policy.expected_manual_approval_token
+    from .live import validate_hmac_token
+    return validate_hmac_token(policy.manual_approval_token, secret)
+
+
 def build_production_readiness_report(
     snapshot: dict[str, Any],
     policy: ProductionReadinessPolicy,
@@ -1241,8 +1366,7 @@ def build_production_readiness_report(
         _readiness_check(
             "formal_live_gate",
             policy.allow_live_trading
-            and bool(policy.manual_approval_token)
-            and policy.manual_approval_token == policy.expected_manual_approval_token,
+            and validate_live_approval_token_in_policy(policy),
             "live_trading_requires_explicit_manual_approval",
             severity="blocker",
         ),

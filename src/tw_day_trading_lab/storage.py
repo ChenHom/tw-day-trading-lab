@@ -184,6 +184,47 @@ def apply_schema_script(connection: Any, script: str) -> None:
         cursor.close()
 
 
+def get_schema_version(connection: Any) -> int:
+    """Get the highest applied schema version, or 0 if table doesn't exist."""
+    cursor = connection.cursor()
+    try:
+        cursor.execute("SELECT MAX(version) FROM schema_migrations")
+        row = cursor.fetchone()
+        if row and row[0] is not None:
+            return int(row[0])
+        return 0
+    except Exception:
+        # Table schema_migrations does not exist yet
+        return 0
+    finally:
+        cursor.close()
+
+
+def apply_migration(connection: Any, version: int, sql: str, description: str) -> None:
+    """Apply a single migration version and record it in schema_migrations."""
+    cursor = connection.cursor()
+    try:
+        for statement in split_sql_statements(sql):
+            cursor.execute(statement)
+
+        is_sqlite = "sqlite" in str(type(connection)).lower()
+        placeholder = "?" if is_sqlite else "%s"
+
+        cursor.execute(
+            f"INSERT INTO schema_migrations (version, applied_at, description) VALUES ({placeholder}, CURRENT_TIMESTAMP, {placeholder})",
+            (version, description)
+        )
+        connection.commit()
+    except Exception as exc:
+        try:
+            connection.rollback()
+        except Exception:
+            pass
+        raise StorageError(f"apply_migration {version} failed: {exc}") from exc
+    finally:
+        cursor.close()
+
+
 def apply_schema_file(connection: Any, path: Path, *, database: str | None = None) -> None:
     """Read and apply a SQL schema file."""
     script = path.read_text(encoding="utf-8")

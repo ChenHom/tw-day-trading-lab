@@ -1382,3 +1382,59 @@ Grill-me close-out verdict：
 - 0050 proxy 需在 ingestion 時一起抓取（需在 finmind request list 加入 `stock_id='0050'`）；若 cache 無 0050，系統 fallback 為 `neutral`（不阻擋）。
 - EMA20 在剛好 21 筆時僅 1 筆參與指數平滑，訊號不穩定；操作者應確保 cache 有足夠歷史窗口（建議 ≥ 30 筆）。
 - `CandidateScore.downgrade_reasons` 在 bearish 修補後為 list（原始為 tuple），若下游需要 tuple 型別，後續 sprint 可補 `tuple(...)` wrap。
+
+### Sprint 3-C 剩餘: 0050 Ingestion
+
+目前狀態：已完成。
+
+- 在 `examples/finmind.requests.sample.json` 中加入 0050 的 `TaiwanStockPrice` request，且指定 `start_date` 為 `2026-03-01`，確保為 EMA20 預留足夠大於 21 個交易日的歷史數據。
+- 執行 nightly ingestion，成功將 0050 的大盤歷史價格下載並 cache 於 `data/raw/finmind/TaiwanStockPrice/2026-06-03/0050.jsonl`，不再 fallback `neutral`。
+- 重新建立 candidates，2026-06-03 大盤的 `market_regime` 成功識別為 `bullish`。
+
+### Sprint 4-A: Telegram 正式發送 Gate
+
+目前狀態：已完成。
+
+- **`TELEGRAM_ENABLED` 環境變數大開關**：在 `cmd_notify_telegram` 與新引入的 `send_alerts_telegram` 中支援 `TELEGRAM_ENABLED` 環境變數檢測。若為 `false` 或者是 `missing`，即使 API Token 和 Chat ID 設定，也不會實際發送（列印 dry-run 或 skip）。
+- **`--dry-run` 優先權最高**：即使 `TELEGRAM_ENABLED=true`，只要用戶指定 `--dry-run` 或 dry_run 參數為 `True`，也只列印不發送。
+- **Severity 與 Deduplication 過濾閘門**：
+  - 只有 `severity` 為 `"error"` 或 `"critical"` 的 Alert 才會嘗試發送。
+  - 同一 `dedupe_key` 的 alert 預設在 24 小時內不重複發送（時間差 `< 86400` 秒）。發送記錄儲存在 `data/telegram_send_log.json` 中。
+- **Ops Run 串接**：在 `cmd_simulate_ops_run` 尾部正式引入 `send_alerts_telegram` 函數呼叫，生成 manifests 之前完成警報過濾與發送。
+- 新增 `tests/test_simulation.py` 中的 `test_send_alerts_telegram` 覆蓋 24 小時 dedupe、環境變數關閉、severity 過濾。
+
+### Sprint 4-B: Live Approval Token HMAC 硬化
+
+目前狀態：已完成。
+
+- **HMAC-SHA256 帶時效驗證**：
+  - 在 `live.py` 中重構 `LiveShioajiBrokerAdapter.check_live_execution_gate`，捨棄原本可預測的 `{date}:LIVE-TRADING-APPROVED` 格式，改為使用 `LIVE_APPROVAL_SECRET` 作為 key，對 UNIX timestamp 進行 HMAC-SHA256 簽章，格式為 `{timestamp_unix}:{hmac_hex}`。
+  - 驗證端解析 `timestamp_unix`，若其與系統當前時間（`time.time()`）之差絕對值大於 300 秒（5 分鐘），則回傳 `manual_approval_token_expired` 阻擋。
+  - 若 `LIVE_APPROVAL_SECRET` 在環境變數中未設定，回傳 `live_approval_secret_missing` 阻擋。
+- **向下相容與 Offline 政策驗證**：
+  - 在 `build_production_readiness_report` 整合 HMAC 驗證。若 `LIVE_APPROVAL_SECRET` 未設定，fallback 回與 `policy.expected_manual_approval_token` 做一般字串比對，以確保不破壞離線測試與沒有 live-trading 密鑰時的開發。
+  - `LiveShioajiBrokerAdapter` 如果沒有 `LIVE_APPROVAL_SECRET` 且有設定 `expected_token_hash`，亦會 fallback 回舊 hash 比對。
+  - 在 `cli.py` 的 `cmd_simulate_production_readiness` 移除原本 `{args.date}:LIVE-TRADING-APPROVED` 的可預測 fallback 預設值，改為必須明確指定。
+- **新增 CLI 生成命令**：
+  - 新增子命令 `tw-daytrade simulate generate-approval-token`，讀取當前環境的 `LIVE_APPROVAL_SECRET` 並基於當前系統時間產生一個 5 分鐘內有效之驗證 token，方便維運人員操作。
+- 新增 `tests/test_live_approval_hmac.py`，完整覆蓋 token 生效、過期、無 secret 拒絕等場景。
+
+### Sprint 4-C: TiDB Migration Strategy
+
+目前狀態：已完成。
+
+- **Migration 版本追蹤表**：
+  - 新增 `sql/002_schema_version.sql` 建立 `schema_migrations` 表：`version INT PRIMARY KEY`, `applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`, `description TEXT`。
+- **Database 遷移管理層**：
+  - 在 `storage.py` 新增 `get_schema_version(connection) -> int` 讀取當前最高版本號（若表不存在則回傳 `0`）。
+  - 新增 `apply_migration(connection, version, sql, description) -> None`，支援 transaction 與 rollback，並在套用後寫入 `schema_migrations` 以防止重複執行。
+  - 支援 SQLite 測試庫與 TiDB (MySQL) 語法相容，自動使用 `?` (SQLite) 或 `%s` (MySQL) 預留位置。
+- **Migration CLI 工具**：
+  - 新增 `tw-daytrade db migrate --schema-dir sql` 子命令。會自動掃描 `sql/` 下以 `(\d+)_(.*)\.sql` 為命名格式的檔案，按照版本號排序，只執行尚未套用的遷移。
+  - 在執行 SQL 遷移前，會自動先以 `use_database=False` 連線並執行 `CREATE DATABASE IF NOT EXISTS {db}; USE {db}`，防止新環境下 database 不存在而連線失敗。若遇到不支援 `CREATE DATABASE` 語句之連線（如 SQLite 記憶體庫），會優雅捕捉例外並忽略，以維持最佳適應力。
+- 新增 `tests/test_db_migration.py`，驗證 migration 套用、不重複套用與 db migrate 命令流程。
+
+### 全數測試與 Whitespace 驗收
+
+- 總測試案例增加至 **138 tests**，執行 `PYTHONPATH=src python3 -m unittest discover -s tests` 與 `compileall`，全數無警告、OK 通過。
+- 執行 `git diff --check` 校正 trailing whitespace，結果完全乾淨。
