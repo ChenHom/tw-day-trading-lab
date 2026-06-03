@@ -5,6 +5,13 @@ import json
 import os
 from pathlib import Path
 
+# Automatically load environment variables from local .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 from .candidate_engine import rank_candidates
 from .candidate_builder import build_candidates_from_raw_cache
 from .finmind_ingestion import (

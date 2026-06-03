@@ -518,6 +518,36 @@ class ShioajiSdkSimulationGateway:
             self._account = getattr(self._api, "stock_account", None)
             if self._account is None and accounts:
                 self._account = accounts[0]
+
+        # Automatically activate CA cert (Sinopac.pfx) if variables are set
+        import os
+        ca_path = os.getenv("CERT_PATH", "")
+        if not ca_path:
+            # Fallback to Sinopac.pfx in current working directory
+            fallback_path = os.path.join(os.getcwd(), "Sinopac.pfx")
+            if os.path.exists(fallback_path):
+                ca_path = fallback_path
+
+        ca_passwd = os.getenv("CA_PASSWORD", "")
+        ca_id = os.getenv("CA_ID", "")
+
+        if ca_path and ca_passwd and ca_id:
+            if not os.path.isabs(ca_path):
+                cwd_ca_path = os.path.join(os.getcwd(), ca_path)
+                if os.path.exists(cwd_ca_path):
+                    ca_path = cwd_ca_path
+
+            if os.path.exists(ca_path) and hasattr(self._api, "activate_ca"):
+                try:
+                    self._api.activate_ca(
+                        ca_path=ca_path,
+                        ca_passwd=ca_passwd,
+                        person_id=ca_id,
+                    )
+                except Exception as e:
+                    # Do not crash the login process if activation fails in dry-run/simulation-mock setups
+                    print(f"Warning: Failed to activate CA cert at {ca_path}: {e}")
+
         return {"mode": "simulation", "session_id": "shioaji-sdk"}
 
     def fetch_contract_details(self, symbol: str) -> dict[str, Any] | None:

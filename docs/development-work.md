@@ -1333,3 +1333,4 @@ Grill-me close-out verdict：
 ### 核心共識與文件更新：
 1. **多維度流動性過濾**：闡明單純以成交金額過濾會造成「高價低量股假流動性」與「低價高量股被誤殺」的失真現象，建議改用 20 日均成交金額 (20-day ADV) 結合成交張數與 Spread% 作為 Universe 篩選指標。
 2. **自動化防呆運行**：釐清自動化流程之觸發時序（Ingestion -> Candidate Build -> Ops Run Plan -> Close Report），並詳細定義 Git Clean Check、Lock File 機制、Checksum/Manifest 軌跡記錄、資料完整性門禁等生產環境安全要求，以硬化自動化執行鏈。
+3. **自動化環境變數與憑證加載優化**：程式已重構，支持在 CLI 入口點自動調用 `python-dotenv` 加載專案根目錄下的 `.env` 檔案；並在 Shioaji 模擬登入時，自動偵測並調用 `activate_ca` 方法啟用本地的 `Sinopac.pfx` 憑證（支援環境變數 `CERT_PATH` / `CA_PASSWORD` / `CA_ID`），無須再在 CLI 前手動附加複雜的 `env` 宣告指令。
