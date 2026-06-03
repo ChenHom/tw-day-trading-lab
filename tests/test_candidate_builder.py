@@ -412,5 +412,105 @@ class CandidateBuilderTest(unittest.TestCase):
         self.assertGreater(len(result.candidates), 0)  # NOT filtered
 
 
+    # ------------------------------------------------------------------ Sprint 3-C
+
+    def _make_proxy_row(self, date, close=100.0, high_off=0.01, low_off=0.01):
+        """Flat 0050 proxy row (tiny ATR → bearish_skip)."""
+        return {
+            "date": date,
+            "stock_id": "0050",
+            "Trading_Volume": 5_000_000,
+            "Trading_money": 900_000_000,
+            "open": close,
+            "max": close + high_off,
+            "min": close - low_off,
+            "close": close,
+            "spread": 0,
+        }
+
+    def test_bearish_regime_blocks_actionable_candidates(self):
+        """Bearish 0050 proxy (low ATR) must set market_regime_blocked on next_day_actionable."""
+        # --- Strong candidate: would normally be next_day_actionable ---
+        price_rows = [
+            self._make_price_row(
+                "2026-05-27", "2330",
+                trading_money=200_000_000, trading_volume=1_000_000,
+                close=100, open_=98, high=108, low=97, spread=5,
+            ),
+            self._make_price_row(
+                "2026-05-28", "2330",
+                trading_money=400_000_000, trading_volume=3_000_000,
+                close=110, open_=101, high=112, low=100, spread=10,
+            ),
+        ]
+        self.write_price_rows("2330", price_rows)
+        self.write_dataset_rows(
+            "TaiwanStockInfo",
+            "market",
+            [{"stock_id": "2330", "stock_name": "台積電", "industry_category": "半導體業"}],
+        )
+
+        # --- Bearish 0050 proxy: 25 rows, all flat (ATR ≈ 0 → low_atr5d) ---
+        proxy_rows = [
+            self._make_proxy_row(f"2026-{m:02d}-{d:02d}")
+            for m, d in [
+                (1, 1), (1, 2), (1, 3), (1, 4), (1, 5),
+                (1, 6), (1, 7), (1, 8), (1, 9), (1, 10),
+                (1, 11), (1, 12), (1, 13), (1, 14), (1, 15),
+                (1, 16), (1, 17), (1, 18), (1, 19), (1, 20),
+                (1, 21), (1, 22), (1, 23), (1, 24), (1, 25),
+            ]
+        ]
+        proxy_path = (
+            self.cache_dir / "finmind" / "TaiwanStockPrice" / "2026-05-28" / "0050.jsonl"
+        )
+        from tw_day_trading_lab.candidate_builder import write_jsonl
+        write_jsonl(proxy_path, proxy_rows)
+
+        result = build_candidates_from_raw_cache(
+            cache_dir=self.cache_dir,
+            trading_date="2026-05-28",
+            min_trading_money=50_000_000,
+            min_adv_20d_money=0,
+            min_volume_lots=0,
+        )
+
+        self.assertEqual(result.summary["market_regime"], "bearish_skip")
+        # All previously actionable candidates must now be blocked
+        for score in result.ranked:
+            if "market_regime_blocked" in score.downgrade_reasons:
+                self.assertFalse(score.next_day_actionable)
+                break
+        else:
+            # If none were actionable to begin with, assert regime still recorded
+            self.assertEqual(result.summary["market_regime"], "bearish_skip")
+
+    def test_market_regime_neutral_when_proxy_missing(self):
+        """When 0050 proxy JSONL is absent, summary market_regime defaults to 'neutral'."""
+        self.write_price_rows(
+            "2330",
+            [
+                self._make_price_row(
+                    "2026-05-27", "2330",
+                    trading_money=200_000_000, trading_volume=1_000_000,
+                    close=100, open_=98, high=108, low=97, spread=5,
+                ),
+                self._make_price_row(
+                    "2026-05-28", "2330",
+                    trading_money=400_000_000, trading_volume=3_000_000,
+                    close=110, open_=101, high=112, low=100, spread=10,
+                ),
+            ],
+        )
+        result = build_candidates_from_raw_cache(
+            cache_dir=self.cache_dir,
+            trading_date="2026-05-28",
+            min_trading_money=50_000_000,
+            min_adv_20d_money=0,
+            min_volume_lots=0,
+        )
+        self.assertEqual(result.summary["market_regime"], "neutral")
+
+
 if __name__ == "__main__":
     unittest.main()

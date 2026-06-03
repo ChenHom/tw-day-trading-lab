@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .candidate_engine import rank_candidates
+from .market_regime import MarketRegimeResult, compute_market_regime
 from .models import CandidateInput, CandidateScore
 
 
@@ -63,6 +64,7 @@ def build_candidates_from_raw_cache(
     min_trading_money: float = 80_000_000,
     min_adv_20d_money: float = 50_000_000,
     min_volume_lots: int = 500,
+    market_proxy_stock_id: str = "0050",
 ) -> CandidateBuildResult:
     """Build ranked candidates from FinMind price raw cache."""
     price_dir = cache_dir / "finmind" / "TaiwanStockPrice" / trading_date
@@ -150,6 +152,43 @@ def build_candidates_from_raw_cache(
     ranked = rank_candidates(candidates, limit=limit)
     summary["built_candidates"] = len(candidates)
     summary["ranked_candidates"] = len(ranked)
+
+    # --- Market regime filter ---
+    proxy_rows = load_raw_dataset_rows(
+        cache_dir,
+        dataset="TaiwanStockPrice",
+        trading_date=trading_date,
+        stock_id=market_proxy_stock_id,
+    )
+    if proxy_rows:
+        regime = compute_market_regime(proxy_rows)
+    else:
+        regime = MarketRegimeResult(
+            regime="neutral",
+            ema20=0.0,
+            last_close=0.0,
+            atr5d_pct=0.0,
+            gap_open_pct=0.0,
+            reasons=("proxy_data_missing",),
+        )
+    summary["market_regime"] = regime.regime
+
+    if regime.regime == "bearish_skip":
+        ranked = [
+            CandidateScore(
+                **{
+                    **score.to_dict(),
+                    "next_day_actionable": False,
+                    "downgrade_reasons": list(
+                        score.downgrade_reasons
+                    ) + ["market_regime_blocked"],
+                }
+            )
+            if score.next_day_actionable
+            else score
+            for score in ranked
+        ]
+
     return CandidateBuildResult(
         trading_date=trading_date,
         candidates=candidates,
