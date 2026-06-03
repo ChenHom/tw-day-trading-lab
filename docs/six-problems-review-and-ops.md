@@ -104,13 +104,11 @@
   ```bash
   PYTHONPATH=src python3 -m tw_day_trading_lab.cli candidates build-from-raw --date $(date +%Y-%m-%d)
   ```
-* **08:30 (T+1日開盤前)**：載入昨日候選名單，驗證 7 大 Pre-order 門禁，建立今日下單計畫 `input_plan.json`：
+* **08:30 (T+1日開盤前)**：載入昨日候選名單，驗證 7 大 Pre-order 門禁，建立今日下單計畫 `input_plan.json` 並執行模擬下單。現在已簡化為透過 Makefile 一鍵執行：
   ```bash
-  PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate ops-run \
-    --date $(date +%Y-%m-%d) \
-    --candidates-input reports/$(date -d "yesterday" +%Y-%m-%d)-candidates.json \
-    --simulation-on
+  make ops-run
   ```
+  *(註：此指令會自動讀取 `.env` 與自動加載 `Sinopac.pfx` 憑證，並自動回推 10 天內存在的最新候選檔作為輸入，無需手動填入繁瑣的參數。)*
 * **13:45 (T+1日收盤後)**：自動匯入本日日誌，比對 callback 狀態，產出 close report，並依據結果自動更新 `RegressionCase`。
 
 ---

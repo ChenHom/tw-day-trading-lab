@@ -101,6 +101,18 @@ python3 -m tw_day_trading_lab.cli notify telegram \
   --dry-run
 ```
 
+### 一鍵執行當沖模擬 (Simplified Daily Ops Run)
+
+重構後的程式支持自動載入 `.env` 與憑證，並提供極簡的 Makefile 命令進行模擬下單交易測試：
+
+```bash
+# 預設執行：自動使用當前日期、自動尋找候選檔、讀取環境變數登入模擬平台並載入 Sinopac.pfx 憑證下單
+make ops-run
+
+# 自訂附加參數 (例如於非交易時段強制執行)
+make ops-run ARGS="--allow-outside-session"
+```
+
 如果沒有安裝 package，先加上 `PYTHONPATH=src`：
 
 ```bash
