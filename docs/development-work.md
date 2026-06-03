@@ -1325,3 +1325,11 @@ Grill-me close-out verdict：
 - **B6: Strategy Edge Redesign**: 實作 `VwapBreakoutStrategy` 行情訊號產生器與 ATR 波動度過濾機制。
 
 新增 8 個測試覆蓋了以上所有 B1-B6 之邏輯，所有 108 個單元測試全數通過，且 `git diff --check` 完全通過。
+
+## 11. Discussion Consensus Documentation - 2026-06-03
+
+針對當前架構在「候選股產生流程」、「流動性失真分析」以及「自動化執行防呆」的討論，已彙整共識並更新至 [six-problems-review-and-ops.md](file:///home/hom/services/stock/tw-day-trading-lab/docs/six-problems-review-and-ops.md)。
+
+### 核心共識與文件更新：
+1. **多維度流動性過濾**：闡明單純以成交金額過濾會造成「高價低量股假流動性」與「低價高量股被誤殺」的失真現象，建議改用 20 日均成交金額 (20-day ADV) 結合成交張數與 Spread% 作為 Universe 篩選指標。
+2. **自動化防呆運行**：釐清自動化流程之觸發時序（Ingestion -> Candidate Build -> Ops Run Plan -> Close Report），並詳細定義 Git Clean Check、Lock File 機制、Checksum/Manifest 軌跡記錄、資料完整性門禁等生產環境安全要求，以硬化自動化執行鏈。
