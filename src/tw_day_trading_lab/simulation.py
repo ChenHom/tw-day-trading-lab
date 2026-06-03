@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .ledger import DuplicateIntentError, OrderIntent, PaperLedger
+from .models import CandidateScore
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,41 @@ class RiskDecision:
             quantity=int(data["quantity"]) if data.get("quantity") is not None else None,
             price=float(data["price"]) if data.get("price") is not None else None,
         )
+
+
+@dataclass(frozen=True)
+class SimulationPlanItem:
+    signal: SignalIntent
+    risk_decision: RiskDecision
+    candidate_source: str
+    risk_decision_reason: str
+    limit_price_source: str
+    quantity_source: str
+    blocked_reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "signal": asdict(self.signal),
+            "risk_decision": asdict(self.risk_decision),
+            "candidate_source": self.candidate_source,
+            "risk_decision_reason": self.risk_decision_reason,
+            "limit_price_source": self.limit_price_source,
+            "quantity_source": self.quantity_source,
+            "blocked_reason": self.blocked_reason,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SimulationPlanItem":
+        return cls(
+            signal=SignalIntent.from_dict(data["signal"]),
+            risk_decision=RiskDecision.from_dict(data["risk_decision"]),
+            candidate_source=str(data["candidate_source"]),
+            risk_decision_reason=str(data["risk_decision_reason"]),
+            limit_price_source=str(data["limit_price_source"]),
+            quantity_source=str(data["quantity_source"]),
+            blocked_reason=data.get("blocked_reason"),
+        )
+
 
 
 @dataclass(frozen=True)
@@ -212,6 +248,12 @@ class SimulationBroker(Protocol):
     ) -> BrokerTrade:
         """Submit a simulation order and return a normalized broker trade."""
 
+    def fetch_contract_details(self, symbol: str) -> dict[str, Any] | None:
+        """Query contract details from the broker."""
+
+    def is_simulation(self) -> bool:
+        """Return True if running in simulation-only mode."""
+
 
 class ShioajiOrderGateway(Protocol):
     def login(self) -> dict[str, str]:
@@ -223,6 +265,12 @@ class ShioajiOrderGateway(Protocol):
         request: ShioajiOrderRequest,
     ) -> dict[str, Any]:
         """Submit a Shioaji-shaped request and return the raw order response."""
+
+    def fetch_contract_details(self, symbol: str) -> dict[str, Any] | None:
+        """Query contract details from Shioaji."""
+
+    def is_simulation(self) -> bool:
+        """Return True if gateway connects to a simulation environment."""
 
 
 class ShioajiCancelGateway(Protocol):
@@ -270,6 +318,17 @@ class DryRunSimulationBroker:
             raw_status=self.raw_status,
         )
 
+    def fetch_contract_details(self, symbol: str) -> dict[str, Any] | None:
+        return {
+            "symbol": symbol,
+            "reference": 900.0,
+            "limit_up": 990.0,
+            "limit_down": 810.0,
+        }
+
+    def is_simulation(self) -> bool:
+        return True
+
 
 class ShioajiOrderRequestBroker:
     """Adapt a Shioaji-shaped gateway to the internal simulation broker protocol."""
@@ -292,6 +351,7 @@ class ShioajiOrderRequestBroker:
         request = build_shioaji_order_request(intent, signal, decision)
         response = self._gateway.place_order(session, request)
         self.last_request = request
+
         self.last_response = dict(response)
         raw_status = str(_first_non_empty(response.get("raw_status"), response.get("status")) or "")
         return BrokerTrade(
@@ -314,6 +374,17 @@ class ShioajiOrderRequestBroker:
             status=normalize_broker_status(raw_status),
             raw_status=raw_status,
         )
+
+    def fetch_contract_details(self, symbol: str) -> dict[str, Any] | None:
+        if hasattr(self._gateway, "fetch_contract_details"):
+            return self._gateway.fetch_contract_details(symbol)
+        return None
+
+    def is_simulation(self) -> bool:
+        if hasattr(self._gateway, "is_simulation"):
+            return self._gateway.is_simulation()
+        return True
+
 
 
 class ShioajiSdkSimulationGateway:
@@ -351,6 +422,24 @@ class ShioajiSdkSimulationGateway:
             if self._account is None and accounts:
                 self._account = accounts[0]
         return {"mode": "simulation", "session_id": "shioaji-sdk"}
+
+    def fetch_contract_details(self, symbol: str) -> dict[str, Any] | None:
+        try:
+            contract = self._api.Contracts.Stocks[symbol]
+            if contract is None:
+                return None
+            return {
+                "symbol": symbol,
+                "reference": getattr(contract, "reference", None),
+                "limit_up": getattr(contract, "limit_up", None),
+                "limit_down": getattr(contract, "limit_down", None),
+            }
+        except Exception:
+            return None
+
+    def is_simulation(self) -> bool:
+        return getattr(self._api, "simulation", False) is True
+
 
     def place_order(
         self,
@@ -541,7 +630,16 @@ class ShioajiSimulationAdapter:
         self._ledger = ledger
         self._session: dict[str, str] | None = None
 
-    def execute(self, signal: SignalIntent, decision: RiskDecision) -> SimulationResult:
+    def execute(
+        self,
+        signal: SignalIntent,
+        decision: RiskDecision,
+        *,
+        current_time: str | None = None,
+        allow_outside_session: bool = False,
+        max_quantity_cap: int = 1000,
+        bypass_gates: bool = True,
+    ) -> SimulationResult:
         if not decision.approved:
             return SimulationResult(
                 status="risk_rejected",
@@ -552,7 +650,27 @@ class ShioajiSimulationAdapter:
                 review_reason=decision.reason,
             )
 
+        if not bypass_gates:
+            gate_res = check_pre_order_gates(
+                self._broker,
+                signal,
+                decision,
+                current_time=current_time,
+                allow_outside_session=allow_outside_session,
+                max_quantity_cap=max_quantity_cap,
+            )
+            if not gate_res["approved"]:
+                return SimulationResult(
+                    status="gate_blocked",
+                    sample_type="simulation",
+                    expectancy_eligible=False,
+                    signal=signal,
+                    risk_decision=decision,
+                    review_reason=";".join(gate_res["blocked_reasons"]),
+                )
+
         intent = signal.to_order_intent()
+
         try:
             self._ledger.register_intent(intent)
         except DuplicateIntentError as error:
@@ -1363,6 +1481,172 @@ def is_regular_day_order_smoke_time(value: str | None = None) -> bool:
     """Return whether a smoke order is inside the regular intraday order window."""
     current = _parse_hhmm(value) if value else datetime.now().time()
     return time(9, 0) <= current <= time(13, 20)
+
+
+def _read_jsonl_helper(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def check_pre_order_gates(
+    broker: SimulationBroker,
+    signal: SignalIntent,
+    decision: RiskDecision,
+    *,
+    current_time: str | None = None,
+    allow_outside_session: bool = False,
+    max_quantity_cap: int = 1000,
+) -> dict[str, Any]:
+    """Run pre-order gates and return checks status and blocked reasons."""
+    blocked_reasons = []
+
+    # 1. Trading day (weekday check)
+    try:
+        dt = datetime.strptime(signal.trading_date, "%Y-%m-%d")
+        is_trading_day = dt.weekday() < 5
+    except Exception:
+        is_trading_day = False
+    if not is_trading_day:
+        blocked_reasons.append("not_a_trading_day")
+
+    # 2. Regular session
+    session_allowed = allow_outside_session or is_regular_day_order_smoke_time(current_time)
+    if not session_allowed:
+        blocked_reasons.append("outside_regular_session")
+
+    # 3. Contract loaded, Reference price, Limit up/down
+    contract = broker.fetch_contract_details(signal.symbol)
+    limit_down = None
+    limit_up = None
+    ref_price = None
+    if contract is None:
+        blocked_reasons.append("contract_not_loaded")
+        is_contract_loaded = False
+    else:
+        is_contract_loaded = True
+        ref_price = contract.get("reference")
+        limit_up = contract.get("limit_up")
+        limit_down = contract.get("limit_down")
+
+        # Check limits
+        price = decision.price if decision.price is not None else signal.price
+        if price is None:
+            blocked_reasons.append("price_is_none")
+        else:
+            if limit_down is not None and price < limit_down:
+                blocked_reasons.append("price_below_limit_down")
+            if limit_up is not None and price > limit_up:
+                blocked_reasons.append("price_above_limit_up")
+
+    # 4. Quantity cap
+    quantity = decision.quantity if decision.quantity is not None else signal.quantity
+    if quantity <= 0:
+        blocked_reasons.append("quantity_must_be_positive")
+    elif quantity > max_quantity_cap:
+        blocked_reasons.append("quantity_exceeds_cap")
+
+    # 5. Simulation-only broker boundary
+    is_simulation = False
+    if hasattr(broker, "is_simulation"):
+        is_simulation = broker.is_simulation()
+    elif hasattr(broker, "_gateway") and hasattr(broker._gateway, "_api"):
+        is_simulation = getattr(broker._gateway._api, "simulation", False) is True
+    else:
+        is_simulation = True
+
+    if not is_simulation:
+        blocked_reasons.append("live_broker_forbidden_in_simulation")
+
+    approved = len(blocked_reasons) == 0
+    return {
+        "approved": approved,
+        "is_trading_day": is_trading_day,
+        "is_regular_session": session_allowed,
+        "is_contract_loaded": is_contract_loaded,
+        "reference_price": ref_price,
+        "limit_down": limit_down,
+        "limit_up": limit_up,
+        "is_simulation_only": is_simulation,
+        "blocked_reasons": blocked_reasons,
+    }
+
+
+def build_simulation_plan(
+    *,
+    trading_date: str,
+    candidate_date: str,
+    candidates: list[CandidateScore],
+    cache_dir: Path,
+    candidate_source: str,
+) -> list[SimulationPlanItem]:
+    """Build a simulation plan from candidates using the plan builder contract."""
+    plan: list[SimulationPlanItem] = []
+    for candidate in candidates:
+        symbol = candidate.symbol
+        price_file = cache_dir / "finmind" / "TaiwanStockPrice" / candidate_date / f"{symbol}.jsonl"
+        close_price = None
+        limit_price_source = "not_found"
+
+        if price_file.exists():
+            try:
+                rows = _read_jsonl_helper(price_file)
+                if rows:
+                    close_price = float(rows[-1]["close"])
+                    limit_price_source = "close_price"
+            except Exception:
+                pass
+
+        quantity = 1000
+        quantity_source = "fixed_size_1000"
+
+        blocked_reason = None
+        risk_decision_reason = "risk_ok"
+        approved = True
+
+        if not candidate.next_day_actionable:
+            approved = False
+            risk_decision_reason = "not_actionable"
+            blocked_reason = "not_actionable"
+        elif close_price is None:
+            approved = False
+            risk_decision_reason = "close_price_missing"
+            blocked_reason = "close_price_missing"
+
+        signal = SignalIntent(
+            trading_date=trading_date,
+            strategy_id="mvp",
+            symbol=symbol,
+            setup_id=candidate.archetype,
+            side="buy",
+            quantity=quantity,
+            price=close_price,
+        )
+
+        risk_decision = RiskDecision(
+            approved=approved,
+            reason=risk_decision_reason,
+            quantity=quantity if approved else None,
+            price=close_price if approved else None,
+        )
+
+        plan.append(
+            SimulationPlanItem(
+                signal=signal,
+                risk_decision=risk_decision,
+                candidate_source=candidate_source,
+                risk_decision_reason=risk_decision_reason,
+                limit_price_source=limit_price_source,
+                quantity_source=quantity_source,
+                blocked_reason=blocked_reason,
+            )
+        )
+    return plan
+
 
 
 def run_gated_shioaji_order_request_smoke(

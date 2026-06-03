@@ -125,7 +125,7 @@ P8 之後每個 phase close-out 不能只列「新增命令」或「新增文件
 
 ## P8: Simulation Ops Go-live
 
-目前狀態：待處理。
+目前狀態：已完成。
 
 目標：把 P6/P7 的 gated simulation order chain 變成每日可執行的 simulation ops，不啟用正式區。
 

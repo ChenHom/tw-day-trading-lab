@@ -16,6 +16,7 @@ from tw_day_trading_lab.cli import (
     cmd_simulate_shioaji_smoke,
 )
 from tw_day_trading_lab.ledger import PaperLedger
+from tw_day_trading_lab.models import CandidateScore
 from tw_day_trading_lab.simulation import (
     BrokerTrade,
     DryRunSimulationBroker,
@@ -1802,6 +1803,159 @@ class SimulationAdapterTest(unittest.TestCase):
             self.assertEqual(payload["status"], "blocked")
             self.assertIn("outside_regular_session", markdown)
 
+    def test_check_pre_order_gates_validation(self):
+        from tw_day_trading_lab.simulation import check_pre_order_gates
+        broker = DryRunSimulationBroker()
 
+        # 1. Weekend check ("2026-05-30" is Saturday)
+        sig_weekend = SignalIntent(
+            trading_date="2026-05-30", strategy_id="mvp", symbol="2330", setup_id="breakout", side="buy", quantity=1000, price=900.0
+        )
+        dec = RiskDecision(approved=True, reason="risk_ok", quantity=1000, price=900.0)
+        res = check_pre_order_gates(broker, sig_weekend, dec, current_time="10:00")
+        self.assertFalse(res["approved"])
+        self.assertIn("not_a_trading_day", res["blocked_reasons"])
+
+        # 2. Outside session check
+        sig_weekday = SignalIntent(
+            trading_date="2026-05-28", strategy_id="mvp", symbol="2330", setup_id="breakout", side="buy", quantity=1000, price=900.0
+        )
+        res = check_pre_order_gates(broker, sig_weekday, dec, current_time="14:00")
+        self.assertFalse(res["approved"])
+        self.assertIn("outside_regular_session", res["blocked_reasons"])
+
+        # 3. Quantity cap check
+        dec_large = RiskDecision(approved=True, reason="risk_ok", quantity=1500, price=900.0)
+        res = check_pre_order_gates(broker, sig_weekday, dec_large, current_time="10:00")
+        self.assertFalse(res["approved"])
+        self.assertIn("quantity_exceeds_cap", res["blocked_reasons"])
+
+        # 4. Price out of limits check
+        # DryRunSimulationBroker defaults to reference=900, limit_up=990, limit_down=810
+        dec_high = RiskDecision(approved=True, reason="risk_ok", quantity=1000, price=1000.0)
+        res = check_pre_order_gates(broker, sig_weekday, dec_high, current_time="10:00")
+        self.assertFalse(res["approved"])
+        self.assertIn("price_above_limit_up", res["blocked_reasons"])
+
+        # 5. All ok
+        res = check_pre_order_gates(broker, sig_weekday, dec, current_time="10:00")
+        self.assertTrue(res["approved"])
+
+    def test_build_simulation_plan_contract(self):
+        from tw_day_trading_lab.simulation import build_simulation_plan
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+
+            # Setup mock candidate price files in cache
+            price_dir = tmpdir / "finmind" / "TaiwanStockPrice" / "2026-05-27"
+            price_dir.mkdir(parents=True, exist_ok=True)
+            (price_dir / "2330.jsonl").write_text(
+                json.dumps({"date": "2026-05-27", "close": 900.0}) + "\n",
+                encoding="utf-8"
+            )
+
+            cand = CandidateScore(
+                symbol="2330", name="TSMC", rank=1, archetype="breakout_continuation",
+                total_score=80.0, liquidity_score=90.0, event_score=80.0,
+                structure_score=70.0, continuity_score=80.0, crowding_penalty=10.0,
+                next_day_actionable=True, reasons=("liquid_enough",), downgrade_reasons=()
+            )
+
+            plan = build_simulation_plan(
+                trading_date="2026-05-28",
+                candidate_date="2026-05-27",
+                candidates=[cand],
+                cache_dir=tmpdir,
+                candidate_source="mock_candidates.json"
+            )
+
+            self.assertEqual(len(plan), 1)
+            item = plan[0]
+            self.assertEqual(item.signal.symbol, "2330")
+            self.assertEqual(item.signal.price, 900.0)
+            self.assertTrue(item.risk_decision.approved)
+            self.assertEqual(item.candidate_source, "mock_candidates.json")
+            self.assertEqual(item.limit_price_source, "close_price")
+            self.assertEqual(item.quantity_source, "fixed_size_1000")
+            self.assertIsNone(item.blocked_reason)
+
+    def test_cmd_simulate_ops_run_subcommand(self):
+        from tw_day_trading_lab.cli import cmd_simulate_ops_run
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+
+            # 1. Setup mock candidates file
+            candidates_path = tmpdir / "candidates.json"
+            candidates_path.write_text(
+                json.dumps({
+                    "trading_date": "2026-05-27",
+                    "candidates": [
+                        {
+                            "symbol": "2330",
+                            "name": "TSMC",
+                            "rank": 1,
+                            "archetype": "breakout_continuation",
+                            "total_score": 80.0,
+                            "liquidity_score": 90.0,
+                            "event_score": 80.0,
+                            "structure_score": 70.0,
+                            "continuity_score": 80.0,
+                            "crowding_penalty": 10.0,
+                            "next_day_actionable": True,
+                            "reasons": ["liquid_enough"],
+                            "downgrade_reasons": []
+                        }
+                    ]
+                }),
+                encoding="utf-8"
+            )
+
+            # 2. Setup mock price file in cache
+            price_dir = tmpdir / "raw" / "finmind" / "TaiwanStockPrice" / "2026-05-27"
+            price_dir.mkdir(parents=True, exist_ok=True)
+            (price_dir / "2330.jsonl").write_text(
+                json.dumps({"date": "2026-05-27", "close": 900.0}) + "\n",
+                encoding="utf-8"
+            )
+
+            output_dir = tmpdir / "ops_output"
+            sync_store_path = tmpdir / "execution-sync.json"
+
+            # 3. Run the subcommand
+            cmd_simulate_ops_run(
+                Namespace(
+                    date="2026-05-28",
+                    candidates_input=str(candidates_path),
+                    candidate_date=None,
+                    cache_dir=str(tmpdir / "raw"),
+                    execution_sync_store=str(sync_store_path),
+                    output_dir=str(output_dir),
+                    simulation_on=False,
+                    allow_outside_session=True,
+                    current_time="10:00",
+                    allow_live_trading=False,
+                    manual_approval_token=None,
+                    expected_manual_approval_token=None,
+                    max_pending_orders=0,
+                    disable_cancel_retry_plan=False
+                )
+            )
+
+            # 4. Verify created artifacts
+            self.assertTrue((output_dir / "input_plan.json").exists())
+            self.assertTrue((output_dir / "simulation_output.json").exists())
+            self.assertTrue((output_dir / "callback_store.json").exists())
+            self.assertTrue((output_dir / "restart_sync.json").exists())
+            self.assertTrue((output_dir / "readiness_report.json").exists())
+            self.assertTrue((output_dir / "readiness_report.md").exists())
+            self.assertTrue((output_dir / "ops_run_manifest.json").exists())
+
+            # 5. Verify manifest content
+            manifest = json.loads((output_dir / "ops_run_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["trading_date"], "2026-05-28")
+            self.assertTrue(manifest["simulation_only"])
+            self.assertGreater(len(manifest["input_artifacts"]), 0)
+            self.assertGreater(len(manifest["output_artifacts"]), 0)
+            self.assertIn("place_order_2330", manifest["side_effects"])
 if __name__ == "__main__":
     unittest.main()

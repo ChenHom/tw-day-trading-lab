@@ -45,6 +45,11 @@ from .simulation import (
     run_gated_shioaji_cancel_smoke,
     run_gated_shioaji_order_request_smoke,
     run_gated_shioaji_simulation_login_smoke,
+    build_simulation_plan,
+    check_pre_order_gates,
+    SimulationPlanItem,
+    ShioajiCallbackStream,
+    ShioajiOrderRequestBroker,
 )
 from .storage import (
     DatabaseStorage,
@@ -369,6 +374,252 @@ def cmd_replay_samples(args: argparse.Namespace) -> None:
         report_output = Path(args.report_output)
         write_text(report_output, render_replay_markdown(args.date, result))
         print(report_output)
+
+def get_git_commit() -> str:
+    import subprocess
+    try:
+        res = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
+        return res.stdout.strip()
+    except Exception:
+        return "unknown"
+
+
+def get_file_checksum(path: Path) -> str:
+    import hashlib
+    if not path.exists():
+        return ""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
+    """Run the daily simulation ops runner to generate candidate inputs, execute gates, place orders, check readiness, and produce run manifest."""
+    import uuid
+    from datetime import datetime
+    import sys
+
+    # 1. Generate run_id and metadata
+    run_id = f"ops-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    created_at = datetime.now().isoformat()
+    git_commit = get_git_commit()
+    cwd = os.getcwd()
+
+    # Mask manual approval tokens in the command line
+    cmd_args = sys.argv.copy()
+    for idx, arg in enumerate(cmd_args):
+        if arg in ("--manual-approval-token", "--expected-manual-approval-token") and idx + 1 < len(cmd_args):
+            cmd_args[idx + 1] = "********"
+    command = " ".join(cmd_args)
+
+    # Env sources (e.g. check which environment keys are present)
+    env_keys = ["SHIOAJI_API_KEY", "SHIOAJI_SECRET_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]
+    env_sources = {k: "present" if os.getenv(k) else "missing" for k in env_keys}
+
+    # Output directory setup
+    output_dir = Path(args.output_dir) if args.output_dir else Path("reports") / f"{args.date}-ops"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check candidates input file
+    candidates_path = Path(args.candidates_input)
+    if not candidates_path.exists():
+        raise FileNotFoundError(f"Candidates input not found: {candidates_path}")
+
+    # Calculate input checksums
+    input_artifacts = [
+        {"path": str(candidates_path), "checksum": get_file_checksum(candidates_path)}
+    ]
+
+    # Load candidates
+    candidates_payload = json.loads(candidates_path.read_text(encoding="utf-8"))
+    candidate_date = args.candidate_date or candidates_payload.get("trading_date")
+    if not candidate_date:
+        raise ValueError("candidate_date is required or must be present in the candidates input file")
+
+    # Convert candidates items to CandidateScore objects
+    candidates_data = candidates_payload.get("candidates", [])
+    candidates_list = []
+    for item in candidates_data:
+        score_obj = CandidateScore(
+            symbol=str(item["symbol"]),
+            name=str(item.get("name", item["symbol"])),
+            rank=int(item.get("rank", 0)),
+            archetype=str(item.get("archetype", "theme_follower")),
+            total_score=float(item.get("total_score", 0)),
+            liquidity_score=float(item.get("liquidity_score", 0)),
+            event_score=float(item.get("event_score", 0)),
+            structure_score=float(item.get("structure_score", 0)),
+            continuity_score=float(item.get("continuity_score", 0)),
+            crowding_penalty=float(item.get("crowding_penalty", 0)),
+            next_day_actionable=bool(item.get("next_day_actionable", False)),
+            reasons=tuple(item.get("reasons", [])),
+            downgrade_reasons=tuple(item.get("downgrade_reasons", [])),
+        )
+        candidates_list.append(score_obj)
+
+    # 2. Build input plan using the plan builder contract
+    cache_dir = Path(args.cache_dir)
+    plan_items = build_simulation_plan(
+        trading_date=args.date,
+        candidate_date=candidate_date,
+        candidates=candidates_list,
+        cache_dir=cache_dir,
+        candidate_source=str(candidates_path),
+    )
+
+    input_plan_path = output_dir / "input_plan.json"
+    write_json(input_plan_path, [item.to_dict() for item in plan_items])
+    input_artifacts.append(
+        {"path": str(input_plan_path), "checksum": get_file_checksum(input_plan_path)}
+    )
+
+    # 3. Setup broker and adapter
+    side_effects = []
+    blocked_reasons = []
+
+    # Determine if we are simulation on
+    simulation_on = bool(args.simulation_on)
+    if simulation_on:
+        # Check environment variables
+        api_key = os.getenv("SHIOAJI_API_KEY", "")
+        secret_key = os.getenv("SHIOAJI_SECRET_KEY", "")
+        if not api_key or not secret_key:
+            raise ValueError("SHIOAJI_API_KEY and SHIOAJI_SECRET_KEY are required for simulation-on mode")
+
+        import shioaji as sj  # type: ignore
+        api = sj.Shioaji(simulation=True)
+        gateway = ShioajiSdkSimulationGateway(api, api_key, secret_key)
+        broker = ShioajiOrderRequestBroker(gateway)
+        side_effects.append("login")
+        side_effects.append("set_order_callback")
+    else:
+        broker = DryRunSimulationBroker()
+
+    ledger = PaperLedger()
+    adapter = ShioajiSimulationAdapter(broker=broker, ledger=ledger)
+
+    # Store callback sync store setup
+    sync_store_path = Path(args.execution_sync_store) if args.execution_sync_store else output_dir / "callback_store.json"
+    if not sync_store_path.exists():
+        write_json(sync_store_path, {
+            "trading_date": args.date,
+            "callback_events": [],
+            "broker_trades": [],
+            "lifecycle_decisions": [],
+            "callback_ordering_issues": [],
+            "cancel_results": [],
+            "open_positions": [],
+            "custom_field_map": {},
+        })
+    sync_store = FileExecutionSyncStore(sync_store_path)
+
+    # In simulation-on mode, login and setup callback stream
+    if simulation_on:
+        session = adapter._ensure_session()
+        stream = ShioajiCallbackStream(api=api, store=sync_store, trading_date=args.date)
+        stream.start()
+
+    # 4. Run the simulation adapter and check gates
+    results = []
+    for plan_item in plan_items:
+        res = adapter.execute(
+            plan_item.signal,
+            plan_item.risk_decision,
+            current_time=args.current_time,
+            allow_outside_session=bool(args.allow_outside_session),
+            bypass_gates=False,
+        )
+        results.append(res)
+
+        if res.status == "simulated" or res.status == "submitted":
+            side_effects.append(f"place_order_{res.signal.symbol}")
+        elif res.status == "gate_blocked":
+            blocked_reasons.append(f"symbol_{res.signal.symbol}_blocked_by_{res.review_reason}")
+
+        sync_store.record_result(res)
+
+    # Write simulation output
+    simulation_output_path = output_dir / "simulation_output.json"
+    payload = {
+        "trading_date": args.date,
+        "sample_type": "simulation",
+        "summary": summarize_simulation_results(results),
+        "results": [result.to_dict() for result in results],
+    }
+    write_json(simulation_output_path, payload)
+
+    # 5. Run restart sync comparison
+    snapshot = sync_store.load_snapshot()
+    positions = ledger_positions_from_payload(snapshot["open_positions"])
+    restored_ledger = restore_ledger_from_positions(positions)
+    restart_sync_report = build_restart_sync_report(
+        broker_trades_from_payload(snapshot["broker_trades"]),
+        positions,
+        restored_ledger,
+    )
+    restart_sync_path = output_dir / "restart_sync.json"
+    write_json(restart_sync_path, restart_sync_report)
+
+    # 6. Run readiness report
+    readiness_policy = ProductionReadinessPolicy(
+        trading_date=args.date,
+        current_time=args.current_time,
+        allow_live_trading=bool(args.allow_live_trading),
+        manual_approval_token=args.manual_approval_token or "",
+        expected_manual_approval_token=args.expected_manual_approval_token or "",
+        max_pending_orders=getattr(args, "max_pending_orders", 0),
+        require_cancel_retry_plan=not getattr(args, "disable_cancel_retry_plan", False),
+    )
+    readiness_report = build_production_readiness_report(snapshot, readiness_policy)
+    readiness_report_path = output_dir / "readiness_report.json"
+    write_json(readiness_report_path, readiness_report)
+
+    readiness_md_path = output_dir / "readiness_report.md"
+    write_text(readiness_md_path, render_production_readiness_markdown(readiness_report))
+
+    # Also save the callback store snapshot in the output directory if it is distinct
+    callback_store_backup_path = output_dir / "callback_store.json"
+    if callback_store_backup_path != sync_store_path:
+        write_json(callback_store_backup_path, snapshot)
+
+    # Gather manual actions
+    manual_actions = readiness_report.get("manual_actions", [])
+
+    # 7. Collect output artifacts and checksums
+    output_artifacts = [
+        {"path": str(simulation_output_path), "checksum": get_file_checksum(simulation_output_path)},
+        {"path": str(restart_sync_path), "checksum": get_file_checksum(restart_sync_path)},
+        {"path": str(readiness_report_path), "checksum": get_file_checksum(readiness_report_path)},
+        {"path": str(readiness_md_path), "checksum": get_file_checksum(readiness_md_path)},
+        {"path": str(callback_store_backup_path), "checksum": get_file_checksum(callback_store_backup_path)},
+    ]
+
+    # Build manifest
+    manifest = {
+        "run_id": run_id,
+        "trading_date": args.date,
+        "created_at": created_at,
+        "git_commit": git_commit,
+        "cwd": cwd,
+        "command": command,
+        "env_sources": env_sources,
+        "input_artifacts": input_artifacts,
+        "output_artifacts": output_artifacts,
+        "side_effects": side_effects,
+        "blocked_reasons": blocked_reasons,
+        "manual_actions": manual_actions,
+        "simulation_only": True,
+    }
+
+    manifest_path = output_dir / "ops_run_manifest.json"
+    write_json(manifest_path, manifest)
+
+    print(f"Daily simulation ops run completed successfully!")
+    print(f"Run ID: {run_id}")
+    print(f"Manifest written to: {manifest_path}")
+
 
 
 def cmd_simulate_run(args: argparse.Namespace) -> None:
@@ -803,6 +1054,24 @@ def build_parser() -> argparse.ArgumentParser:
     simulate_run.add_argument("--report-output")
     simulate_run.add_argument("--execution-sync-store")
     simulate_run.set_defaults(func=cmd_simulate_run)
+
+    ops_run = simulate_sub.add_parser("ops-run")
+    ops_run.add_argument("--date", required=True)
+    ops_run.add_argument("--candidates-input", required=True)
+    ops_run.add_argument("--candidate-date")
+    ops_run.add_argument("--cache-dir", default="data/raw")
+    ops_run.add_argument("--execution-sync-store")
+    ops_run.add_argument("--output-dir")
+    ops_run.add_argument("--simulation-on", action="store_true")
+    ops_run.add_argument("--allow-outside-session", action="store_true")
+    ops_run.add_argument("--current-time")
+    ops_run.add_argument("--allow-live-trading", action="store_true")
+    ops_run.add_argument("--manual-approval-token")
+    ops_run.add_argument("--expected-manual-approval-token")
+    ops_run.add_argument("--max-pending-orders", type=int, default=0)
+    ops_run.add_argument("--disable-cancel-retry-plan", action="store_true")
+    ops_run.set_defaults(func=cmd_simulate_ops_run)
+
     restart_sync = simulate_sub.add_parser("restart-sync")
     restart_sync.add_argument("--store", required=True)
     restart_sync.add_argument("--output")

@@ -1,7 +1,7 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P7 已完成；P6 可收斂為 P6A 本地 simulation execution chain、P6B callback / restart-sync hardening、P6C gated login + callback registration、P6D gated simulation order + cancel smoke，四段皆已完成；P7 Production Readiness Gate 已完成。剩餘 P8-P11：simulation ops go-live、ops reports / alerts、regression correction loop、live execution design。
+狀態：P0-P8 已完成；P6 可收斂為 P6A 本地 simulation execution chain、P6B callback / restart-sync hardening、P6C gated login + callback registration、P6D gated simulation order + cancel smoke，四段皆已完成；P7 Production Readiness Gate 已完成；P8 Simulation Ops Go-live 已完成。剩餘 P9-P11：ops reports / alerts、regression correction loop、live execution design。
 預設分支：`master`
 
 ## Phase 對照
@@ -19,7 +19,7 @@
 | P5 | Replay / Paper Ledger | 已完成 MVP | `3c998be` |
 | P6 | Shioaji Simulation Adapter | 已完成 | through P6D smoke |
 | P7 | Production Readiness Gate | 已完成 | P7 readiness gate |
-| P8 | Simulation Ops Go-live | 待處理 | - |
+| P8 | Simulation Ops Go-live | 已完成 | P8 daily ops manifest |
 | P9 | Ops Reports / Alerts | 待處理 | - |
 | P10 | Regression Correction Loop | 待處理 | - |
 | P11 | Live Execution Design | 待處理 | - |
@@ -1276,3 +1276,33 @@ Grill-me close-out verdict：
 - must-fix 已寫回：plan builder contract、price / contract / session gates、ops manifest、alert severity / dedupe / owner、regression raw payload / closing test、P11 live boundary enforcement。
 - 剩餘風險：這仍是文件與契約層，尚未完成 P8 實作；下一輪 coding 應先從 `ops_run_manifest` 與 plan builder contract 開始。
 - 下一步：P8 Simulation Ops Go-live 第一刀，先做 manifest + input plan builder + pre-order gates，再擴 daily runner。
+
+## 8. Phase Close-out - P8 Simulation Ops Go-live - 2026-06-03
+
+已完成 P8 Simulation Ops Go-live 實作。
+
+### 達成項目：
+
+1. **`ops_run_manifest`**:
+   - 定義並生成單次執行的唯一 `run_id`。
+   - 自動記錄執行命令（已遮蔽敏感資訊）、當前工作目錄 `cwd`、當前 Git commit hash、環境變數摘要（不含變數值）。
+   - 自動計算輸入與輸出 Artifacts 的 SHA-256 Checksum。
+   - 記錄執行期間的 Side Effects（如 `login`, `place_order_2330` 等）與 Blocked Reasons（被 Gates 阻擋的原因）以及由 Production Readiness Check 產出的 Manual Actions。
+
+2. **Input Plan Builder Contract**:
+   - 實作 `build_simulation_plan` 函數，負責將 `CandidateScore` 列表與 FinMind 價格快照結合。
+   - 自動查驗候選股是否為 `next_day_actionable`，查驗快照中是否具有昨日收盤價，將其標註為 `limit_price_source="close_price"`，並完整記載 `risk_decision_reason`、`quantity_source`、與 `blocked_reason`。
+
+3. **Pre-order Gates**:
+   - 在 `check_pre_order_gates` 函數中實作了 7 項 Pre-order gates：
+     - **Trading Day Gate**: 阻擋非交易日 / 周末委託。
+     - **Regular Session Gate**: 檢查委託時間是否在 `09:00 - 13:20` 的當沖常規時段內。
+     - **Contract Loaded Gate**: 驗證股票 Contract 正常載入。
+     - **Reference Price Check**: 取得參考價。
+     - **Limit Up / Limit Down Gate**: 確保委託價在漲跌停限制內。
+     - **Quantity Cap Gate**: 限制委託數量（預設 1000 股以內）。
+     - **Simulation-Only Boundary Gate**: 確保僅限模擬模式（不接觸正式交易區）。
+
+4. **CLI Subcommand `simulate ops-run`**:
+   - `tw-daytrade simulate ops-run` 命令整合了從載入 candidates -> 建 plan -> 檢查 gates -> Adapter 執行 -> 記錄 sync state -> 產出 readiness report -> 生成 manifests 的完整 Daily Ops Flow。
+   - 新增 3 個單元測試覆蓋了 gates、plan builder 與 `ops-run` CLI 功能，所有測試全數通過且無 any 格式/排版警告。
