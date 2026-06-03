@@ -5,13 +5,6 @@ import json
 import os
 from pathlib import Path
 
-# Automatically load environment variables from local .env file
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
-
 from .candidate_engine import rank_candidates
 from .candidate_builder import build_candidates_from_raw_cache
 from .finmind_ingestion import (
@@ -611,10 +604,51 @@ def get_file_checksum(path: Path) -> str:
 def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
     """Run the daily simulation ops runner to generate candidate inputs, execute gates, place orders, check readiness, and produce run manifest."""
     import uuid
-    from datetime import datetime
+    from datetime import datetime, timedelta
     import sys
 
-    # 1. Generate run_id and metadata
+    # 1. Resolve trading date (default to current local date)
+    trading_date_str = args.date
+    if not trading_date_str:
+        trading_date_str = datetime.now().strftime("%Y-%m-%d")
+
+    # 2. Resolve candidates input file automatically
+    candidates_path = None
+    if args.candidates_input:
+        candidates_path = Path(args.candidates_input)
+    else:
+        # Try current trading date
+        candidates_path = Path("reports") / f"{trading_date_str}-candidates.json"
+        if not candidates_path.exists():
+            candidates_path = Path("reports") / f"{trading_date_str}-candidates-from-raw.json"
+
+        # Try previous 10 days
+        if not candidates_path.exists():
+            try:
+                ref_dt = datetime.strptime(trading_date_str, "%Y-%m-%d")
+                for i in range(1, 11):
+                    prev_date = (ref_dt - timedelta(days=i)).strftime("%Y-%m-%d")
+                    p1 = Path("reports") / f"{prev_date}-candidates.json"
+                    p2 = Path("reports") / f"{prev_date}-candidates-from-raw.json"
+                    if p1.exists():
+                        candidates_path = p1
+                        break
+                    elif p2.exists():
+                        candidates_path = p2
+                        break
+            except Exception:
+                pass
+
+        # Fallback to examples
+        if not candidates_path or not candidates_path.exists():
+            fallback_sample = Path("examples/candidates.sample.json")
+            if fallback_sample.exists():
+                candidates_path = fallback_sample
+
+    if not candidates_path or not candidates_path.exists():
+        raise FileNotFoundError("Could not find a valid candidates input file. Please specify --candidates-input manually.")
+
+    # 3. Generate run_id and metadata
     run_id = f"ops-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
     created_at = datetime.now().isoformat()
     git_commit = get_git_commit()
@@ -632,13 +666,8 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
     env_sources = {k: "present" if os.getenv(k) else "missing" for k in env_keys}
 
     # Output directory setup
-    output_dir = Path(args.output_dir) if args.output_dir else Path("reports") / f"{args.date}-ops"
+    output_dir = Path(args.output_dir) if args.output_dir else Path("reports") / f"{trading_date_str}-ops"
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Check candidates input file
-    candidates_path = Path(args.candidates_input)
-    if not candidates_path.exists():
-        raise FileNotFoundError(f"Candidates input not found: {candidates_path}")
 
     # Calculate input checksums
     input_artifacts = [
@@ -672,10 +701,10 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
         )
         candidates_list.append(score_obj)
 
-    # 2. Build input plan using the plan builder contract
+    # 4. Build input plan using the plan builder contract
     cache_dir = Path(args.cache_dir)
     plan_items = build_simulation_plan(
-        trading_date=args.date,
+        trading_date=trading_date_str,
         candidate_date=candidate_date,
         candidates=candidates_list,
         cache_dir=cache_dir,
@@ -688,12 +717,17 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
         {"path": str(input_plan_path), "checksum": get_file_checksum(input_plan_path)}
     )
 
-    # 3. Setup broker and adapter
+    # 5. Setup broker and adapter
     side_effects = []
     blocked_reasons = []
 
     # Determine if we are simulation on
     simulation_on = bool(args.simulation_on)
+    if not simulation_on:
+        env_sim = os.getenv("IS_SIMULATION", "").lower()
+        if env_sim in ("true", "1", "yes", "on"):
+            simulation_on = True
+
     if simulation_on:
         # Check environment variables
         api_key = os.getenv("SHIOAJI_API_KEY", "")
@@ -717,7 +751,7 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
     sync_store_path = Path(args.execution_sync_store) if args.execution_sync_store else output_dir / "callback_store.json"
     if not sync_store_path.exists():
         write_json(sync_store_path, {
-            "trading_date": args.date,
+            "trading_date": trading_date_str,
             "callback_events": [],
             "broker_trades": [],
             "lifecycle_decisions": [],
@@ -731,10 +765,10 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
     # In simulation-on mode, login and setup callback stream
     if simulation_on:
         session = adapter._ensure_session()
-        stream = ShioajiCallbackStream(api=api, store=sync_store, trading_date=args.date)
+        stream = ShioajiCallbackStream(api=api, store=sync_store, trading_date=trading_date_str)
         stream.start()
 
-    # 4. Run the simulation adapter and check gates
+    # 6. Run the simulation adapter and check gates
     results = []
     for plan_item in plan_items:
         res = adapter.execute(
@@ -756,14 +790,14 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
     # Write simulation output
     simulation_output_path = output_dir / "simulation_output.json"
     payload = {
-        "trading_date": args.date,
+        "trading_date": trading_date_str,
         "sample_type": "simulation",
         "summary": summarize_simulation_results(results),
         "results": [result.to_dict() for result in results],
     }
     write_json(simulation_output_path, payload)
 
-    # 5. Run restart sync comparison
+    # 7. Run restart sync comparison
     snapshot = sync_store.load_snapshot()
     positions = ledger_positions_from_payload(snapshot["open_positions"])
     restored_ledger = restore_ledger_from_positions(positions)
@@ -775,9 +809,9 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
     restart_sync_path = output_dir / "restart_sync.json"
     write_json(restart_sync_path, restart_sync_report)
 
-    # 6. Run readiness report
+    # 8. Run readiness report
     readiness_policy = ProductionReadinessPolicy(
-        trading_date=args.date,
+        trading_date=trading_date_str,
         current_time=args.current_time,
         allow_live_trading=bool(args.allow_live_trading),
         manual_approval_token=args.manual_approval_token or "",
@@ -805,7 +839,7 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
     # Gather manual actions
     manual_actions = readiness_report.get("manual_actions", [])
 
-    # 7. Collect output artifacts and checksums
+    # 9. Collect output artifacts and checksums
     output_artifacts = [
         {"path": str(simulation_output_path), "checksum": get_file_checksum(simulation_output_path)},
         {"path": str(restart_sync_path), "checksum": get_file_checksum(restart_sync_path)},
@@ -815,11 +849,10 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
         {"path": str(callback_store_backup_path), "checksum": get_file_checksum(callback_store_backup_path)},
     ]
 
-
     # Build manifest
     manifest = {
         "run_id": run_id,
-        "trading_date": args.date,
+        "trading_date": trading_date_str,
         "created_at": created_at,
         "git_commit": git_commit,
         "cwd": cwd,
@@ -1411,8 +1444,8 @@ def build_parser() -> argparse.ArgumentParser:
     simulate_run.set_defaults(func=cmd_simulate_run)
 
     ops_run = simulate_sub.add_parser("ops-run")
-    ops_run.add_argument("--date", required=True)
-    ops_run.add_argument("--candidates-input", required=True)
+    ops_run.add_argument("--date")
+    ops_run.add_argument("--candidates-input")
     ops_run.add_argument("--candidate-date")
     ops_run.add_argument("--cache-dir", default="data/raw")
     ops_run.add_argument("--execution-sync-store")
@@ -1503,6 +1536,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     """CLI entry point used by `python -m tw_day_trading_lab.cli`."""
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
     parser = build_parser()
     args = parser.parse_args(argv)
     args.func(args)
