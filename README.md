@@ -34,6 +34,22 @@
 
 目前所有日常下單驗證只允許使用 Shioaji simulation / fake SDK。repo 內已有 live execution adapter boundary，但正式區登入、正式委託與自動下單仍預設 blocked；任何真實 Shioaji smoke 都必須另加人工 gate，且不得使用 `sj.Shioaji(simulation=False)` 做隨手測試。
 
+## Target Operating Cycle
+
+本專案的最終目標是「交易日自動循環」，不是只產生單次 simulation bundle。
+
+目標流程：
+
+1. 17:30 產生下一個交易日候選股名單。
+2. 交易日 09:05 或 10:00 啟動候選股監控。
+3. 09:05/10:00-13:20 期間，反覆檢查候選股是否符合進場 / 出場策略，通過風控後才執行。
+4. 13:20 停止新進場，執行必要的 time stop / force-exit / cancel policy。
+5. 等待收盤後資料沉澱。
+6. 15:00 產出當日交易結果、優缺點、blocker 與 next actions，發布到 GitHub 並回傳連結。
+7. 17:30 整理明日候選名單，進入下一個交易日循環。
+
+目前 `simulate daily-ops` / `make daily-ops` 是重要基礎，但它只是「單日 bundle runner + audit」，還不是完整的 time-aware intraday trading loop。完整目標與校正後 phase 請看 `docs/trading-day-autonomous-cycle.md`。
+
 ## Quick Start
 
 ```bash
@@ -241,7 +257,7 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 - P9-P11 infrastructure 已完成：alerts、regression import/run、live adapter boundary。
 - 最新安全維護：`.pfx` / `.p12` 已加入 `.gitignore`，`Sinopac.pfx` 已從可達 Git history 移除。
 - `Daily Simulation Ops Automation v1` 前兩步已完成：`simulate daily-ops` / `make daily-ops` 可啟動每日作業鏈，`daily_bundle_audit.json` 可檢查 manifest、artifact checksum、readiness、alerts operator fields、close report 與 regression case traceability。
-- 下一步不是再做 P8，也不是推正式下單；下一步是跑 3-5 個交易日穩定性觀察，統計 blockers、partial fills、ordering issues、alert noise 與 candidate quality 問題。
+- 方向校正：`Daily Simulation Ops Automation v1` 不等於完整交易日自動循環；下一個主線 phase 是 `Trading Day Autonomous Cycle v1`，把候選股監控、進出場策略、13:20 force-exit、15:00 GitHub report/link、17:30 明日候選名單串成可重跑的 trading-day state machine。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。
 - P6 已支援 `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition` dry-run，simulation sample 與 replay expectancy 分開，重送同一 intent 不會重複開倉。
@@ -257,16 +273,20 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 | Phase B | 修正成本、風控、微結構、回測、績效回饋與策略 edge 六大問題 | 已完成 |
 | Sprint 3-A/B/C | 流動性、ops pre-flight、market regime hardening | 已完成 |
 | Sprint 4-A/B/C | Telegram gate、HMAC approval、TiDB migration | 已完成 |
+| Trading Day Autonomous Cycle v1 | 交易日 scheduler / intraday watch loop / 13:20 force-exit / 15:00 GitHub report / 17:30 next candidates | 下一個主線 |
 
 ## Next Development Priority
 
-目前 `Daily Simulation Ops Automation v1` 已完成前兩步：daily runner / Make target 與 daily bundle audit。
+目前 `Daily Simulation Ops Automation v1` 已完成前兩步：daily runner / Make target 與 daily bundle audit。但這不是終點；它只是完整交易日循環的下層 artifact/audit 能力。
 
-下一步是穩定性觀察與小修：
+下一步主線改為 `Trading Day Autonomous Cycle v1`：
 
-- 用 `make daily-ops DATE=YYYY-MM-DD` 連續跑 3-5 個交易日或 fixture 日期。
-- 彙總 `daily_bundle_audit.json`、`alerts.json`、`readiness_report.json` 的 blocker / warning / alert noise。
-- 將重複 blocker 或 candidate quality 問題轉成 P10 regression case，再做小步修正。
+- 新增 trading-day scheduler / run state，明確記錄 09:05/10:00、13:20、15:00、17:30 的 stage transition。
+- 新增 intraday candidate watch loop，限定只監控已產生的候選股名單，反覆評估 entry / exit strategy。
+- 新增 13:20 stop-new-entry / force-exit / cancel policy 的 dry-run 與 fixture tests。
+- 新增 15:00 GitHub report publish dry-run 與 operator link artifact。
+- 新增 17:30 next-day candidate builder handoff。
+- 3-5 日穩定性觀察仍要做，但應放在 trading-day cycle dry-run 可重跑後，作為驗收證據，而不是替代主線功能。
 - `send-alerts`、`simulation-on` 與任何真實 Shioaji side effect 仍必須明確 gate；正式 live order 仍禁止。
 
 核心邊界固定不變：simulation / readiness 只能證明執行鏈可控，不能當成 strategy edge 或獲利證明。
@@ -276,6 +296,7 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 - `docs/development-work.md`：開發歷程、驗證命令、P8-P11 / Phase B / hardening sprint close-out。
 - `docs/mvp-roadmap.md`：目前 phase 狀態與後續 phase 驗收條件。
 - `docs/data-contracts.md`：candidate / replay / simulation / execution sync / readiness / ops manifest 契約。
+- `docs/trading-day-autonomous-cycle.md`：校正後的交易日自動循環目標、schedule、架構差距與下一步 phase。
 - `docs/rebuild-baseline.md`：舊專案重建基線。
 - `docs/six-problems-review-and-ops.md`：六大問題修正與自動化營運共識。
 - `docs/old-log-importer.md`、`docs/tidb-integration.md`、`docs/finmind-ingestion.md`、`docs/candidate-engine-v1.md`：各子系統說明。

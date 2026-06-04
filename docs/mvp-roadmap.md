@@ -196,3 +196,75 @@ P8 之後每個 phase close-out 不能只列「新增命令」或「新增文件
 - **B6: Strategy Edge Redesign**
   - 實作 `VwapBreakoutStrategy` 行情訊號產生器。
   - 實作 `atr_20d_pct` 波動度特徵與低 ATR 個股過濾機制。
+
+---
+
+## Phase C: Trading Day Autonomous Cycle
+
+目前狀態：下一個主線。
+
+目標：把候選股名單、進出場策略、風控、執行鏈、收盤報告與隔日候選名單整理成每個交易日自動重複的作業循環。
+
+這個 phase 修正 `Daily Simulation Ops Automation v1` 之後的方向：`daily-ops` 是 bundle runner / audit layer，不是完整交易日自動交易系統。完整交易日系統必須理解時間、stage、候選監控、部位生命週期、報告發布與隔日 handoff。
+
+### C1: Trading Day Scheduler / Run State
+
+- 建立 trading-day state machine。
+- 支援 09:05 或 10:00 啟動 policy。
+- 固定 13:20 停止新進場與 force-exit / cancel policy。
+- 固定 15:00 產生並發布當日 report。
+- 固定 17:30 產生下一交易日候選名單。
+- 產出 `trading_day_run_state.json`，記錄 stage transition、run id、artifact、locks、retry 與 blocked reasons。
+
+驗收：
+
+- fixture trading day 可 dry-run 完整 stage transition。
+- 重跑同一 trading day 不會重複送單、重複發 report 或覆蓋不可覆蓋的候選清單。
+
+### C2: Intraday Candidate Watch Loop
+
+- 只載入既有候選股名單，不盤中掃全市場。
+- 透過 market-data port 取得候選股 intraday bars / ticks。
+- 在 09:05/10:00-13:20 期間反覆檢查 entry strategy。
+- 對 open positions 反覆檢查 exit strategy。
+- 每次 no-action / rejected / approved signal 都要有 reason 與 artifact。
+
+驗收：
+
+- fixture bars 可產生 approved entry、rejected entry、exit trigger、no-action candidate。
+- 13:20 後不允許新進場。
+
+### C3: Execution / Exit / Force-Exit Policy
+
+- 正式 live trading 繼續 blocked。
+- dry-run / fake / Shioaji simulation 必須明確 gate。
+- 實作 duplicate intent、max positions、daily risk、pending orders、partial fill、callback ordering、terminal-state conflict 的交易日層級處理。
+- 13:20 執行 stop-new-entry、force-exit、stale order cancel 與 manual action report。
+
+驗收：
+
+- force-exit fixture 可證明 open position 被處理或明確列入 manual action。
+- partial fill / callback ordering issue 不會被當成正常完成。
+
+### C4: 15:00 GitHub Report Publish
+
+- 產生當日交易結果報告：候選監控、進場、出場、跳過原因、P/L 或 simulation P/L、優點、缺點、blockers、next actions。
+- 將報告發布到 GitHub artifact。
+- 將 GitHub link 傳給 operator。
+- Telegram / external send 仍需 gate 與 dedupe。
+
+驗收：
+
+- dry-run mode 可建立 report artifact 與 would-send link。
+- 真實發送前必須另有 gate。
+
+### C5: 17:30 Next-Day Candidates
+
+- 盤後 ingestion / validation。
+- 產生下一交易日 candidates。
+- 保存 candidate run 與 summary。
+- 將 candidate artifact 掛到下一個 trading-day run state。
+
+驗收：
+
+- fixture post-market run 可產生 next-day candidate file，並正確關聯下一交易日。

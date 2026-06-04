@@ -43,21 +43,33 @@ If a task appears to require live execution, stop and design the gate/SOP first.
 - P8 Simulation Ops Go-live is complete with `simulate ops-run`, `ops_run_manifest`, pre-order gates, input plan, readiness, alerts, and regression traceability.
 - P9-P11 infrastructure is complete: operator alerts, regression import/run, and live broker adapter boundary.
 - Daily Simulation Ops Automation v1 first two implementation steps are complete: `simulate daily-ops` / `make daily-ops` orchestration and `daily_bundle_audit.json`.
+- Direction correction is complete: the project target is a full trading-day autonomous cycle, not only a single daily simulation bundle.
 - `.pfx` / `.p12` files are ignored, and `Sinopac.pfx` has been removed from reachable Git history.
 
 ## Next Development Priority
 
-The next coding phase is Daily Simulation Ops stability observation and fixes.
+The next coding phase is `Trading Day Autonomous Cycle v1`.
 
 Do not go back to P8 as if it were unimplemented. P8-P11 already exist. The daily operating chain now has a one-command runner and bundle audit.
 
+Also do not treat `daily-ops` as the whole product. It is an artifact/audit runner. The real operating target is a trading-day state machine:
+
+- 17:30 build tomorrow's candidate list.
+- 09:05 or 10:00 start the intraday candidate watch loop.
+- 09:05/10:00-13:20 repeatedly evaluate candidate entry and open-position exit strategies.
+- 13:20 stop new entries and run force-exit / cancel policy.
+- 15:00 publish the trading-day report to GitHub and send the operator link.
+- 17:30 build the next candidate list and hand off to the next trading day.
+
 Recommended next implementation:
 
-1. Run `make daily-ops DATE=YYYY-MM-DD` across 3-5 trading days or fixture dates.
-2. Compare `daily_bundle_audit.json`, `ops/alerts.json`, and `ops/readiness_report.json`.
-3. Summarize blockers, partial fills, ordering issues, alert noise, candidate quality warnings, and repeated regression cases.
-4. Fix only repeated or operator-blocking issues in small bounded sprints.
-5. Keep real alert sending, Shioaji simulation side effects, and live order execution blocked unless a separate task explicitly designs and verifies the gate.
+1. Add a dry-run `simulate trading-day-cycle` command or equivalent runner that emits `trading_day_run_state.json`.
+2. Model stage transitions for `candidate_ready`, `intraday_running`, `force_exit`, `close_buffer`, `reporting`, `next_candidates`, and `complete`.
+3. Add fixture-based intraday watch loop tests for 09:05/10:00 start, repeated candidate checks, entry trigger, exit trigger, no-action candidate, and 13:20 stop.
+4. Add execution policy tests for duplicate intents, pending orders, partial fills, callback ordering, and force-exit behavior.
+5. Add 15:00 GitHub report publish dry-run and 17:30 next-candidate handoff artifacts.
+6. Only after the dry-run trading-day cycle is auditable should 3-5 day stability observation become the acceptance evidence.
+7. Keep real alert sending, Shioaji simulation side effects, and live order execution blocked unless a separate task explicitly designs and verifies the gate.
 
 ## Important Docs
 
@@ -67,6 +79,7 @@ Read these before changing behavior:
 - `docs/mvp-roadmap.md` - phase map and acceptance criteria.
 - `docs/development-work.md` - detailed implementation history, grill-me reviews, and working commands.
 - `docs/data-contracts.md` - data contracts for candidates, replay, simulation, readiness, ops manifest, alerts, and regression cases.
+- `docs/trading-day-autonomous-cycle.md` - corrected objective, schedule, architecture gap, and next implementation seed.
 - `docs/rebuild-baseline.md` - rebuild baseline from the old project.
 
 When phase status changes, update both `docs/development-work.md` and `docs/mvp-roadmap.md`.

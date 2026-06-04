@@ -1527,3 +1527,80 @@ Audit 檢查項目：
 3. 找出重複 blocker、alert noise、candidate quality、partial fill、ordering issue。
 4. 只針對重複且會阻礙操作者的問題開小 sprint 修正。
 5. 若要開啟真實 Telegram alert 或 Shioaji simulation side effect，另開 gate review，不要在一般 smoke 裡使用 `--send-alerts` 或 `--simulation-on`。
+
+## 15. Direction Alignment Review - Trading Day Autonomous Cycle - 2026-06-04
+
+本輪目標：依照使用者重新確認的真實目標，審查目前架構與文件是否偏離方向，並直接修正文件。
+
+### 使用者重新確認的 Objective
+
+系統目標不是只跑一次候選 / simulation bundle，而是每個交易日自動循環：
+
+1. 使用既有候選股名單作為當沖監控範圍。
+2. 09:05 或 10:00 開始盤中監控。
+3. 09:05/10:00-13:20 期間反覆檢查候選股是否符合進場 / 出場策略，通過風控後執行。
+4. 13:20 停止新進場，執行 time stop / force-exit / cancel policy。
+5. 收盤後等待資料沉澱。
+6. 15:00 彙整當日交易結果、優缺點、blockers 與 next actions，發布到 GitHub 並回傳連結。
+7. 17:30 整理與產出下一交易日候選名單。
+8. 每個交易日自動重複。
+
+### Verdict
+
+目前架構「部分正確，但下一步文件方向偏窄」。
+
+已走在正確方向的基礎：
+
+- candidate engine / candidate builder 已能產生候選名單。
+- `VwapBreakoutStrategy`、風控、成本、exit checks 已有第一版策略與風險零件。
+- P6-P11 已把 Shioaji simulation、callback sync、readiness、alerts、regression、live boundary 拆開。
+- `simulate daily-ops` 已能產生 auditable daily bundle。
+
+偏掉的地方：
+
+- README / AGENTS 把下一步寫成「3-5 日 daily-ops 穩定性觀察」，容易讓後續工作只停在 bundle 稽核。
+- `simulate daily-ops` 是單次 orchestration，不是 09:05/10:00-13:20 的 time-aware intraday watch loop。
+- 文件缺少 trading-day scheduler / run state / stage transition 契約。
+- 文件缺少 15:00 GitHub publish + operator link 契約。
+- 文件缺少 17:30 next-candidate handoff 契約。
+
+### 文件修正
+
+- 新增 `docs/trading-day-autonomous-cycle.md`：
+  - 明確定義交易日自動循環 objective。
+  - 寫入 17:30 / 09:05 or 10:00 / 13:20 / 15:00 / 17:30 schedule。
+  - 記錄目前架構 gap。
+  - 定義 Phase C: Trading Day Autonomous Cycle v1 的 C1-C5 next implementation seed。
+- 更新 `README.md`：
+  - 新增 Target Operating Cycle。
+  - 將下一步從 daily-ops 穩定觀察改成 `Trading Day Autonomous Cycle v1`。
+  - 保留正式 live order blocked 的安全邊界。
+- 更新 `AGENTS.md`：
+  - 明確指示後續 agent 不要把 `daily-ops` 當作完整產品。
+  - 下一輪 priority 改為 `simulate trading-day-cycle` / run state / intraday watch loop / 15:00 GitHub report / 17:30 candidates。
+- 更新 `docs/mvp-roadmap.md`：
+  - 新增 Phase C: Trading Day Autonomous Cycle。
+  - 拆出 C1 scheduler、C2 watch loop、C3 execution / force-exit、C4 15:00 report publish、C5 17:30 next candidates。
+- 更新 `docs/data-contracts.md`：
+  - 新增 trading-day run state contract。
+  - 新增 intraday watch event contract。
+  - 新增 15:00 report publish contract。
+
+### Corrected Next-run Seed
+
+下一輪 coding 不應直接正式下單，也不應只跑 3-5 日 `daily-ops`。
+
+建議下一輪做 `Trading Day Autonomous Cycle v1` 第一刀：
+
+1. 新增 dry-run `simulate trading-day-cycle` 或等價 runner。
+2. 產出 `trading_day_run_state.json`，包含 stage transition、schedule policy、artifacts、blocked reasons、manual actions。
+3. 用 fixture 驗證 09:05/10:00 start、13:20 hard stop、15:00 report stage、17:30 next candidates stage。
+4. 建立 intraday watch loop 的最小 fixture contract：approved entry、rejected entry、exit trigger、no-action candidate。
+5. 所有 live execution、Telegram real send、Shioaji simulation side effects 繼續需要明確 gate。
+
+### Residual Risks
+
+- 這一輪只修正方向文件，尚未實作 `simulate trading-day-cycle`。
+- 目前 `ops-run` 裡有 strategy trigger 雛形，但它不是長時間 watch loop；後續不能誤認為 intraday loop 已完成。
+- GitHub report publish 需要另外確認 artifact 位置、private repo link 可見性與發送 gate。
+- 17:30 next-candidate builder 需要交易日 calendar / holiday handling，不能只用當天日期字串。

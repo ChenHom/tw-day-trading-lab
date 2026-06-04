@@ -375,6 +375,105 @@ P10 regression correction loop 必須把每日問題轉成可重跑 fixture，�
 - 每個 fixed case 必須有 closing test command。
 - P10 不得把 simulation result 納入 strategy expectancy；它只修正資料、候選、風控、broker lifecycle 或 reporting 問題。
 
+## Phase C Trading Day Run State Contract
+
+`Trading Day Autonomous Cycle v1` 必須以 trading-day run state 作為核心 artifact。它不是策略績效資料，而是作業循環的狀態、稽核與恢復邊界。
+
+必要欄位：
+
+| 欄位 | 說明 |
+|---|---|
+| `trading_day_run_id` | 單一交易日循環 id |
+| `trading_date` | 交易日 |
+| `calendar_status` | `trading_day` / `holiday` / `unknown` |
+| `start_policy` | `09:05` / `10:00` |
+| `hard_stop_time` | 固定 `13:20`，除非另有明確 policy |
+| `report_time` | 固定 `15:00` |
+| `next_candidate_time` | 固定 `17:30` |
+| `stage` | 目前 stage |
+| `stage_history[]` | stage transition、timestamp、reason |
+| `candidate_artifact` | 本交易日候選名單 path / checksum / source run id |
+| `position_state_artifact` | open positions / pending orders / callbacks 的 path / checksum |
+| `report_artifact` | 15:00 report path / checksum / GitHub link |
+| `next_candidate_artifact` | 17:30 next-day candidates path / checksum |
+| `blocked_reasons[]` | blocking condition |
+| `manual_actions[]` | operator 必須處理的行動 |
+| `side_effects[]` | login / place_order / cancel_order / publish_report / send_link 等摘要 |
+
+Stage enum：
+
+| stage | 說明 |
+|---|---|
+| `candidate_ready` | 候選名單已存在，可等待盤中啟動 |
+| `intraday_waiting` | 尚未到 09:05 / 10:00 |
+| `intraday_running` | 盤中候選監控與進出場檢查中 |
+| `force_exit` | 13:20 stop-new-entry / force-exit / cancel policy |
+| `close_buffer` | 等待收盤後資料沉澱 |
+| `reporting` | 15:00 report / publish / operator link |
+| `next_candidates` | 17:30 建立下一交易日候選名單 |
+| `complete` | 本交易日循環完成 |
+| `blocked` | 循環被 gate / error / unresolved manual action 阻擋 |
+
+規則：
+
+- run state 不得保存 API key、secret、CA password、可用 approval token。
+- 每次 stage transition 都必須可重跑與可稽核。
+- 同一 trading date 重跑時，必須使用 run id / lock / idempotency key 防止重複下單或重複發送 report link。
+- 13:20 之後不得產生新的 entry order intent。
+
+## Phase C Intraday Watch Event Contract
+
+盤中 watch loop 必須保存每次候選檢查的結果，讓日後能 replay 與 regression。
+
+必要欄位：
+
+| 欄位 | 說明 |
+|---|---|
+| `event_id` | 單次候選檢查事件 id |
+| `trading_day_run_id` | 來源交易日 run id |
+| `timestamp` | 檢查時間 |
+| `symbol` | 股票代號 |
+| `candidate_rank` | 候選排名 |
+| `market_data_artifact` | intraday bars / ticks source path / checksum |
+| `entry_signal` | entry strategy 結果 |
+| `exit_signal` | 若有 open position，exit strategy 結果 |
+| `risk_decision` | 風控後結果 |
+| `action` | `no_action` / `entry_approved` / `entry_rejected` / `exit_approved` / `exit_rejected` / `manual_review` |
+| `reason` | 動作或不動作原因 |
+| `order_intent_id` | 若產生 order intent，記錄 id |
+
+規則：
+
+- watch loop 只監控候選名單，不盤中掃全市場。
+- no-action 也要保存 reason，否則無法判斷策略沒有觸發還是資料沒有進來。
+- exit strategy 對 open position 的檢查優先於新 entry。
+- 任何 13:20 後的 entry signal 必須被標記為 rejected / `after_hard_stop`。
+
+## Phase C 15:00 Report Publish Contract
+
+15:00 報告是 operator 的主要回饋介面，不只是本地 Markdown。
+
+必要欄位：
+
+| 欄位 | 說明 |
+|---|---|
+| `trading_day_run_id` | 來源交易日 run id |
+| `trading_date` | 交易日 |
+| `report_path` | 本地 report artifact |
+| `github_url` | GitHub artifact link；dry-run 可為 null 並提供 would-send path |
+| `publish_status` | `dry_run` / `published` / `blocked` / `failed` |
+| `send_status` | operator link 發送狀態 |
+| `summary` | trades / skipped / blockers / P/L or simulation P/L |
+| `pros[]` | 當日做得好的地方 |
+| `cons[]` | 當日問題與缺點 |
+| `next_actions[]` | 隔日或後續修正事項 |
+
+規則：
+
+- GitHub publish 與 operator send 必須可 dry-run。
+- 真實發送必須有明確 gate 與 dedupe key。
+- simulation P/L 不得被寫成 strategy edge 證明。
+
 ## Persisted Strategy Samples
 
 TiDB `valid_samples` table 目前保存 classified strategy samples。雖然沿用 `valid_samples` 名稱，實際內容包含：
