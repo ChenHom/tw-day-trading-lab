@@ -11,32 +11,35 @@
 
 ## MVP 邊界
 
-第一階段只做：
+第一階段定位是 lab，不是正式 live bot。已完成的能力包含：
 
 - `candidate-engine`
 - `replay-harness`
 - `paper-ledger`
-- `shioaji simulation dry-run`
+- `shioaji simulation ops-run`
 - `daily report`
-- `Telegram summary dry-run`
-- TiDB metadata + Parquet raw data layout
+- `Telegram summary / gated alerts`
+- TiDB metadata + raw data cache
+- regression correction loop
+- live execution boundary design
 
 第一階段不做：
 
 - 真實自動下單
-- dashboard
 - 自動參數最佳化上線
 - 用 FinMind 做盤中即時進出場
 - 用 Shioaji `kbars` 盤中掃全市場
 
 ## Execution Boundary
 
-目前所有下單相關實作只允許使用 Shioaji simulation / fake SDK，用來完成開發與驗證。正式區登入、正式委託與自動下單不屬於本階段；任何真實 Shioaji smoke 都必須另加人工 gate。
+目前所有日常下單驗證只允許使用 Shioaji simulation / fake SDK。repo 內已有 live execution adapter boundary，但正式區登入、正式委託與自動下單仍預設 blocked；任何真實 Shioaji smoke 都必須另加人工 gate，且不得使用 `sj.Shioaji(simulation=False)` 做隨手測試。
 
 ## Quick Start
 
 ```bash
 python3 -m unittest discover -s tests
+python3 -m compileall -q src tests
+python3 -m tw_day_trading_lab.cli db migrate --schema-dir sql
 python3 -m tw_day_trading_lab.cli candidates build \
   --date 2026-05-28 \
   --input examples/candidates.sample.json \
@@ -99,6 +102,12 @@ python3 -m tw_day_trading_lab.cli notify telegram \
   --date 2026-05-28 \
   --report reports/2026-05-28-close.md \
   --dry-run
+python3 -m tw_day_trading_lab.cli simulate ops-run \
+  --date 2026-06-04 \
+  --candidates-input reports/2026-06-04-candidates.json \
+  --allow-outside-session
+python3 -m tw_day_trading_lab.cli simulate regression-import \
+  --manifest reports/2026-06-04-ops/ops_run_manifest.json
 ```
 
 ### 一鍵執行當沖模擬 (Simplified Daily Ops Run)
@@ -125,15 +134,21 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli candidates build --date 2026-05
 src/tw_day_trading_lab/
   candidate_engine.py   # 候選排序與 next_day_actionable 初版規則
   candidate_builder.py  # P4 raw JSONL -> candidate input / ranked candidates
+  cost.py               # 台股當沖成本與 tick size 滑價模型
   ledger.py             # paper / simulation idempotency 與部位生命週期骨架
+  live.py               # live execution adapter boundary / approval token gate
+  market_regime.py      # 0050 proxy 大盤環境過濾
+  performance.py        # rolling expectancy / drawdown feedback
   reports.py            # Markdown / HTML 報告與 daily close report
   replay.py             # P5 valid-only replay expectancy / R metrics
   simulation.py         # P6 Shioaji simulation dry-run adapter
+  strategy.py           # intraday signal / VWAP breakout strategy components
   storage.py            # repository ports + TiDB/SQLite adapters
   finmind_ingestion.py  # P3 FinMind fetch ledger + raw cache ingestion
   cli.py                # MVP CLI
 sql/
   001_init.sql          # TiDB schema
+  002_schema_version.sql # migration version tracking
 docs/
   rebuild-baseline.md   # 從舊專案整理出的重建基線
   data-contracts.md     # schema / sample contract
@@ -166,9 +181,10 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 
 ## Current Implementation Status
 
-- P0-P7 已完成。
-- 剩餘 phase 固定為 P8-P11：Simulation Ops Go-live、Ops Reports / Alerts、Regression Correction Loop、Live Execution Design。
-- P8-P11 已完成 grill-me review 與全 phase re-check，最可能導致專案失敗的點已寫入 `docs/development-work.md` 與 `docs/mvp-roadmap.md`。
+- P0-P11 已完成。
+- Phase B 已完成：成本 / 滑價、風控與出場、微結構 gate、回測方法、績效回饋、策略 edge redesign。
+- Post-market hardening Sprint 3-A/B/C 已完成：ADV-20d / 張數流動性、ops-run git / lock pre-flight、0050 market regime filter。
+- Sprint 4-A/B/C 已完成：Telegram 真實發送 gate、live approval HMAC token、TiDB migration strategy。
 - Report Loop / Notification hardening 已完成：`report close` 可聚合 candidate / replay / simulation，列出逐筆 `needs_review` reason，並輸出專用 Telegram summary；真實發送仍維持 dry-run gate。
 - Execution Sync MVP 已完成：dry-run simulation 可保存 broker trades / open positions 到 execution sync store，restart-sync 可重建 ledger open state 並比對 broker / ledger 是否一致。
 - Shioaji callback normalization MVP 已完成：可將 callback payload 標準化為 execution callback event，寫入 execution sync store，並透過 restart-sync 暴露 broker / ledger mismatch。
@@ -189,36 +205,46 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 - P6 主線可收斂成四段：P6A 本地 simulation execution chain、P6B callback / restart-sync hardening、P6C gated login + callback registration、P6D gated simulation order + cancel smoke，四段皆已完成。
 - P7 Production Readiness Gate 已完成：`simulate production-readiness` 會讀 execution sync store，檢查正式 live gate、交易時段、pending orders、partial fills、callback ordering、cancel retry plan，並輸出 JSON / Markdown readiness report。未提供明確人工 approval token 時，live execution 一律 blocked。
 - P7 smoke 已用 P6 真實 simulation store 驗證：6 checks 中 5 ok、1 blocked；唯一 blocker 是 `formal_live_gate`，pending orders / partial fills / ordering issues 皆為 0。
-- 下一步不是繼續拆 P7，也不是直接做正式下單；下一步是 P8 daily simulation ops go-live。
+- P8 Simulation Ops Go-live 已完成：`simulate ops-run` 可產生 input plan、simulation output、callback store、restart-sync、readiness report、alerts 與 `ops_run_manifest`。
+- P9-P11 infrastructure 已完成：alerts、regression import/run、live adapter boundary。
+- 最新安全維護：`.pfx` / `.p12` 已加入 `.gitignore`，`Sinopac.pfx` 已從可達 Git history 移除。
+- 下一步不是再做 P8，也不是推正式下單；下一步是 `Daily Simulation Ops Automation v1`，把 ingestion -> candidate build -> ops-run -> report/alerts -> regression-import 串成每日可重跑作業鏈。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。
 - P6 已支援 `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition` dry-run，simulation sample 與 replay expectancy 分開，重送同一 intent 不會重複開倉。
 
-## Remaining Phase Map
+## Completed Phase Map
 
-剩餘 4 個 phase，必須照順序做，不能把 simulation go-live、告警、回歸修正與正式下單設計混成一包。
-
-| Phase | 目標 | 完成條件 |
+| Phase | 目標 | 狀態 |
 |---|---|---|
-| P8 Simulation Ops Go-live | 把 P6/P7 的 gated simulation chain 變成每日可執行的 simulation ops | 每日 run 可從 manifest replay / audit / explain |
-| P9 Ops Reports / Alerts | 把 candidate / replay / simulation / restart-sync / readiness 合成 operator-ready report 與 gated alert | alert 有 severity、dedupe、owner、manual action、send gate |
-| P10 Regression Correction Loop | 把每日 ops 問題轉成可重跑 regression fixture | 每個 case 有 source run id、raw payload、minimal fixture、expected behavior、closing test command |
-| P11 Live Execution Design | 只在 simulation ops 穩定後設計正式區邊界 | live adapter 自行硬擋 approval / readiness / session / risk limits |
+| P8 Simulation Ops Go-live | 把 P6/P7 的 gated simulation chain 變成每日可執行的 simulation ops | 已完成 |
+| P9 Ops Reports / Alerts | 把 candidate / replay / simulation / restart-sync / readiness 合成 operator-ready report 與 gated alert | 已完成 |
+| P10 Regression Correction Loop | 把每日 ops 問題轉成可重跑 regression fixture | 已完成 |
+| P11 Live Execution Design | 只在 simulation ops 穩定後設計正式區邊界 | 已完成 |
+| Phase B | 修正成本、風控、微結構、回測、績效回饋與策略 edge 六大問題 | 已完成 |
+| Sprint 3-A/B/C | 流動性、ops pre-flight、market regime hardening | 已完成 |
+| Sprint 4-A/B/C | Telegram gate、HMAC approval、TiDB migration | 已完成 |
 
-## Must-fix Before Next Coding
+## Next Development Priority
 
-P8 開始實作前，先補三個硬契約：
+下一個 coding phase 是 `Daily Simulation Ops Automation v1`。
 
-- `plan_builder` contract：明確記錄 candidate source、risk decision reason、limit price source、quantity source、blocked reason。
-- price / contract / session gates：送 simulation order 前檢查 limit up/down、reference price、contract loaded、regular session、trading day。
-- `ops_run_manifest`：保存 run id、artifact path、input/output checksum、side effects summary、command、cwd、commit hash。
+先做文件同步，再做最小可重跑作業鏈：
 
-P8-P11 的核心邊界固定不變：simulation / readiness 只能證明執行鏈可控，不能當成 strategy edge 或獲利證明。
+- 新增每日 runner 或 Make target，例如 `make daily-ops DATE=2026-06-04`。
+- 串接 FinMind ingestion、0050 regime 檢查、candidate build、`simulate ops-run`、close report / alerts、`regression-import`。
+- 產出單一 daily bundle，包含 manifest、input/output artifact、readiness、alerts、close report、regression cases。
+- 檢查必要 artifact 是否存在、checksum 是否齊全、alerts 是否帶 owner / manual action / send gate。
+- `simulation-on` 與任何真實 Shioaji side effect 仍必須明確 gate；正式 live order 仍禁止。
+- 完成後再跑 3-5 個交易日穩定性觀察，統計 blockers、partial fills、ordering issues、alert noise 與 candidate quality 問題。
+
+核心邊界固定不變：simulation / readiness 只能證明執行鏈可控，不能當成 strategy edge 或獲利證明。
 
 ## Documentation Map
 
-- `docs/development-work.md`：開發歷程、驗證命令、P8-P11 grill-me review、全 phase failure review。
+- `docs/development-work.md`：開發歷程、驗證命令、P8-P11 / Phase B / hardening sprint close-out。
 - `docs/mvp-roadmap.md`：目前 phase 狀態與後續 phase 驗收條件。
 - `docs/data-contracts.md`：candidate / replay / simulation / execution sync / readiness / ops manifest 契約。
 - `docs/rebuild-baseline.md`：舊專案重建基線。
+- `docs/six-problems-review-and-ops.md`：六大問題修正與自動化營運共識。
 - `docs/old-log-importer.md`、`docs/tidb-integration.md`、`docs/finmind-ingestion.md`、`docs/candidate-engine-v1.md`：各子系統說明。

@@ -29,53 +29,54 @@ If a task appears to require live execution, stop and design the gate/SOP first.
 
 ## Current Status
 
-- P0-P7 are complete.
-- Report Loop / Notification hardening is complete, with Telegram still gated / dry-run by default.
+- P0-P11 are complete.
+- Phase B is complete: realistic cost / slippage, risk and exit engine, market microstructure gates, backtest methodology upgrades, rolling performance feedback, and strategy edge redesign.
+- Sprint 3-A/B/C are complete: ADV-20d liquidity filter, ops-run git / lock pre-flight checks, and 0050 market regime filter.
+- Sprint 4-A/B/C are complete: Telegram send gate, HMAC live approval token, and TiDB migration strategy.
+- Report Loop / Notification hardening is complete, with Telegram still gated by environment and dry-run controls.
 - P6 is complete as:
   - P6A local simulation execution chain.
   - P6B callback / restart-sync hardening.
   - P6C gated simulation login + callback registration.
   - P6D gated simulation order + cancel smoke.
-- P7 Production Readiness Gate is complete as a report contract, not a live broker enforcement boundary.
-- Remaining work is P8-P11:
-  - P8 Simulation Ops Go-live.
-  - P9 Ops Reports / Alerts.
-  - P10 Regression Correction Loop.
-  - P11 Live Execution Design.
+- P7 Production Readiness Gate is complete as a report contract.
+- P8 Simulation Ops Go-live is complete with `simulate ops-run`, `ops_run_manifest`, pre-order gates, input plan, readiness, alerts, and regression traceability.
+- P9-P11 infrastructure is complete: operator alerts, regression import/run, and live broker adapter boundary.
+- `.pfx` / `.p12` files are ignored, and `Sinopac.pfx` has been removed from reachable Git history.
 
 ## Next Development Priority
 
-The next coding phase is P8. Start with the smallest auditable foundation before expanding any daily runner:
+The next coding phase is `Daily Simulation Ops Automation v1`.
 
-1. `ops_run_manifest`
-   - run id
-   - trading date
-   - command
-   - cwd
-   - git commit
-   - input/output artifact paths
+Do not go back to P8 as if it were unimplemented. P8-P11 already exist. The next deliverable is to turn the existing commands into a repeatable daily operating chain.
+
+Recommended first implementation:
+
+1. Documentation baseline sync
+   - README current status.
+   - AGENTS next priority.
+   - `docs/development-work.md` close-out / next-run seed.
+
+2. Daily runner / Make target
+   - Example target: `make daily-ops DATE=2026-06-04`.
+   - Run FinMind ingestion.
+   - Ensure 0050 market regime input is present.
+   - Build candidates.
+   - Run `simulate ops-run`.
+   - Generate close report / alerts.
+   - Run `simulate regression-import`.
+
+3. Daily bundle audit
+   - one run id
+   - input/output artifacts
    - checksums
-   - side effects summary
-   - blocked reasons
-   - manual actions
+   - readiness report
+   - alerts with owner / manual action / send gate
+   - regression cases when alerts exist
 
-2. Input plan builder contract
-   - candidate source
-   - risk decision reason
-   - limit price source
-   - quantity source
-   - blocked reason
+The phase is done when a daily simulation ops run can be started from one command, audited from one bundle, and rerun without guessing artifact paths.
 
-3. Pre-order gates
-   - trading day
-   - regular session
-   - contract loaded
-   - reference price
-   - limit up / limit down
-   - quantity cap
-   - simulation-only broker boundary
-
-P8 is not done when an order can be sent. P8 is done when a daily simulation ops run can be replayed, audited, and explained from manifest alone.
+After this, collect 3-5 trading days of stability evidence before considering any expansion toward live execution.
 
 ## Important Docs
 
@@ -97,7 +98,7 @@ When phase status changes, update both `docs/development-work.md` and `docs/mvp-
 - Do not import Shioaji SDK, TiDB drivers, network clients, or environment loading into core business logic unless the existing boundary already does that.
 - Do not introduce a DI container unless the dependency graph actually needs one.
 - Keep replay, simulation, readiness, and live design outputs separate.
-- If adding artifacts for P8-P10, include run id and checksums so P10 regression can trace them.
+- If adding daily ops artifacts, include run id and checksums so regression cases can trace them.
 
 ## Testing / Verification
 
@@ -128,6 +129,14 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate production-readiness \
   --output reports/2026-06-02-p7-production-readiness.json \
   --report-output reports/2026-06-02-p7-production-readiness.md \
   --current-time 12:30
+
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate ops-run \
+  --date 2026-06-04 \
+  --candidates-input reports/2026-06-04-candidates.json \
+  --allow-outside-session
+
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate regression-import \
+  --manifest reports/2026-06-04-ops/ops_run_manifest.json
 ```
 
 Do not run gated real Shioaji login/order/cancel smoke unless the task explicitly calls for it and the gate is clear.

@@ -1,7 +1,7 @@
 # Development Work
 
 日期：2026-05-28  
-狀態：P0-P8 已完成；P6 可收斂為 P6A 本地 simulation execution chain、P6B callback / restart-sync hardening、P6C gated login + callback registration、P6D gated simulation order + cancel smoke，四段皆已完成；P7 Production Readiness Gate 已完成；P8 Simulation Ops Go-live 已完成。剩餘 P9-P11：ops reports / alerts、regression correction loop、live execution design。
+狀態：P0-P11 已完成；Phase B 已完成；Post-market hardening Sprint 3-A/B/C 與 Sprint 4-A/B/C 已完成。最新下一步是 `Daily Simulation Ops Automation v1`：把 ingestion -> candidate build -> ops-run -> report / alerts -> regression-import 串成每日可重跑作業鏈，不是回頭重做 P8，也不是推正式下單。
 預設分支：`master`
 
 ## Phase 對照
@@ -1438,3 +1438,34 @@ Grill-me close-out verdict：
 
 - 總測試案例增加至 **138 tests**，執行 `PYTHONPATH=src python3 -m unittest discover -s tests` 與 `compileall`，全數無警告、OK 通過。
 - 執行 `git diff --check` 校正 trailing whitespace，結果完全乾淨。
+
+## 13. Documentation Baseline Sync - 2026-06-04
+
+本輪目標：修正 `README.md` 與 `AGENTS.md` 仍停留在「下一步 P8」的舊狀態，避免後續開發被錯誤導回已完成 phase。
+
+### 更新內容
+
+- `README.md`：
+  - 將 Current Implementation Status 更新為 P0-P11、Phase B、Sprint 3-A/B/C、Sprint 4-A/B/C 皆已完成。
+  - 補上 `.pfx` / `.p12` ignore 與 `Sinopac.pfx` history cleanup 已完成。
+  - 將 Remaining Phase Map 改為 Completed Phase Map。
+  - 將下一步改為 `Daily Simulation Ops Automation v1`。
+  - 補上 `db migrate`、`simulate ops-run`、`simulate regression-import` 等目前實際可用命令。
+- `AGENTS.md`：
+  - 將 agent 的 Current Status 更新到 P8-P11 / Phase B / Sprint 4-C 後狀態。
+  - 明確警告不要把 P8 當作未完成重新實作。
+  - 將下一輪 priority 改為 one-command daily ops runner + daily bundle audit + regression import。
+
+### Next-run Seed
+
+下一輪 coding 建議做 `Daily Simulation Ops Automation v1`：
+
+1. 新增 `make daily-ops DATE=YYYY-MM-DD` 或等價 runner。
+2. 串接 FinMind ingestion、0050 market regime input、candidate build、`simulate ops-run`、close report / alerts、`simulate regression-import`。
+3. 產出單一 daily bundle，讓 manifest、readiness、alerts、report、regression cases 可由同一 run id 追蹤。
+4. 保持正式 live order blocked；`simulation-on` 與真實 Shioaji side effect 仍需明確 gate。
+
+### Residual Risks
+
+- README / AGENTS 已同步，但 `MEMORY.md` 仍有部分長期摘要停在較舊的 phase 認知，後續若需要可另開 memory promotion / cleanup。
+- Daily ops runner 尚未實作；目前只是文件基線修正。
