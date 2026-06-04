@@ -1780,3 +1780,43 @@ Next-run seed：
 2. 接 API-backed intraday market-data adapter，但保持 `watch_events.json` contract 不變。
 3. 另開 gate 實作真實 GitHub publish / Telegram operator link send。
 4. 正式 live order 繼續 blocked；不得把 smoke OK 解讀成策略有 edge。
+
+## 2026-06-04 Simulate Online-Test Preparation MVP
+
+已把完整 dry-run trading-day cycle 往 simulate 上線測前的穩定作業鏈推進。
+
+新增 / 更新 CLI：
+
+```bash
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle \
+  --date 2026-06-04 \
+  --candidates-input reports/2026-06-04-candidates.json \
+  --current-time 09:20
+
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle-smoke \
+  --dates 2026-06-04,2026-06-05,2026-06-06 \
+  --cache-dir data/raw \
+  --candidates-input-pattern 'reports/{date}-candidates.json' \
+  --run-all-stages
+```
+
+目前行為：
+
+- `simulate trading-day-cycle` 若未提供 `--intraday-bars-input`，會依候選股 symbol 從 raw cache 讀取 `data/raw/finmind/TaiwanStockPriceMinute/{date}/{symbol}.jsonl`。
+- raw-cache adapter 仍是 candidate-scoped，不盤中掃全市場，並維持 `watch_events.json` contract 不變。
+- `trading_day_run_state.json` 新增 `intraday_data_adapter`，記錄 mode、dataset、candidate-scoped source paths 與 rows。
+- 新增 `simulate trading-day-cycle-smoke`，可連跑多個日期並輸出 `multi_day_smoke_summary.json` / `multi_day_smoke.md`。
+- multi-day smoke 對有 API/raw-cache trading rows 的日期檢查完整 artifact chain；取不到 trading rows 的日期標為 `skipped_non_trading_day`，不查額外假日日曆。
+- Shioaji simulation side effects、GitHub publish、Telegram send 仍維持 disabled / dry-run gate。
+
+新增測試：
+
+- `test_intraday_watch_loop_can_use_candidate_scoped_raw_cache`
+- `test_trading_day_cycle_smoke_summarizes_ok_and_non_trading_days`
+
+Next-run seed：
+
+1. 實際跑 3-5 個 raw-cache / fixture-backed smoke days，收集 stability summary。
+2. 另開 explicit gate 接 Shioaji simulation side effects；未開 gate 時必須保持 disabled。
+3. 另開 explicit gate 接 GitHub publish / Telegram operator link send；未開 gate 時必須保持 dry-run only。
+4. 正式 live order 繼續 blocked；smoke OK 不得解讀成策略 edge。

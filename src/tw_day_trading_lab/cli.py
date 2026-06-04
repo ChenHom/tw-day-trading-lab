@@ -1087,6 +1087,58 @@ def _load_intraday_bars_by_symbol(path: Path | None) -> dict[str, list[dict[str,
     return grouped
 
 
+def _normalize_intraday_bar(row: dict[str, object], symbol: str) -> dict[str, object]:
+    """Normalize raw/cache intraday rows into the strategy bar shape."""
+    raw_time = row.get("time") or row.get("Time") or row.get("datetime") or row.get("date")
+    time_value = str(raw_time or "")
+    if " " in time_value:
+        time_value = time_value.split(" ", 1)[1]
+    if len(time_value) >= 5:
+        time_value = time_value[:5]
+    return {
+        "symbol": symbol,
+        "time": time_value,
+        "open": _parse_optional_float(row.get("open") or row.get("Open")),
+        "high": _parse_optional_float(row.get("high") or row.get("max") or row.get("High")),
+        "low": _parse_optional_float(row.get("low") or row.get("min") or row.get("Low")),
+        "close": _parse_optional_float(row.get("close") or row.get("Close")),
+        "volume": _parse_optional_float(row.get("volume") or row.get("Trading_Volume") or row.get("Volume")) or 0,
+        "source": "raw_cache",
+    }
+
+
+def load_intraday_bars_for_cycle(
+    *,
+    trading_date: str,
+    cache_dir: Path,
+    candidates: list[CandidateScore],
+    intraday_bars_input: Path | None,
+    intraday_cache_dataset: str = "TaiwanStockPriceMinute",
+) -> tuple[dict[str, list[dict[str, object]]], dict[str, object]]:
+    """Load intraday bars from explicit fixture input or candidate-scoped raw cache."""
+    if intraday_bars_input is not None:
+        return _load_intraday_bars_by_symbol(intraday_bars_input), {
+            "mode": "explicit_input",
+            "dataset": None,
+            "sources": [{"path": str(intraday_bars_input), "exists": intraday_bars_input.exists()}],
+        }
+
+    grouped: dict[str, list[dict[str, object]]] = {}
+    sources: list[dict[str, object]] = []
+    for candidate in candidates:
+        symbol = candidate.symbol
+        path = cache_dir / "finmind" / intraday_cache_dataset / trading_date / f"{symbol}.jsonl"
+        rows = _read_rows_from_json_or_jsonl(path)
+        sources.append({"symbol": symbol, "path": str(path), "exists": path.exists(), "rows": len(rows)})
+        if rows:
+            grouped[symbol] = [_normalize_intraday_bar(row, symbol) for row in rows]
+    return grouped, {
+        "mode": "raw_cache",
+        "dataset": intraday_cache_dataset,
+        "sources": sources,
+    }
+
+
 def _load_open_positions_by_symbol(path: Path | None) -> dict[str, dict[str, object]]:
     """Load dry-run position state for exit-first watch-loop evaluation."""
     if path is None or not path.exists():
@@ -1757,6 +1809,13 @@ def build_trading_day_cycle_state(args: argparse.Namespace) -> dict[str, object]
                 "no_action": 0,
             },
         },
+        "intraday_data_adapter": {
+            "mode": "explicit_input" if args.intraday_bars_input else "raw_cache",
+            "dataset": args.intraday_cache_dataset,
+            "sources": [],
+            "candidate_scoped": True,
+            "contract": "watch_events.json",
+        },
         "order_intents_artifact": {
             "path": str(order_intents_artifact),
             "exists": order_intents_artifact.exists(),
@@ -1823,16 +1882,26 @@ def cmd_simulate_trading_day_cycle(args: argparse.Namespace) -> None:
 
     if (
         state["calendar_status"] == "trading_day"
-        and intraday_bars_input is not None
         and candidates_input is not None
         and candidates_input.exists()
     ):
         candidates = load_candidate_scores(candidates_input)
+        bars_by_symbol, adapter_summary = load_intraday_bars_for_cycle(
+            trading_date=str(state["trading_date"]),
+            cache_dir=Path(args.cache_dir),
+            candidates=candidates,
+            intraday_bars_input=intraday_bars_input,
+            intraday_cache_dataset=args.intraday_cache_dataset,
+        )
+        state["intraday_data_adapter"] = adapter_summary | {
+            "candidate_scoped": True,
+            "contract": "watch_events.json",
+        }
         watch_events = build_intraday_watch_events(
             trading_day_run_id=str(state["trading_day_run_id"]),
             trading_date=str(state["trading_date"]),
             candidates=candidates,
-            bars_by_symbol=_load_intraday_bars_by_symbol(intraday_bars_input),
+            bars_by_symbol=bars_by_symbol,
             positions_by_symbol={
                 str(item.get("symbol") or item.get("stock_id") or ""): item
                 for item in source_position_state.get("open_positions", [])
@@ -1859,7 +1928,7 @@ def cmd_simulate_trading_day_cycle(args: argparse.Namespace) -> None:
             "summary": summary,
         }
     elif state["calendar_status"] == "trading_day":
-        state["manual_actions"].append("Intraday watch loop skipped; provide --intraday-bars-input and --candidates-input.")
+        state["manual_actions"].append("Intraday watch loop skipped; provide --candidates-input.")
 
     if state["calendar_status"] == "trading_day":
         if not candidates and candidates_input is not None and candidates_input.exists():
@@ -1943,6 +2012,152 @@ def cmd_simulate_trading_day_cycle(args: argparse.Namespace) -> None:
     print(f"Next candidates: {state['next_candidate_artifact']['path']}")
     print(f"End-to-end smoke: {state['end_to_end_smoke_artifact']['path']}")
     print(f"State: {state_output}")
+
+
+def _format_date_pattern(pattern: str, trading_date: str) -> Path:
+    return Path(pattern.format(date=trading_date, trading_date=trading_date))
+
+
+def build_trading_day_cycle_smoke_markdown(summary: dict[str, object]) -> str:
+    """Render a compact operator-readable multi-day smoke report."""
+    lines = [
+        f"# Trading Day Cycle Stability Smoke {summary['run_id']}",
+        "",
+        "## Summary",
+        "",
+        f"- dates: {summary['summary']['total_dates']}",
+        f"- ok: {summary['summary']['ok']}",
+        f"- skipped non-trading: {summary['summary']['skipped_non_trading_day']}",
+        f"- blocked: {summary['summary']['blocked']}",
+        f"- side effects: `{summary['side_effects']}`",
+        "",
+        "## Days",
+        "",
+    ]
+    for day in summary["days"]:
+        lines.append(
+            f"- {day['date']}: `{day['status']}` / calendar `{day['calendar_status']}` / "
+            f"smoke `{day.get('end_to_end_smoke_status')}`"
+        )
+    lines.extend(
+        [
+            "",
+            "## Gate Notes",
+            "",
+            "- This smoke only proves artifact-chain stability.",
+            "- Shioaji simulation login/order/cancel side effects remain disabled.",
+            "- GitHub publish and Telegram operator-link send remain dry-run only.",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def cmd_simulate_trading_day_cycle_smoke(args: argparse.Namespace) -> None:
+    """Run a multi-day stability smoke over the dry-run trading-day cycle."""
+    from datetime import datetime
+
+    dates = [item.strip() for item in str(args.dates).split(",") if item.strip()]
+    if not dates:
+        raise ValueError("--dates must include at least one YYYY-MM-DD value")
+
+    output_dir = Path(args.output_dir) if args.output_dir else Path("reports") / "trading-day-cycle-smoke"
+    summary_output = Path(args.summary_output) if args.summary_output else output_dir / "multi_day_smoke_summary.json"
+    report_output = Path(args.report_output) if args.report_output else output_dir / "multi_day_smoke.md"
+    run_id = args.run_id or f"tdc-smoke-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    days: list[dict[str, object]] = []
+
+    for trading_date in dates:
+        day_output = output_dir / trading_date
+        candidates_input = _format_date_pattern(args.candidates_input_pattern, trading_date)
+        state_output = day_output / "trading_day_run_state.json"
+        cycle_args = argparse.Namespace(
+            date=trading_date,
+            cache_dir=args.cache_dir,
+            trading_data_input=None,
+            market_proxy_stock_id=args.market_proxy_stock_id,
+            candidates_input=str(candidates_input) if candidates_input.exists() else None,
+            intraday_bars_input=None,
+            intraday_cache_dataset=args.intraday_cache_dataset,
+            position_state_input=args.position_state_input,
+            position_state_output=None,
+            output_dir=str(day_output),
+            state_output=str(state_output),
+            watch_events_output=None,
+            order_intents_output=None,
+            report_output=None,
+            next_candidates_output=None,
+            end_to_end_smoke_output=None,
+            run_id=f"{run_id}:{trading_date}",
+            start_policy=args.start_policy,
+            hard_stop_time=args.hard_stop_time,
+            close_buffer_end_time=args.close_buffer_end_time,
+            report_time=args.report_time,
+            next_candidate_time=args.next_candidate_time,
+            current_time=args.current_time,
+            max_retries=args.max_retries,
+            run_all_stages=args.run_all_stages,
+            strategy_observation_minutes=args.strategy_observation_minutes,
+            strategy_volume_surge_ratio=args.strategy_volume_surge_ratio,
+            max_open_positions=args.max_open_positions,
+            daily_risk_stop_r=args.daily_risk_stop_r,
+        )
+        cmd_simulate_trading_day_cycle(cycle_args)
+        state = json.loads(state_output.read_text(encoding="utf-8"))
+        smoke_status = None
+        smoke_path = state.get("end_to_end_smoke_artifact", {}).get("path") if isinstance(state.get("end_to_end_smoke_artifact"), dict) else None
+        if smoke_path and Path(str(smoke_path)).exists():
+            smoke_payload = json.loads(Path(str(smoke_path)).read_text(encoding="utf-8"))
+            smoke_status = smoke_payload.get("status")
+
+        calendar_status = str(state.get("calendar_status"))
+        if calendar_status == "non_trading_day":
+            status = "skipped_non_trading_day"
+        elif smoke_status == "ok":
+            status = "ok"
+        else:
+            status = "blocked"
+        days.append(
+            {
+                "date": trading_date,
+                "status": status,
+                "calendar_status": calendar_status,
+                "stage": state.get("stage"),
+                "state_path": str(state_output),
+                "candidate_path": str(candidates_input) if candidates_input.exists() else None,
+                "end_to_end_smoke_status": smoke_status,
+                "manual_actions": state.get("manual_actions", []),
+                "blocked_reasons": state.get("blocked_reasons", []),
+            }
+        )
+
+    summary = {
+        "run_id": run_id,
+        "mode": "dry_run",
+        "dates": dates,
+        "days": days,
+        "summary": {
+            "total_dates": len(days),
+            "ok": sum(1 for day in days if day["status"] == "ok"),
+            "skipped_non_trading_day": sum(1 for day in days if day["status"] == "skipped_non_trading_day"),
+            "blocked": sum(1 for day in days if day["status"] == "blocked"),
+        },
+        "gates": {
+            "shioaji_simulation_side_effects": "disabled",
+            "github_publish": "dry_run_only",
+            "telegram_send": "dry_run_only",
+        },
+        "side_effects": [],
+    }
+    write_json(summary_output, summary)
+    write_text(report_output, build_trading_day_cycle_smoke_markdown(summary))
+    print("Trading day cycle multi-day smoke completed.")
+    print(f"Run id: {run_id}")
+    print(f"Dates: {len(days)}")
+    print(f"OK: {summary['summary']['ok']}")
+    print(f"Skipped non-trading: {summary['summary']['skipped_non_trading_day']}")
+    print(f"Blocked: {summary['summary']['blocked']}")
+    print(f"Summary: {summary_output}")
+    print(f"Report: {report_output}")
 
 
 def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
@@ -3035,6 +3250,7 @@ def build_parser() -> argparse.ArgumentParser:
     trading_day_cycle.add_argument("--market-proxy-stock-id", default="0050")
     trading_day_cycle.add_argument("--candidates-input")
     trading_day_cycle.add_argument("--intraday-bars-input")
+    trading_day_cycle.add_argument("--intraday-cache-dataset", default="TaiwanStockPriceMinute")
     trading_day_cycle.add_argument("--position-state-input")
     trading_day_cycle.add_argument("--position-state-output")
     trading_day_cycle.add_argument("--output-dir")
@@ -3058,6 +3274,31 @@ def build_parser() -> argparse.ArgumentParser:
     trading_day_cycle.add_argument("--max-open-positions", type=int, default=3)
     trading_day_cycle.add_argument("--daily-risk-stop-r", type=float, default=-3.0)
     trading_day_cycle.set_defaults(func=cmd_simulate_trading_day_cycle)
+
+    trading_day_cycle_smoke = simulate_sub.add_parser("trading-day-cycle-smoke")
+    trading_day_cycle_smoke.add_argument("--dates", required=True, help="Comma-separated YYYY-MM-DD list.")
+    trading_day_cycle_smoke.add_argument("--cache-dir", default="data/raw")
+    trading_day_cycle_smoke.add_argument("--market-proxy-stock-id", default="0050")
+    trading_day_cycle_smoke.add_argument("--candidates-input-pattern", default="reports/{date}-candidates.json")
+    trading_day_cycle_smoke.add_argument("--intraday-cache-dataset", default="TaiwanStockPriceMinute")
+    trading_day_cycle_smoke.add_argument("--position-state-input")
+    trading_day_cycle_smoke.add_argument("--output-dir")
+    trading_day_cycle_smoke.add_argument("--summary-output")
+    trading_day_cycle_smoke.add_argument("--report-output")
+    trading_day_cycle_smoke.add_argument("--run-id")
+    trading_day_cycle_smoke.add_argument("--start-policy", choices=("09:05", "10:00"), default="09:05")
+    trading_day_cycle_smoke.add_argument("--hard-stop-time", default="13:20")
+    trading_day_cycle_smoke.add_argument("--close-buffer-end-time", default="14:00")
+    trading_day_cycle_smoke.add_argument("--report-time", default="15:00")
+    trading_day_cycle_smoke.add_argument("--next-candidate-time", default="17:30")
+    trading_day_cycle_smoke.add_argument("--current-time", default="09:20")
+    trading_day_cycle_smoke.add_argument("--max-retries", type=int, default=2)
+    trading_day_cycle_smoke.add_argument("--run-all-stages", action="store_true")
+    trading_day_cycle_smoke.add_argument("--strategy-observation-minutes", type=int, default=15)
+    trading_day_cycle_smoke.add_argument("--strategy-volume-surge-ratio", type=float, default=1.5)
+    trading_day_cycle_smoke.add_argument("--max-open-positions", type=int, default=3)
+    trading_day_cycle_smoke.add_argument("--daily-risk-stop-r", type=float, default=-3.0)
+    trading_day_cycle_smoke.set_defaults(func=cmd_simulate_trading_day_cycle_smoke)
 
     restart_sync = simulate_sub.add_parser("restart-sync")
     restart_sync.add_argument("--store", required=True)

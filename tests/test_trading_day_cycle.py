@@ -4,7 +4,13 @@ import unittest
 from argparse import Namespace
 from pathlib import Path
 
-from tw_day_trading_lab.cli import cmd_simulate_trading_day_cycle, resolve_trading_day_cycle_stage, write_json, write_text
+from tw_day_trading_lab.cli import (
+    cmd_simulate_trading_day_cycle,
+    cmd_simulate_trading_day_cycle_smoke,
+    resolve_trading_day_cycle_stage,
+    write_json,
+    write_text,
+)
 
 
 def trading_day_cycle_args(root: Path, **overrides: object) -> Namespace:
@@ -15,6 +21,7 @@ def trading_day_cycle_args(root: Path, **overrides: object) -> Namespace:
         "market_proxy_stock_id": "0050",
         "candidates_input": None,
         "intraday_bars_input": None,
+        "intraday_cache_dataset": "TaiwanStockPriceMinute",
         "position_state_input": None,
         "position_state_output": None,
         "output_dir": str(root / "cycle"),
@@ -33,6 +40,35 @@ def trading_day_cycle_args(root: Path, **overrides: object) -> Namespace:
         "current_time": "09:05",
         "max_retries": 2,
         "run_all_stages": False,
+        "strategy_observation_minutes": 15,
+        "strategy_volume_surge_ratio": 1.5,
+        "max_open_positions": 3,
+        "daily_risk_stop_r": -3.0,
+    }
+    args.update(overrides)
+    return Namespace(**args)
+
+
+def trading_day_cycle_smoke_args(root: Path, **overrides: object) -> Namespace:
+    args = {
+        "dates": "2026-06-04,2026-06-05",
+        "cache_dir": str(root / "raw"),
+        "market_proxy_stock_id": "0050",
+        "candidates_input_pattern": str(root / "{date}-candidates.json"),
+        "intraday_cache_dataset": "TaiwanStockPriceMinute",
+        "position_state_input": None,
+        "output_dir": str(root / "smoke"),
+        "summary_output": None,
+        "report_output": None,
+        "run_id": "fixture-smoke",
+        "start_policy": "09:05",
+        "hard_stop_time": "13:20",
+        "close_buffer_end_time": "14:00",
+        "report_time": "15:00",
+        "next_candidate_time": "17:30",
+        "current_time": "09:20",
+        "max_retries": 2,
+        "run_all_stages": True,
         "strategy_observation_minutes": 15,
         "strategy_volume_surge_ratio": 1.5,
         "max_open_positions": 3,
@@ -82,6 +118,36 @@ class TradingDayCycleTest(unittest.TestCase):
         ]
         bars.append({"symbol": symbol, "time": "09:15", "open": 100, "high": 103, "low": 100, "close": 102, "volume": 200})
         return bars
+
+    def write_intraday_cache(self, root: Path, trading_date: str, symbol: str) -> Path:
+        path = root / "raw" / "finmind" / "TaiwanStockPriceMinute" / trading_date / f"{symbol}.jsonl"
+        rows = [
+            {
+                "date": trading_date,
+                "Time": f"09:{minute:02d}",
+                "stock_id": symbol,
+                "open": 100,
+                "max": 100,
+                "min": 99,
+                "close": 100,
+                "Trading_Volume": 100,
+            }
+            for minute in range(15)
+        ]
+        rows.append(
+            {
+                "date": trading_date,
+                "Time": "09:15",
+                "stock_id": symbol,
+                "open": 100,
+                "max": 103,
+                "min": 100,
+                "close": 102,
+                "Trading_Volume": 200,
+            }
+        )
+        write_text(path, "".join(json.dumps(row) + "\n" for row in rows))
+        return path
 
     def test_trading_day_cycle_full_dry_run_uses_api_data_availability(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -206,6 +272,29 @@ class TradingDayCycleTest(unittest.TestCase):
             self.assertEqual(watch_events[1]["action"], "no_action")
             self.assertEqual(state["watch_events_artifact"]["summary"]["entry_approved"], 1)
             self.assertEqual(state["watch_events_artifact"]["summary"]["no_action"], 1)
+
+    def test_intraday_watch_loop_can_use_candidate_scoped_raw_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_trading_day_probe(root)
+            candidates_path = self.write_candidates(root, ["2330"])
+            cache_path = self.write_intraday_cache(root, "2026-06-04", "2330")
+
+            cmd_simulate_trading_day_cycle(
+                trading_day_cycle_args(
+                    root,
+                    candidates_input=str(candidates_path),
+                    current_time="09:20",
+                )
+            )
+
+            watch_events = json.loads((root / "cycle" / "watch_events.json").read_text(encoding="utf-8"))["events"]
+            state = json.loads((root / "cycle" / "trading_day_run_state.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(watch_events[0]["action"], "entry_approved")
+            self.assertEqual(state["intraday_data_adapter"]["mode"], "raw_cache")
+            self.assertEqual(state["intraday_data_adapter"]["sources"][0]["path"], str(cache_path))
+            self.assertEqual(state["watch_events_artifact"]["summary"]["entry_approved"], 1)
 
     def test_open_position_exit_is_evaluated_before_new_entry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -410,6 +499,27 @@ class TradingDayCycleTest(unittest.TestCase):
             self.assertEqual(watch_event["exit_signal"]["reason"], "time_exit")
             self.assertEqual(payload["order_intents"][0]["side"], "sell")
             self.assertEqual(payload["cancel_intents"][0]["reason"], "stale_pending_order_after_hard_stop")
+
+    def test_trading_day_cycle_smoke_summarizes_ok_and_non_trading_days(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_trading_day_probe(root)
+            candidates_path = self.write_candidates(root, ["2330"])
+            smoke_candidate_path = root / "2026-06-04-candidates.json"
+            write_json(smoke_candidate_path, json.loads(candidates_path.read_text(encoding="utf-8")))
+            self.write_intraday_cache(root, "2026-06-04", "2330")
+
+            cmd_simulate_trading_day_cycle_smoke(trading_day_cycle_smoke_args(root))
+
+            summary = json.loads((root / "smoke" / "multi_day_smoke_summary.json").read_text(encoding="utf-8"))
+            report = (root / "smoke" / "multi_day_smoke.md").read_text(encoding="utf-8")
+
+            self.assertEqual(summary["summary"]["total_dates"], 2)
+            self.assertEqual(summary["summary"]["ok"], 1)
+            self.assertEqual(summary["summary"]["skipped_non_trading_day"], 1)
+            self.assertEqual(summary["days"][0]["status"], "ok")
+            self.assertEqual(summary["days"][1]["status"], "skipped_non_trading_day")
+            self.assertIn("Trading Day Cycle Stability Smoke", report)
 
 
 if __name__ == "__main__":

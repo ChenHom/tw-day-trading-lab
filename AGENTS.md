@@ -45,6 +45,7 @@ If a task appears to require live execution, stop and design the gate/SOP first.
 - Daily Simulation Ops Automation v1 first two implementation steps are complete: `simulate daily-ops` / `make daily-ops` orchestration and `daily_bundle_audit.json`.
 - Direction correction is complete: the project target is a full trading-day autonomous cycle, not only a single daily simulation bundle.
 - Trading Day Autonomous Cycle v1 steps 1-8 are complete as dry-run artifacts: `simulate trading-day-cycle` emits run state, watch events, order intents, position state, 15:00 report, 17:30 next-candidate handoff, and end-to-end smoke. Trading-day status is based only on API/raw-cache data availability. Do not add a separate holiday calendar unless explicitly requested.
+- Simulate online-test preparation is in progress: `simulate trading-day-cycle` can read candidate-scoped intraday bars from raw cache when no fixture is supplied, and `simulate trading-day-cycle-smoke` can run multi-day stability checks. Keep Shioaji side effects, GitHub publish, and Telegram send disabled unless a later task explicitly opens those gates.
 - `.pfx` / `.p12` files are ignored, and `Sinopac.pfx` has been removed from reachable Git history.
 
 ## Next Development Priority
@@ -64,11 +65,11 @@ Also do not treat `daily-ops` as the whole product. It is an artifact/audit runn
 
 Recommended next implementation:
 
-1. Run 3-5 fixture / Shioaji-simulation-side-effect gated smoke days.
-2. Replace fixture intraday bars with an API-backed intraday market-data adapter while preserving the same `watch_events.json` contract.
+1. Run 3-5 real raw-cache / fixture-backed smoke days with `simulate trading-day-cycle-smoke`.
+2. Add a separate explicit gate for Shioaji simulation login/order/cancel side effects; keep it disabled by default.
 3. Add a separate explicit gate for real GitHub publish / Telegram operator link send.
 4. Keep formal live order blocked until a separate production approval SOP exists.
-5. Do not treat fixture smoke OK as strategy edge or live-order readiness.
+5. Do not treat smoke OK as strategy edge or live-order readiness.
 
 ## Important Docs
 
@@ -143,6 +144,12 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle \
   --candidates-input reports/2026-06-04-candidates.json \
   --intraday-bars-input fixtures/2026-06-04-intraday-bars.json \
   --current-time 09:20 \
+  --run-all-stages
+
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle-smoke \
+  --dates 2026-06-04,2026-06-05,2026-06-06 \
+  --cache-dir data/raw \
+  --candidates-input-pattern 'reports/{date}-candidates.json' \
   --run-all-stages
 
 make daily-ops DATE=2026-06-04 ARGS="--skip-ingestion --allow-outside-session --fail-on-audit"

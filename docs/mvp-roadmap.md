@@ -227,10 +227,10 @@ P8 之後每個 phase close-out 不能只列「新增命令」或「新增文件
 
 ### C2: Intraday Candidate Watch Loop
 
-目前狀態：fixture / dry-run MVP 已完成。
+目前狀態：fixture / raw-cache adapter / dry-run MVP 已完成。
 
 - 只載入既有候選股名單，不盤中掃全市場。
-- 透過 market-data port 取得候選股 intraday bars / ticks。
+- 透過 market-data port 取得候選股 intraday bars / ticks；目前可由 `--intraday-bars-input` fixture 或 candidate-scoped raw cache adapter 讀取。
 - 在 09:05/10:00-13:20 期間反覆檢查 entry strategy。
 - 對 open positions 反覆檢查 exit strategy。
 - 每次 no-action / rejected / approved signal 都要有 reason 與 artifact。
@@ -238,7 +238,7 @@ P8 之後每個 phase close-out 不能只列「新增命令」或「新增文件
 
 驗收：
 
-- fixture bars 可產生 approved entry、rejected entry、exit trigger、no-action candidate：已完成。
+- fixture / raw-cache bars 可產生 approved entry、rejected entry、exit trigger、no-action candidate：已完成。
 - 13:20 後不允許新進場：已完成。
 
 ### C3: Execution Policy + Force Exit / Cancel Enforcement
@@ -287,8 +287,40 @@ P8 之後每個 phase close-out 不能只列「新增命令」或「新增文件
 
 ### C6: End-to-End Simulate Smoke
 
-目前狀態：fixture end-to-end smoke 已完成。
+目前狀態：fixture / multi-day stability smoke 已完成。
 
 - 一次 dry-run 產出 run state、watch events、order intents、position state、report、next candidates 與 smoke summary。
 - smoke 檢查 required artifacts 是否存在。
 - 所有 artifact 仍保持 `side_effects=[]`，不登入券商、不送單、不發通知。
+- `simulate trading-day-cycle-smoke` 可連跑多個日期，輸出 `multi_day_smoke_summary.json` / `multi_day_smoke.md`；有 API/raw-cache trading rows 的日期才檢查完整 artifact chain，取不到資料的日期標為 `skipped_non_trading_day`。
+
+驗收：
+
+- 單日完整 artifact chain `end_to_end_smoke.status=ok`：已完成。
+- 多日 smoke 可區分 ok trading day 與 non-trading day skip：已完成。
+
+### D1: Simulate Side-Effect Gate Preparation
+
+目前狀態：未完成。
+
+- 將目前 dry-run order / cancel intents 接到 Shioaji simulation side-effect gate。
+- 沒有 explicit gate 時，不得登入 Shioaji、不送單、不取消。
+- gate 開啟時仍只允許 `simulation=True`，正式 live trading 繼續 blocked。
+
+驗收：
+
+- 未開 gate 時，multi-day smoke 仍只產生 artifact，不產生 broker side effect。
+- 開 gate 的 simulation smoke 必須留下 login / order / cancel evidence，且不可保存 secret。
+
+### D2: Report Publish / Operator Send Gate
+
+目前狀態：未完成。
+
+- 將 15:00 local report dry-run 接到 GitHub publish gate。
+- 將 operator link send 接到 Telegram send gate。
+- 必須有 dedupe key，避免重跑同一 trading day 重複發送。
+
+驗收：
+
+- 未開 gate 時維持 `publish_status=dry_run` / `send_status=dry_run_not_sent`。
+- 開 gate 後才允許真實 GitHub artifact / Telegram operator link。

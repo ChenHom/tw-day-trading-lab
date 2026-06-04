@@ -201,9 +201,21 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle \
 - idempotency key / lock policy / retry policy
 - candidate artifact / trading data probe / watch events / order intents / position state / report artifact / next-candidate artifact / end-to-end smoke artifact
 
-若提供 `--intraday-bars-input` 與 `--candidates-input`，同一輪也會產出 `watch_events.json`。watch loop 只監控候選名單，不盤中掃全市場；沒有持倉的候選會走 `VwapBreakoutStrategy` entry dry-run，已有持倉的標的會先走 exit dry-run。13:20 之後的新 entry 一律輸出 `entry_rejected` / `after_hard_stop`。
+若提供 `--candidates-input`，同一輪也會產出 `watch_events.json`。watch loop 只監控候選名單，不盤中掃全市場；沒有持倉的候選會走 `VwapBreakoutStrategy` entry dry-run，已有持倉的標的會先走 exit dry-run。13:20 之後的新 entry 一律輸出 `entry_rejected` / `after_hard_stop`。盤中 bars 可以用 `--intraday-bars-input` 指定 fixture，也可以不指定，改由 raw cache adapter 依候選股讀取 `data/raw/finmind/TaiwanStockPriceMinute/{date}/{symbol}.jsonl`。
 
 同一輪會接著產出 `order_intents.json`、`position_state.json`、`report.md`、`next_candidates.json` 與 `end_to_end_smoke.json`。這些仍是 dry-run artifact：duplicate intent 會被 suppress、13:20 後 stale pending order 會產生 cancel intent、15:00 report 只做 local / would-send、17:30 next candidates 不猜下一交易日，只標記 `next_api_available_trading_day`。
+
+多日穩定性 smoke 可用：
+
+```bash
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle-smoke \
+  --dates 2026-06-04,2026-06-05,2026-06-06 \
+  --cache-dir data/raw \
+  --candidates-input-pattern 'reports/{date}-candidates.json' \
+  --run-all-stages
+```
+
+它會逐日執行完整 dry-run cycle，輸出 `reports/trading-day-cycle-smoke/multi_day_smoke_summary.json` 與 `multi_day_smoke.md`。有 API / raw cache 交易 rows 的日期才會進入 artifact-chain 檢查；取不到交易資料的日期會被標成 `skipped_non_trading_day`，不會查假日日曆。
 
 如果沒有安裝 package，先加上 `PYTHONPATH=src`：
 
@@ -293,6 +305,7 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 - 最新安全維護：`.pfx` / `.p12` 已加入 `.gitignore`，`Sinopac.pfx` 已從可達 Git history 移除。
 - `Daily Simulation Ops Automation v1` 前兩步已完成：`simulate daily-ops` / `make daily-ops` 可啟動每日作業鏈，`daily_bundle_audit.json` 可檢查 manifest、artifact checksum、readiness、alerts operator fields、close report 與 regression case traceability。
 - Trading Day Autonomous Cycle v1 第 1-8 步已完成 dry-run 版：`simulate trading-day-cycle` 可產出 run state、watch events、order intents、position state、15:00 report、17:30 next candidates handoff 與 end-to-end smoke。交易日不用額外日曆判斷；取不到交易資料即 `non_trading_day`。
+- Simulate online-test preparation 已開始：`simulate trading-day-cycle` 可用 candidate-scoped raw-cache intraday adapter 取代 fixture bars，`simulate trading-day-cycle-smoke` 可連跑多日並輸出 stability summary。Shioaji side effect、GitHub publish、Telegram send 仍維持 disabled / dry-run gate。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。
 - P6 已支援 `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition` dry-run，simulation sample 與 replay expectancy 分開，重送同一 intent 不會重複開倉。

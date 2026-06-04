@@ -165,4 +165,31 @@ Build `Trading Day Autonomous Cycle v1` in small steps:
 4. Add execution policy tests for duplicate intents, pending orders, partial fills, and force-exit at 13:20. Done as dry-run artifact policy.
 5. Add report publish dry-run for the 15:00 GitHub report/link step. Done as local report / would-send metadata.
 6. Add next-candidate builder handoff for the 17:30 stage. Done as `next_api_available_trading_day` handoff.
-7. Run 3-5 fixture / simulation-side-effect gated smoke days before any stronger automation gate.
+7. Run 3-5 fixture / raw-cache smoke days before any stronger automation gate. Done as `simulate trading-day-cycle-smoke`.
+8. Add candidate-scoped API/raw-cache intraday adapter while preserving `watch_events.json`. Done for raw cache with `TaiwanStockPriceMinute`.
+9. Add explicit Shioaji simulation side-effect gate. Not done; side effects remain disabled.
+10. Add explicit GitHub publish / Telegram operator-send gate. Not done; report/send remain dry-run.
+
+## Simulate Online-Test Preparation
+
+Current dry-run commands:
+
+```bash
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle \
+  --date 2026-06-04 \
+  --candidates-input reports/2026-06-04-candidates.json \
+  --current-time 09:20
+
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle-smoke \
+  --dates 2026-06-04,2026-06-05,2026-06-06 \
+  --cache-dir data/raw \
+  --candidates-input-pattern 'reports/{date}-candidates.json' \
+  --run-all-stages
+```
+
+Rules:
+
+- If `--intraday-bars-input` is omitted, the cycle reads only candidate-scoped raw-cache files under `data/raw/finmind/TaiwanStockPriceMinute/{date}/{symbol}.jsonl`.
+- Multi-day smoke does not use a holiday calendar. Dates with no API/raw-cache trading rows are `skipped_non_trading_day`.
+- `multi_day_smoke_summary.json` / `multi_day_smoke.md` prove artifact-chain stability only.
+- Shioaji simulation side effects, GitHub publish, and Telegram operator-send remain disabled until explicit gates are implemented.

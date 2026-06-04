@@ -471,6 +471,17 @@ Stage enum：
 - exit strategy 對 open position 的檢查優先於新 entry。
 - 任何 13:20 後的 entry signal 必須被標記為 rejected / `after_hard_stop`。
 - 目前 fixture dry-run 的 payload shape 是 `{ "events": [...] }`。沒有持倉的候選以 `VwapBreakoutStrategy` 產生 entry signal；有 open position 的標的只先檢查 exit，不在同輪產生新的 entry intent。
+- `--intraday-bars-input` 可直接提供 fixture bars；未提供時，raw-cache adapter 只會依 `--candidates-input` 中的 symbol 讀取 `data/raw/finmind/TaiwanStockPriceMinute/{date}/{symbol}.jsonl`，仍不得盤中掃全市場。
+
+`trading_day_run_state.json` 會記錄 adapter 摘要：
+
+| 欄位 | 說明 |
+|---|---|
+| `intraday_data_adapter.mode` | `explicit_input` / `raw_cache` |
+| `intraday_data_adapter.dataset` | raw cache dataset，預設 `TaiwanStockPriceMinute` |
+| `intraday_data_adapter.sources[]` | candidate-scoped path / exists / rows |
+| `intraday_data_adapter.candidate_scoped` | 必須為 true |
+| `intraday_data_adapter.contract` | 目前固定為 `watch_events.json` |
 
 ## Phase C Order Intent / Position State Dry-Run Contract
 
@@ -556,6 +567,58 @@ Stage enum：
 - smoke 只檢查 fixture dry-run artifact chain 是否完整。
 - required artifacts：candidate、watch events、order intents、position state、report、next candidates。
 - `status=ok` 不代表策略有 edge，也不代表可以 live order；只代表 simulate 上線測所需 dry-run bundle 已完整。
+
+## Phase D Multi-Day Stability Smoke Contract
+
+目前 artifact：
+
+- `multi_day_smoke_summary.json`
+- `multi_day_smoke.md`
+
+CLI：
+
+```bash
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle-smoke \
+  --dates 2026-06-04,2026-06-05,2026-06-06 \
+  --cache-dir data/raw \
+  --candidates-input-pattern 'reports/{date}-candidates.json' \
+  --run-all-stages
+```
+
+`multi_day_smoke_summary.json` 必要欄位：
+
+| 欄位 | 說明 |
+|---|---|
+| `run_id` | multi-day smoke run id |
+| `mode` | 目前固定 `dry_run` |
+| `dates[]` | 本次檢查日期 |
+| `days[]` | 每日 summary |
+| `summary.total_dates` | 日期數 |
+| `summary.ok` | 完整 artifact chain OK 的交易日數 |
+| `summary.skipped_non_trading_day` | API/raw-cache 無資料而跳過的日期數 |
+| `summary.blocked` | 有交易資料但 artifact chain 不完整的日期數 |
+| `gates` | Shioaji / GitHub / Telegram gate 狀態 |
+| `side_effects[]` | 目前必須保持空陣列 |
+
+`days[]` 必要欄位：
+
+| 欄位 | 說明 |
+|---|---|
+| `date` | 檢查日期 |
+| `status` | `ok` / `skipped_non_trading_day` / `blocked` |
+| `calendar_status` | 單日 cycle 的 `calendar_status` |
+| `state_path` | 單日 `trading_day_run_state.json` |
+| `candidate_path` | 使用的候選檔，若不存在可為 null |
+| `end_to_end_smoke_status` | 單日 `end_to_end_smoke.status` |
+| `manual_actions[]` | 單日人工處理事項 |
+| `blocked_reasons[]` | 單日 blocking reasons |
+
+規則：
+
+- multi-day smoke 不查額外假日日曆；仍只看 API/raw-cache rows。
+- `skipped_non_trading_day` 不是失敗，是 API/raw-cache 無交易資料時的預期狀態。
+- `ok` 只代表 dry-run artifact chain 完整，不代表策略 edge、broker side-effect readiness 或 live-order readiness。
+- Shioaji simulation side effects、GitHub publish、Telegram send 都必須維持 disabled / dry-run，直到另有 explicit gate。
 
 ## Persisted Strategy Samples
 
