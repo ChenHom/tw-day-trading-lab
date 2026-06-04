@@ -1013,6 +1013,247 @@ def cmd_simulate_daily_ops(args: argparse.Namespace) -> None:
     print(f"Audit: {audit_output}")
 
 
+TRADING_DAY_CYCLE_STAGES = (
+    "candidate_ready",
+    "intraday_waiting",
+    "intraday_running",
+    "force_exit",
+    "close_buffer",
+    "reporting",
+    "next_candidates",
+    "complete",
+)
+
+
+def _read_rows_from_json_or_jsonl(path: Path) -> list[dict[str, object]]:
+    """Read a JSON/JSONL market-data artifact and return row dictionaries."""
+    if not path.exists():
+        return []
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        return []
+    if path.suffix.lower() == ".jsonl":
+        rows = []
+        for line in text.splitlines():
+            if line.strip():
+                row = json.loads(line)
+                if isinstance(row, dict):
+                    rows.append(row)
+        return rows
+    raw = json.loads(text)
+    if isinstance(raw, list):
+        return [dict(item) for item in raw if isinstance(item, dict)]
+    if isinstance(raw, dict):
+        for key in ("rows", "data", "items"):
+            value = raw.get(key)
+            if isinstance(value, list):
+                return [dict(item) for item in value if isinstance(item, dict)]
+    return []
+
+
+def resolve_trading_data_probe(
+    *,
+    trading_date: str,
+    cache_dir: Path,
+    trading_data_input: Path | None = None,
+    market_proxy_stock_id: str = "0050",
+) -> dict[str, object]:
+    """Return trading-day status using only available API/cache rows, not a calendar."""
+    probe_paths: list[Path] = []
+    if trading_data_input is not None:
+        probe_paths.append(trading_data_input)
+    else:
+        base = cache_dir / "finmind" / "TaiwanStockPrice" / trading_date
+        probe_paths.extend(
+            [
+                base / f"{market_proxy_stock_id}.jsonl",
+                base / "market.jsonl",
+            ]
+        )
+
+    checked: list[dict[str, object]] = []
+    for path in probe_paths:
+        rows = _read_rows_from_json_or_jsonl(path)
+        checked.append({"path": str(path), "rows": len(rows), "exists": path.exists()})
+        if rows:
+            return {
+                "calendar_status": "trading_day",
+                "source": str(path),
+                "rows": len(rows),
+                "checked": checked,
+                "reason": "trading_data_available",
+            }
+    return {
+        "calendar_status": "non_trading_day",
+        "source": None,
+        "rows": 0,
+        "checked": checked,
+        "reason": "trading_data_unavailable",
+    }
+
+
+def _time_to_minutes(value: str) -> int:
+    hour, minute = value.split(":", 1)
+    return int(hour) * 60 + int(minute)
+
+
+def resolve_trading_day_cycle_stage(
+    *,
+    current_time: str,
+    start_policy: str,
+    hard_stop_time: str,
+    close_buffer_end_time: str,
+    report_time: str,
+    next_candidate_time: str,
+) -> str:
+    """Resolve the current trading-day cycle stage from wall-clock policy."""
+    current = _time_to_minutes(current_time)
+    start = _time_to_minutes(start_policy)
+    hard_stop = _time_to_minutes(hard_stop_time)
+    close_buffer_end = _time_to_minutes(close_buffer_end_time)
+    report = _time_to_minutes(report_time)
+    next_candidate = _time_to_minutes(next_candidate_time)
+
+    if current < start:
+        return "intraday_waiting"
+    if current < hard_stop:
+        return "intraday_running"
+    if current < close_buffer_end:
+        return "force_exit"
+    if current < report:
+        return "close_buffer"
+    if current < next_candidate:
+        return "reporting"
+    return "next_candidates"
+
+
+def build_trading_day_cycle_state(args: argparse.Namespace) -> dict[str, object]:
+    """Build a dry-run trading-day cycle state without broker or alert side effects."""
+    from datetime import datetime
+
+    trading_date = args.date or datetime.now().strftime("%Y-%m-%d")
+    start_policy = args.start_policy
+    run_id = args.run_id or f"tdc-{trading_date}-{start_policy.replace(':', '')}"
+    output_dir = Path(args.output_dir) if args.output_dir else Path("reports") / f"{trading_date}-trading-day-cycle"
+    state_output = Path(args.state_output) if args.state_output else output_dir / "trading_day_run_state.json"
+    cache_dir = Path(args.cache_dir)
+    candidate_artifact = Path(args.candidates_input) if args.candidates_input else output_dir / "candidates.json"
+    trading_data_input = Path(args.trading_data_input) if args.trading_data_input else None
+
+    data_probe = resolve_trading_data_probe(
+        trading_date=trading_date,
+        cache_dir=cache_dir,
+        trading_data_input=trading_data_input,
+        market_proxy_stock_id=args.market_proxy_stock_id,
+    )
+    calendar_status = str(data_probe["calendar_status"])
+    stage_history: list[dict[str, object]] = []
+    blocked_reasons: list[str] = []
+    manual_actions: list[str] = []
+
+    def add_stage(stage: str, reason: str) -> None:
+        stage_history.append(
+            {
+                "stage": stage,
+                "time": {
+                    "candidate_ready": "previous_close",
+                    "intraday_waiting": f"before_{start_policy}",
+                    "intraday_running": start_policy,
+                    "force_exit": args.hard_stop_time,
+                    "close_buffer": args.close_buffer_end_time,
+                    "reporting": args.report_time,
+                    "next_candidates": args.next_candidate_time,
+                    "complete": "after_next_candidates",
+                    "blocked": args.current_time,
+                }.get(stage, args.current_time),
+                "reason": reason,
+            }
+        )
+
+    if calendar_status != "trading_day":
+        blocked_reasons.append("trading_data_unavailable")
+        manual_actions.append("Skip trading-day cycle; API/cache returned no trading rows.")
+        add_stage("blocked", "trading_data_unavailable")
+        current_stage = "blocked"
+    elif args.run_all_stages:
+        for stage in TRADING_DAY_CYCLE_STAGES:
+            add_stage(stage, "dry_run_stage_transition")
+        current_stage = "complete"
+    else:
+        add_stage("candidate_ready", "candidate_artifact_registered")
+        current_stage = resolve_trading_day_cycle_stage(
+            current_time=args.current_time,
+            start_policy=start_policy,
+            hard_stop_time=args.hard_stop_time,
+            close_buffer_end_time=args.close_buffer_end_time,
+            report_time=args.report_time,
+            next_candidate_time=args.next_candidate_time,
+        )
+        add_stage(current_stage, "clock_policy_resolved")
+
+    state = {
+        "trading_day_run_id": run_id,
+        "trading_date": trading_date,
+        "mode": "dry_run",
+        "calendar_status": calendar_status,
+        "calendar_rule": "api_data_availability_only",
+        "start_policy": start_policy,
+        "hard_stop_time": args.hard_stop_time,
+        "close_buffer_end_time": args.close_buffer_end_time,
+        "report_time": args.report_time,
+        "next_candidate_time": args.next_candidate_time,
+        "stage": current_stage,
+        "stage_history": stage_history,
+        "candidate_artifact": {
+            "path": str(candidate_artifact),
+            "exists": candidate_artifact.exists(),
+            "checksum": get_file_checksum(candidate_artifact) if candidate_artifact.exists() else None,
+        },
+        "trading_data_probe": data_probe,
+        "position_state_artifact": {
+            "path": str(output_dir / "position_state.json"),
+            "exists": False,
+            "checksum": None,
+        },
+        "report_artifact": {
+            "path": str(output_dir / "report.md"),
+            "github_url": None,
+            "publish_status": "not_started",
+        },
+        "next_candidate_artifact": {
+            "path": str(output_dir / "next_candidates.json"),
+            "exists": False,
+            "checksum": None,
+        },
+        "idempotency_key": f"{trading_date}:{start_policy}:trading-day-cycle",
+        "lock": {
+            "path": str(output_dir / ".trading-day-cycle.lock"),
+            "policy": "single_trading_date_run",
+        },
+        "retry_policy": {
+            "max_attempts": args.max_retries,
+            "retryable_stages": ["intraday_waiting", "intraday_running", "reporting", "next_candidates"],
+        },
+        "blocked_reasons": blocked_reasons,
+        "manual_actions": manual_actions,
+        "side_effects": [],
+    }
+    state["_state_output"] = str(state_output)
+    return state
+
+
+def cmd_simulate_trading_day_cycle(args: argparse.Namespace) -> None:
+    """Dry-run the trading-day cycle state machine and write run state."""
+    state = build_trading_day_cycle_state(args)
+    state_output = Path(str(state.pop("_state_output")))
+    write_json(state_output, state)
+    print("Trading day cycle dry-run completed.")
+    print(f"Date: {state['trading_date']}")
+    print(f"Calendar status: {state['calendar_status']}")
+    print(f"Stage: {state['stage']}")
+    print(f"State: {state_output}")
+
+
 def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
     """Run the daily simulation ops runner to generate candidate inputs, execute gates, place orders, check readiness, and produce run manifest."""
     import uuid
@@ -2095,6 +2336,25 @@ def build_parser() -> argparse.ArgumentParser:
     daily_ops.add_argument("--fail-on-audit", action="store_true")
     daily_ops.add_argument("--send-alerts", action="store_true")
     daily_ops.set_defaults(func=cmd_simulate_daily_ops)
+
+    trading_day_cycle = simulate_sub.add_parser("trading-day-cycle")
+    trading_day_cycle.add_argument("--date")
+    trading_day_cycle.add_argument("--cache-dir", default="data/raw")
+    trading_day_cycle.add_argument("--trading-data-input")
+    trading_day_cycle.add_argument("--market-proxy-stock-id", default="0050")
+    trading_day_cycle.add_argument("--candidates-input")
+    trading_day_cycle.add_argument("--output-dir")
+    trading_day_cycle.add_argument("--state-output")
+    trading_day_cycle.add_argument("--run-id")
+    trading_day_cycle.add_argument("--start-policy", choices=("09:05", "10:00"), default="09:05")
+    trading_day_cycle.add_argument("--hard-stop-time", default="13:20")
+    trading_day_cycle.add_argument("--close-buffer-end-time", default="14:00")
+    trading_day_cycle.add_argument("--report-time", default="15:00")
+    trading_day_cycle.add_argument("--next-candidate-time", default="17:30")
+    trading_day_cycle.add_argument("--current-time", default="09:05")
+    trading_day_cycle.add_argument("--max-retries", type=int, default=2)
+    trading_day_cycle.add_argument("--run-all-stages", action="store_true")
+    trading_day_cycle.set_defaults(func=cmd_simulate_trading_day_cycle)
 
     restart_sync = simulate_sub.add_parser("restart-sync")
     restart_sync.add_argument("--store", required=True)

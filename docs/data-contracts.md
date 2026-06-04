@@ -379,6 +379,22 @@ P10 regression correction loop 必須把每日問題轉成可重跑 fixture，�
 
 `Trading Day Autonomous Cycle v1` 必須以 trading-day run state 作為核心 artifact。它不是策略績效資料，而是作業循環的狀態、稽核與恢復邊界。
 
+目前 CLI：
+
+```bash
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle \
+  --date 2026-06-04 \
+  --trading-data-input data/raw/finmind/TaiwanStockPrice/2026-06-04/0050.jsonl \
+  --run-all-stages
+```
+
+交易日判定規則：
+
+- 不查額外 holiday calendar。
+- 優先使用 `--trading-data-input` 指定的 API / raw-cache artifact。
+- 未指定時，依序檢查 `data/raw/finmind/TaiwanStockPrice/{date}/{market_proxy_stock_id}.jsonl` 與 `market.jsonl`。
+- 找不到任何交易 rows 時，`calendar_status=non_trading_day`、`stage=blocked`、`blocked_reasons` 包含 `trading_data_unavailable`。
+
 必要欄位：
 
 | 欄位 | 說明 |

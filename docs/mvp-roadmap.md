@@ -209,17 +209,21 @@ P8 之後每個 phase close-out 不能只列「新增命令」或「新增文件
 
 ### C1: Trading Day Scheduler / Run State
 
+目前狀態：第 1-2 步已完成 dry-run 版。
+
 - 建立 trading-day state machine。
 - 支援 09:05 或 10:00 啟動 policy。
 - 固定 13:20 停止新進場與 force-exit / cancel policy。
 - 固定 15:00 產生並發布當日 report。
 - 固定 17:30 產生下一交易日候選名單。
 - 產出 `trading_day_run_state.json`，記錄 stage transition、run id、artifact、locks、retry 與 blocked reasons。
+- 交易日不做額外 holiday calendar 判斷；只要 API / raw cache 取不到當日交易資料，就判定為 `non_trading_day`。
 
 驗收：
 
-- fixture trading day 可 dry-run 完整 stage transition。
-- 重跑同一 trading day 不會重複送單、重複發 report 或覆蓋不可覆蓋的候選清單。
+- fixture trading day 可 dry-run 完整 stage transition：已完成。
+- 無交易資料時可輸出 `calendar_status=non_trading_day` 並停在 `blocked`：已完成。
+- 重跑同一 trading day 不會重複送單、重複發 report 或覆蓋不可覆蓋的候選清單：dry-run state 已有 idempotency key / lock policy，實際 side effect enforcement 留到 C3/C4。
 
 ### C2: Intraday Candidate Watch Loop
 

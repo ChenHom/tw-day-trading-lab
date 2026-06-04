@@ -129,6 +129,10 @@ python3 -m tw_day_trading_lab.cli simulate daily-ops \
   --skip-ingestion \
   --allow-outside-session \
   --fail-on-audit
+python3 -m tw_day_trading_lab.cli simulate trading-day-cycle \
+  --date 2026-06-04 \
+  --trading-data-input data/raw/finmind/TaiwanStockPrice/2026-06-04/0050.jsonl \
+  --run-all-stages
 ```
 
 ### 一鍵執行當沖模擬 (Simplified Daily Ops Run)
@@ -169,6 +173,30 @@ make daily-ops DATE=2026-06-04 ARGS="--send-alerts"
 - `telegram-summary.txt`
 - `regression/`
 - `daily_bundle_audit.json`
+
+### 交易日循環狀態機 (Trading Day Cycle Dry Run)
+
+`simulate trading-day-cycle` 已提供交易日循環 dry-run 狀態機。它不查額外交易日曆；交易日判定只看 API / raw cache 是否有當日交易資料。若指定資料或預設 raw cache 中找不到任何交易 rows，會輸出 `calendar_status=non_trading_day` 並停在 `blocked`，不進入盤中流程。
+
+```bash
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle \
+  --date 2026-06-04 \
+  --trading-data-input data/raw/finmind/TaiwanStockPrice/2026-06-04/0050.jsonl \
+  --candidates-input reports/2026-06-04-candidates.json \
+  --start-policy 09:05 \
+  --run-all-stages
+```
+
+預設輸出在 `reports/{date}-trading-day-cycle/trading_day_run_state.json`，目前會記錄：
+
+- `calendar_status` / `calendar_rule=api_data_availability_only`
+- 09:05 或 10:00 start policy
+- 13:20 hard stop
+- 14:00 close buffer end
+- 15:00 report stage
+- 17:30 next candidates stage
+- idempotency key / lock policy / retry policy
+- candidate artifact / trading data probe / report artifact / next-candidate artifact
 
 如果沒有安裝 package，先加上 `PYTHONPATH=src`：
 
@@ -257,7 +285,7 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 - P9-P11 infrastructure 已完成：alerts、regression import/run、live adapter boundary。
 - 最新安全維護：`.pfx` / `.p12` 已加入 `.gitignore`，`Sinopac.pfx` 已從可達 Git history 移除。
 - `Daily Simulation Ops Automation v1` 前兩步已完成：`simulate daily-ops` / `make daily-ops` 可啟動每日作業鏈，`daily_bundle_audit.json` 可檢查 manifest、artifact checksum、readiness、alerts operator fields、close report 與 regression case traceability。
-- 方向校正：`Daily Simulation Ops Automation v1` 不等於完整交易日自動循環；下一個主線 phase 是 `Trading Day Autonomous Cycle v1`，把候選股監控、進出場策略、13:20 force-exit、15:00 GitHub report/link、17:30 明日候選名單串成可重跑的 trading-day state machine。
+- Trading Day Autonomous Cycle v1 第 1-2 步已完成：`simulate trading-day-cycle` dry-run runner / `trading_day_run_state.json` 與 API/raw-cache data availability based clock policy。交易日不用額外日曆判斷；取不到交易資料即 `non_trading_day`。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。
 - P6 已支援 `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition` dry-run，simulation sample 與 replay expectancy 分開，重送同一 intent 不會重複開倉。
@@ -277,12 +305,12 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 
 ## Next Development Priority
 
-目前 `Daily Simulation Ops Automation v1` 已完成前兩步：daily runner / Make target 與 daily bundle audit。但這不是終點；它只是完整交易日循環的下層 artifact/audit 能力。
+目前 `Daily Simulation Ops Automation v1` 已完成前兩步：daily runner / Make target 與 daily bundle audit。`Trading Day Autonomous Cycle v1` 也已完成第 1-2 步：dry-run state machine 與資料可用性 clock policy。
 
-下一步主線改為 `Trading Day Autonomous Cycle v1`：
+下一步主線改為 `Trading Day Autonomous Cycle v1` 第 3-4 步：
 
-- 新增 trading-day scheduler / run state，明確記錄 09:05/10:00、13:20、15:00、17:30 的 stage transition。
 - 新增 intraday candidate watch loop，限定只監控已產生的候選股名單，反覆評估 entry / exit strategy。
+- 將 entry / exit strategy loop 接上 position state，能同時處理未持倉候選進場與已持倉部位出場。
 - 新增 13:20 stop-new-entry / force-exit / cancel policy 的 dry-run 與 fixture tests。
 - 新增 15:00 GitHub report publish dry-run 與 operator link artifact。
 - 新增 17:30 next-day candidate builder handoff。

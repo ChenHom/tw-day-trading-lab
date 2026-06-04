@@ -44,6 +44,7 @@ If a task appears to require live execution, stop and design the gate/SOP first.
 - P9-P11 infrastructure is complete: operator alerts, regression import/run, and live broker adapter boundary.
 - Daily Simulation Ops Automation v1 first two implementation steps are complete: `simulate daily-ops` / `make daily-ops` orchestration and `daily_bundle_audit.json`.
 - Direction correction is complete: the project target is a full trading-day autonomous cycle, not only a single daily simulation bundle.
+- Trading Day Autonomous Cycle v1 steps 1-2 are complete: `simulate trading-day-cycle` emits `trading_day_run_state.json`, and trading-day status is based only on API/raw-cache data availability. Do not add a separate holiday calendar unless explicitly requested.
 - `.pfx` / `.p12` files are ignored, and `Sinopac.pfx` has been removed from reachable Git history.
 
 ## Next Development Priority
@@ -63,9 +64,9 @@ Also do not treat `daily-ops` as the whole product. It is an artifact/audit runn
 
 Recommended next implementation:
 
-1. Add a dry-run `simulate trading-day-cycle` command or equivalent runner that emits `trading_day_run_state.json`.
-2. Model stage transitions for `candidate_ready`, `intraday_running`, `force_exit`, `close_buffer`, `reporting`, `next_candidates`, and `complete`.
-3. Add fixture-based intraday watch loop tests for 09:05/10:00 start, repeated candidate checks, entry trigger, exit trigger, no-action candidate, and 13:20 stop.
+1. Add fixture-based intraday watch loop tests for repeated candidate checks, entry trigger, exit trigger, no-action candidate, and 13:20 stop.
+2. Implement the intraday candidate watch loop against the existing candidate list only; do not scan the whole market intraday.
+3. Connect entry / exit strategy evaluation to position state so open positions are checked for exits before new entries.
 4. Add execution policy tests for duplicate intents, pending orders, partial fills, callback ordering, and force-exit behavior.
 5. Add 15:00 GitHub report publish dry-run and 17:30 next-candidate handoff artifacts.
 6. Only after the dry-run trading-day cycle is auditable should 3-5 day stability observation become the acceptance evidence.
@@ -137,6 +138,11 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate daily-ops \
   --skip-ingestion \
   --allow-outside-session \
   --fail-on-audit
+
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle \
+  --date 2026-06-04 \
+  --trading-data-input data/raw/finmind/TaiwanStockPrice/2026-06-04/0050.jsonl \
+  --run-all-stages
 
 make daily-ops DATE=2026-06-04 ARGS="--skip-ingestion --allow-outside-session --fail-on-audit"
 ```

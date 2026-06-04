@@ -46,6 +46,8 @@ Therefore the corrected next phase is not "3-5 day stability observation" as the
 
 ### C1: Trading Day Scheduler and Run State
 
+Status: dry-run state machine complete.
+
 Implement a scheduler/state machine for a single trading date.
 
 Required contracts:
@@ -59,11 +61,13 @@ Required contracts:
 - next-candidate time: `17:30`
 - lock file and retry policy
 - artifact manifest with checksums
+- trading-day status based on API/raw-cache data availability only; no separate holiday calendar
 
 Acceptance:
 
-- A dry-run command can simulate each stage transition for a fixture trading day.
-- Re-running the same trading day is idempotent and does not duplicate orders or reports.
+- A dry-run command can simulate each stage transition for a fixture trading day. Completed with `simulate trading-day-cycle --run-all-stages`.
+- Missing API/raw-cache trading rows produce `calendar_status=non_trading_day` and `stage=blocked`.
+- Re-running the same trading day is idempotent and does not duplicate orders or reports. Dry-run state now records idempotency key / lock policy; side-effect enforcement remains for C3/C4.
 
 ### C2: Intraday Candidate Watch Loop
 
@@ -160,4 +164,3 @@ Build `Trading Day Autonomous Cycle v1` in small steps:
 3. Add execution policy tests for duplicate intents, pending orders, partial fills, and force-exit at 13:20.
 4. Add report publish dry-run for the 15:00 GitHub report/link step.
 5. Add next-candidate builder handoff for the 17:30 stage.
-

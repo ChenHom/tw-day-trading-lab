@@ -1604,3 +1604,94 @@ Audit 檢查項目：
 - 目前 `ops-run` 裡有 strategy trigger 雛形，但它不是長時間 watch loop；後續不能誤認為 intraday loop 已完成。
 - GitHub report publish 需要另外確認 artifact 位置、private repo link 可見性與發送 gate。
 - 17:30 next-candidate builder 需要交易日 calendar / holiday handling，不能只用當天日期字串。
+
+## 16. Trading Day Autonomous Cycle v1 - Steps 1-2 - 2026-06-04
+
+本輪目標：依使用者指示開始做前兩步：
+
+1. `simulate trading-day-cycle` dry-run runner + state machine。
+2. Trading-day clock policy / data availability policy。
+
+使用者修正：交易日不用額外 holiday calendar 判斷；只要 API / raw cache 取不到交易資料，就判定為非交易日。
+
+### Step 1: Dry-run Runner / State Machine
+
+已新增 `simulate trading-day-cycle` 子命令。
+
+輸出：
+
+```text
+reports/{date}-trading-day-cycle/trading_day_run_state.json
+```
+
+目前 state 會記錄：
+
+- `trading_day_run_id`
+- `calendar_status`
+- `calendar_rule=api_data_availability_only`
+- `start_policy`：`09:05` 或 `10:00`
+- `hard_stop_time=13:20`
+- `close_buffer_end_time=14:00`
+- `report_time=15:00`
+- `next_candidate_time=17:30`
+- `stage`
+- `stage_history`
+- `candidate_artifact`
+- `trading_data_probe`
+- `position_state_artifact`
+- `report_artifact`
+- `next_candidate_artifact`
+- `idempotency_key`
+- `lock`
+- `retry_policy`
+- `blocked_reasons`
+- `manual_actions`
+- `side_effects=[]`
+
+指令範例：
+
+```bash
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle \
+  --date 2026-06-04 \
+  --trading-data-input data/raw/finmind/TaiwanStockPrice/2026-06-04/0050.jsonl \
+  --candidates-input reports/2026-06-04-candidates.json \
+  --start-policy 09:05 \
+  --run-all-stages
+```
+
+### Step 2: Data Availability / Clock Policy
+
+已新增資料探針：
+
+- 優先讀 `--trading-data-input`。
+- 未指定時，依序讀：
+  - `data/raw/finmind/TaiwanStockPrice/{date}/{market_proxy_stock_id}.jsonl`
+  - `data/raw/finmind/TaiwanStockPrice/{date}/market.jsonl`
+- 任一來源有 rows：`calendar_status=trading_day`。
+- 完全無 rows：`calendar_status=non_trading_day`、`stage=blocked`、`blocked_reasons=["trading_data_unavailable"]`。
+
+已新增 clock stage resolver：
+
+- current < start policy：`intraday_waiting`
+- start policy <= current < 13:20：`intraday_running`
+- 13:20 <= current < 14:00：`force_exit`
+- 14:00 <= current < 15:00：`close_buffer`
+- 15:00 <= current < 17:30：`reporting`
+- current >= 17:30：`next_candidates`
+
+### Tests
+
+新增 `tests/test_trading_day_cycle.py`：
+
+- `test_trading_day_cycle_full_dry_run_uses_api_data_availability`
+- `test_trading_day_cycle_no_api_rows_marks_non_trading_day`
+- `test_clock_policy_resolves_intraday_and_reporting_stages`
+
+### Next-run Seed
+
+下一輪做第 3-4 步：
+
+1. 新增 intraday candidate watch loop fixture：只監控候選名單，不掃全市場。
+2. 每次候選檢查輸出 watch event：approved entry、rejected entry、exit trigger、no-action candidate。
+3. 將 entry / exit strategy loop 接上 position state；open position exit check 優先於 new entry。
+4. 保持正式 live order blocked；Shioaji simulation side effect 仍必須明確 `--simulation-on` gate。
