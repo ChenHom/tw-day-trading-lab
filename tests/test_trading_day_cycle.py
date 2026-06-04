@@ -22,6 +22,7 @@ def trading_day_cycle_args(root: Path, **overrides: object) -> Namespace:
         "candidates_input": None,
         "intraday_bars_input": None,
         "intraday_cache_dataset": "TaiwanStockPriceMinute",
+        "require_intraday_bars": False,
         "position_state_input": None,
         "position_state_output": None,
         "output_dir": str(root / "cycle"),
@@ -520,6 +521,29 @@ class TradingDayCycleTest(unittest.TestCase):
             self.assertEqual(summary["days"][0]["status"], "ok")
             self.assertEqual(summary["days"][1]["status"], "skipped_non_trading_day")
             self.assertIn("Trading Day Cycle Stability Smoke", report)
+
+    def test_trading_day_cycle_smoke_can_require_intraday_bars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_trading_day_probe(root)
+            candidates_path = self.write_candidates(root, ["2330"])
+            smoke_candidate_path = root / "2026-06-04-candidates.json"
+            write_json(smoke_candidate_path, json.loads(candidates_path.read_text(encoding="utf-8")))
+
+            cmd_simulate_trading_day_cycle_smoke(
+                trading_day_cycle_smoke_args(root, dates="2026-06-04", require_intraday_bars=True)
+            )
+
+            summary = json.loads((root / "smoke" / "multi_day_smoke_summary.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(summary["summary"]["ok"], 0)
+            self.assertEqual(summary["summary"]["blocked"], 1)
+            self.assertEqual(summary["days"][0]["status"], "blocked")
+            self.assertEqual(
+                summary["days"][0]["data_requirements"]["blocked_reasons"],
+                ["required_intraday_bars_missing"],
+            )
+            self.assertEqual(summary["days"][0]["data_requirements"]["missing_intraday_symbols"], ["2330"])
 
 
 if __name__ == "__main__":

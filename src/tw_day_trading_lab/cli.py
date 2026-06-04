@@ -1089,7 +1089,7 @@ def _load_intraday_bars_by_symbol(path: Path | None) -> dict[str, list[dict[str,
 
 def _normalize_intraday_bar(row: dict[str, object], symbol: str) -> dict[str, object]:
     """Normalize raw/cache intraday rows into the strategy bar shape."""
-    raw_time = row.get("time") or row.get("Time") or row.get("datetime") or row.get("date")
+    raw_time = row.get("time") or row.get("Time") or row.get("minute") or row.get("datetime") or row.get("date")
     time_value = str(raw_time or "")
     if " " in time_value:
         time_value = time_value.split(" ", 1)[1]
@@ -2035,9 +2035,13 @@ def build_trading_day_cycle_smoke_markdown(summary: dict[str, object]) -> str:
         "",
     ]
     for day in summary["days"]:
+        data_requirements = day.get("data_requirements") if isinstance(day, dict) else None
+        requirement_note = ""
+        if isinstance(data_requirements, dict) and data_requirements.get("missing_intraday_symbols"):
+            requirement_note = f" / missing intraday `{data_requirements['missing_intraday_symbols']}`"
         lines.append(
             f"- {day['date']}: `{day['status']}` / calendar `{day['calendar_status']}` / "
-            f"smoke `{day.get('end_to_end_smoke_status')}`"
+            f"smoke `{day.get('end_to_end_smoke_status')}`{requirement_note}"
         )
     lines.extend(
         [
@@ -2110,8 +2114,14 @@ def cmd_simulate_trading_day_cycle_smoke(args: argparse.Namespace) -> None:
             smoke_status = smoke_payload.get("status")
 
         calendar_status = str(state.get("calendar_status"))
+        data_requirements = _evaluate_trading_day_smoke_data_requirements(
+            state,
+            require_intraday_bars=bool(getattr(args, "require_intraday_bars", False)),
+        )
         if calendar_status == "non_trading_day":
             status = "skipped_non_trading_day"
+        elif data_requirements["status"] == "blocked":
+            status = "blocked"
         elif smoke_status == "ok":
             status = "ok"
         else:
@@ -2125,8 +2135,9 @@ def cmd_simulate_trading_day_cycle_smoke(args: argparse.Namespace) -> None:
                 "state_path": str(state_output),
                 "candidate_path": str(candidates_input) if candidates_input.exists() else None,
                 "end_to_end_smoke_status": smoke_status,
+                "data_requirements": data_requirements,
                 "manual_actions": state.get("manual_actions", []),
-                "blocked_reasons": state.get("blocked_reasons", []),
+                "blocked_reasons": list(state.get("blocked_reasons", [])) + list(data_requirements["blocked_reasons"]),
             }
         )
 
@@ -2158,6 +2169,40 @@ def cmd_simulate_trading_day_cycle_smoke(args: argparse.Namespace) -> None:
     print(f"Blocked: {summary['summary']['blocked']}")
     print(f"Summary: {summary_output}")
     print(f"Report: {report_output}")
+
+
+def _evaluate_trading_day_smoke_data_requirements(
+    state: dict[str, object],
+    *,
+    require_intraday_bars: bool,
+) -> dict[str, object]:
+    """Evaluate optional data coverage requirements for real raw-cache smoke runs."""
+    result: dict[str, object] = {
+        "require_intraday_bars": require_intraday_bars,
+        "status": "ok",
+        "missing_intraday_symbols": [],
+        "blocked_reasons": [],
+    }
+    if not require_intraday_bars:
+        return result
+    adapter = state.get("intraday_data_adapter")
+    if not isinstance(adapter, dict):
+        result["status"] = "blocked"
+        result["blocked_reasons"] = ["intraday_data_adapter_missing"]
+        return result
+    missing: list[str] = []
+    for source in adapter.get("sources", []):
+        if not isinstance(source, dict):
+            continue
+        symbol = str(source.get("symbol") or "")
+        rows = int(source.get("rows") or 0)
+        if symbol and rows <= 0:
+            missing.append(symbol)
+    if missing:
+        result["status"] = "blocked"
+        result["missing_intraday_symbols"] = missing
+        result["blocked_reasons"] = ["required_intraday_bars_missing"]
+    return result
 
 
 def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
@@ -3281,6 +3326,7 @@ def build_parser() -> argparse.ArgumentParser:
     trading_day_cycle_smoke.add_argument("--market-proxy-stock-id", default="0050")
     trading_day_cycle_smoke.add_argument("--candidates-input-pattern", default="reports/{date}-candidates.json")
     trading_day_cycle_smoke.add_argument("--intraday-cache-dataset", default="TaiwanStockPriceMinute")
+    trading_day_cycle_smoke.add_argument("--require-intraday-bars", action="store_true")
     trading_day_cycle_smoke.add_argument("--position-state-input")
     trading_day_cycle_smoke.add_argument("--output-dir")
     trading_day_cycle_smoke.add_argument("--summary-output")

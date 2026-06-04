@@ -5,6 +5,7 @@ from pathlib import Path
 
 from tw_day_trading_lab.finmind_ingestion import (
     FetchRequest,
+    FinMindDataLoaderClient,
     FinMindIngestionClientError,
     ingest_finmind_requests,
     raw_cache_path,
@@ -23,6 +24,26 @@ class FakeFinMindClient:
         if self.error is not None:
             raise self.error
         return list(self.rows)
+
+
+class FakeFinMindLoader:
+    def __init__(self):
+        self.kbar_calls = []
+
+    def taiwan_stock_kbar(self, **kwargs):
+        self.kbar_calls.append(kwargs)
+        return [
+            {
+                "date": kwargs["date"],
+                "minute": "09:01",
+                "stock_id": kwargs["stock_id"],
+                "open": 100,
+                "high": 101,
+                "low": 99,
+                "close": 100.5,
+                "volume": 10,
+            }
+        ]
 
 
 class FinMindIngestionTest(unittest.TestCase):
@@ -223,6 +244,21 @@ class FinMindIngestionTest(unittest.TestCase):
         self.assertEqual(summary["actual"], 1)
         self.assertEqual(summary["refetched_incomplete_window"], 1)
         self.assertEqual(len(client.calls), 1)
+
+    def test_price_minute_dataset_uses_kbar_loader(self):
+        request = FetchRequest(
+            dataset="TaiwanStockPriceMinute",
+            trading_date="2026-06-03",
+            stock_id="2330",
+        )
+        client = FinMindDataLoaderClient.__new__(FinMindDataLoaderClient)
+        loader = FakeFinMindLoader()
+        client.loader = loader
+
+        rows = client.fetch_dataset(request)
+
+        self.assertEqual(loader.kbar_calls, [{"stock_id": "2330", "date": "2026-06-03"}])
+        self.assertEqual(rows[0]["minute"], "09:01")
 
 
 if __name__ == "__main__":

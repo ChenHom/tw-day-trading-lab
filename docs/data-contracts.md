@@ -610,6 +610,7 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle-smok
 | `state_path` | 單日 `trading_day_run_state.json` |
 | `candidate_path` | 使用的候選檔，若不存在可為 null |
 | `end_to_end_smoke_status` | 單日 `end_to_end_smoke.status` |
+| `data_requirements` | 可選資料覆蓋檢查；`--require-intraday-bars` 會要求候選股 intraday rows 存在 |
 | `manual_actions[]` | 單日人工處理事項 |
 | `blocked_reasons[]` | 單日 blocking reasons |
 
@@ -618,6 +619,7 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle-smok
 - multi-day smoke 不查額外假日日曆；仍只看 API/raw-cache rows。
 - `skipped_non_trading_day` 不是失敗，是 API/raw-cache 無交易資料時的預期狀態。
 - `ok` 只代表 dry-run artifact chain 完整，不代表策略 edge、broker side-effect readiness 或 live-order readiness。
+- 真實 raw-cache observation 應使用 `--require-intraday-bars`；若候選股缺分 K / intraday rows，日期應標為 `blocked` 並列出 `required_intraday_bars_missing`。
 - Shioaji simulation side effects、GitHub publish、Telegram send 都必須維持 disabled / dry-run，直到另有 explicit gate。
 
 ## Persisted Strategy Samples

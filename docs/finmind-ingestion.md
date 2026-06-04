@@ -32,6 +32,8 @@ P3 cache 分兩層：
 | control | TiDB `fetch_ledger` | 判斷 dataset/date/stock/source 是否已成功擷取，並記錄 status / request_count / error_message。 |
 | raw data | `data/raw/finmind/{dataset}/{date}/{stock_id}.jsonl` | 保存 API row 原始資料，供後續 candidate engine 或 replay 使用。 |
 
+目前 adapter 支援 `TaiwanStockPrice`、`TaiwanStockPriceMinute`、`TaiwanStockKBar`、`TaiwanStockInstitutionalInvestorsBuySell`、`TaiwanStockMarginPurchaseShortSale`、`TaiwanStockInfo`。其中 `TaiwanStockPriceMinute` 會透過 FinMind SDK 的 `taiwan_stock_kbar` 擷取分 K，並保留 raw cache dataset 名稱以符合 trading-day cycle intraday adapter contract。
+
 skip 條件必須同時成立：
 
 1. `fetch_ledger.status = success`

@@ -217,6 +217,8 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle-smok
 
 它會逐日執行完整 dry-run cycle，輸出 `reports/trading-day-cycle-smoke/multi_day_smoke_summary.json` 與 `multi_day_smoke.md`。有 API / raw cache 交易 rows 的日期才會進入 artifact-chain 檢查；取不到交易資料的日期會被標成 `skipped_non_trading_day`，不會查假日日曆。
 
+真實 raw-cache observation 應加上 `--require-intraday-bars`，要求每個候選股都有 candidate-scoped intraday rows；若只有日線交易 probe、缺候選股分 K，該日期會標成 `blocked` / `required_intraday_bars_missing`，避免把「artifact chain 可產出」誤讀成「真實盤中資料已可用」。
+
 如果沒有安裝 package，先加上 `PYTHONPATH=src`：
 
 ```bash

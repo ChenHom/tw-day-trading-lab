@@ -196,6 +196,8 @@ class FinMindDataLoaderClient:
 
     DATASET_METHODS = {
         "TaiwanStockPrice": "taiwan_stock_daily",
+        "TaiwanStockPriceMinute": "taiwan_stock_kbar",
+        "TaiwanStockKBar": "taiwan_stock_kbar",
         "TaiwanStockInstitutionalInvestorsBuySell": "taiwan_stock_institutional_investors",
         "TaiwanStockMarginPurchaseShortSale": "taiwan_stock_margin_purchase_short_sale",
         "TaiwanStockInfo": "taiwan_stock_info",
@@ -215,6 +217,14 @@ class FinMindDataLoaderClient:
         if method_name is None:
             raise FinMindIngestionClientError(f"unsupported FinMind dataset: {request.dataset}")
         method = getattr(self.loader, method_name)
+        if method_name == "taiwan_stock_kbar":
+            frame = method(
+                stock_id=request.stock_id if request.stock_id != "market" else "",
+                date=request.trading_date,
+            )
+            if hasattr(frame, "to_dict"):
+                return list(frame.to_dict("records"))
+            return [dict(row) for row in frame]
         kwargs: dict[str, Any] = {}
         if request.stock_id != "market" and request.dataset != "TaiwanStockInfo":
             kwargs["stock_id"] = request.stock_id

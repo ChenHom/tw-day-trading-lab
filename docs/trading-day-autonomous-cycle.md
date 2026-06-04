@@ -191,5 +191,5 @@ Rules:
 
 - If `--intraday-bars-input` is omitted, the cycle reads only candidate-scoped raw-cache files under `data/raw/finmind/TaiwanStockPriceMinute/{date}/{symbol}.jsonl`.
 - Multi-day smoke does not use a holiday calendar. Dates with no API/raw-cache trading rows are `skipped_non_trading_day`.
-- `multi_day_smoke_summary.json` / `multi_day_smoke.md` prove artifact-chain stability only.
+- `multi_day_smoke_summary.json` / `multi_day_smoke.md` prove artifact-chain stability only. Real raw-cache observations should pass `--require-intraday-bars` so candidate days with missing intraday rows are `blocked` / `required_intraday_bars_missing` instead of being mistaken for data-ready.
 - Shioaji simulation side effects, GitHub publish, and Telegram operator-send remain disabled until explicit gates are implemented.
