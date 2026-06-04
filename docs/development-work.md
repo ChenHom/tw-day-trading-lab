@@ -1695,3 +1695,47 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle \
 2. 每次候選檢查輸出 watch event：approved entry、rejected entry、exit trigger、no-action candidate。
 3. 將 entry / exit strategy loop 接上 position state；open position exit check 優先於 new entry。
 4. 保持正式 live order blocked；Shioaji simulation side effect 仍必須明確 `--simulation-on` gate。
+
+## 2026-06-04 Trading Day Cycle Steps 3-4
+
+已新增 fixture / dry-run intraday watch loop，接在 `simulate trading-day-cycle`。
+
+新增 CLI inputs：
+
+```bash
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle \
+  --date 2026-06-04 \
+  --trading-data-input data/raw/finmind/TaiwanStockPrice/2026-06-04/0050.jsonl \
+  --candidates-input reports/2026-06-04-candidates.json \
+  --intraday-bars-input fixtures/2026-06-04-intraday-bars.json \
+  --position-state-input reports/2026-06-04-trading-day-cycle/position_state.json \
+  --current-time 09:20
+```
+
+新增 artifact：
+
+```text
+reports/{date}-trading-day-cycle/watch_events.json
+```
+
+目前行為：
+
+- 只載入 `--candidates-input` 內的候選股，不盤中掃全市場。
+- 無持倉候選用 `VwapBreakoutStrategy` 做 entry dry-run。
+- 有 open position 的標的先做 exit dry-run，不同輪產生新的 entry intent。
+- 13:20 後的新 entry 一律 `entry_rejected` / `after_hard_stop`。
+- `trading_day_run_state.json` 會回填 `watch_events_artifact` 的 path / checksum / summary。
+- 本輪仍為 dry-run / fixture；`side_effects=[]`，不登入券商、不送單、不發通知。
+
+新增 / 更新測試：
+
+- `test_intraday_watch_loop_emits_entry_and_no_action_for_candidates_only`
+- `test_open_position_exit_is_evaluated_before_new_entry`
+- `test_after_hard_stop_rejects_new_entry`
+
+Next-run seed：
+
+1. 將 `watch_events.json` 的 approved entry / approved exit 轉成 dry-run order intents。
+2. 補 execution policy：duplicate intent、pending order、partial fill、callback ordering、max position、daily risk。
+3. 補 13:20 force-exit / stale pending cancel policy。
+4. 正式 live order 繼續 blocked；Shioaji simulation side effect 仍需明確 gate。

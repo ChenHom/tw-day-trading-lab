@@ -161,6 +161,7 @@ Build `Trading Day Autonomous Cycle v1` in small steps:
 
 1. Add a dry-run `simulate trading-day-cycle` command with stage simulation and a `trading_day_run_state.json` artifact.
 2. Add fixture-based intraday watch loop tests for 09:05/10:00 start, repeated candidate checks, and 13:20 stop.
-3. Add execution policy tests for duplicate intents, pending orders, partial fills, and force-exit at 13:20.
-4. Add report publish dry-run for the 15:00 GitHub report/link step.
-5. Add next-candidate builder handoff for the 17:30 stage.
+3. Add fixture-based entry / exit strategy loop wiring: candidate entry via `VwapBreakoutStrategy`, open-position exit first, and `watch_events.json`.
+4. Add execution policy tests for duplicate intents, pending orders, partial fills, and force-exit at 13:20.
+5. Add report publish dry-run for the 15:00 GitHub report/link step.
+6. Add next-candidate builder handoff for the 17:30 stage.

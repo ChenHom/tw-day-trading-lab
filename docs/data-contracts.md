@@ -385,6 +385,9 @@ P10 regression correction loop 必須把每日問題轉成可重跑 fixture，�
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle \
   --date 2026-06-04 \
   --trading-data-input data/raw/finmind/TaiwanStockPrice/2026-06-04/0050.jsonl \
+  --candidates-input reports/2026-06-04-candidates.json \
+  --intraday-bars-input fixtures/2026-06-04-intraday-bars.json \
+  --current-time 09:20 \
   --run-all-stages
 ```
 
@@ -401,7 +404,7 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle \
 |---|---|
 | `trading_day_run_id` | 單一交易日循環 id |
 | `trading_date` | 交易日 |
-| `calendar_status` | `trading_day` / `holiday` / `unknown` |
+| `calendar_status` | `trading_day` / `non_trading_day` |
 | `start_policy` | `09:05` / `10:00` |
 | `hard_stop_time` | 固定 `13:20`，除非另有明確 policy |
 | `report_time` | 固定 `15:00` |
@@ -409,6 +412,7 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle \
 | `stage` | 目前 stage |
 | `stage_history[]` | stage transition、timestamp、reason |
 | `candidate_artifact` | 本交易日候選名單 path / checksum / source run id |
+| `watch_events_artifact` | 盤中候選檢查事件 path / checksum / summary |
 | `position_state_artifact` | open positions / pending orders / callbacks 的 path / checksum |
 | `report_artifact` | 15:00 report path / checksum / GitHub link |
 | `next_candidate_artifact` | 17:30 next-day candidates path / checksum |
@@ -464,6 +468,7 @@ Stage enum：
 - no-action 也要保存 reason，否則無法判斷策略沒有觸發還是資料沒有進來。
 - exit strategy 對 open position 的檢查優先於新 entry。
 - 任何 13:20 後的 entry signal 必須被標記為 rejected / `after_hard_stop`。
+- 目前 fixture dry-run 的 payload shape 是 `{ "events": [...] }`。沒有持倉的候選以 `VwapBreakoutStrategy` 產生 entry signal；有 open position 的標的只先檢查 exit，不在同輪產生新的 entry intent。
 
 ## Phase C 15:00 Report Publish Contract
 

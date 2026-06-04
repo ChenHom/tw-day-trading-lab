@@ -209,7 +209,7 @@ P8 之後每個 phase close-out 不能只列「新增命令」或「新增文件
 
 ### C1: Trading Day Scheduler / Run State
 
-目前狀態：第 1-2 步已完成 dry-run 版。
+目前狀態：第 1-4 步已完成 fixture / dry-run 版。
 
 - 建立 trading-day state machine。
 - 支援 09:05 或 10:00 啟動 policy。
@@ -227,23 +227,29 @@ P8 之後每個 phase close-out 不能只列「新增命令」或「新增文件
 
 ### C2: Intraday Candidate Watch Loop
 
+目前狀態：fixture / dry-run MVP 已完成。
+
 - 只載入既有候選股名單，不盤中掃全市場。
 - 透過 market-data port 取得候選股 intraday bars / ticks。
 - 在 09:05/10:00-13:20 期間反覆檢查 entry strategy。
 - 對 open positions 反覆檢查 exit strategy。
 - 每次 no-action / rejected / approved signal 都要有 reason 與 artifact。
+- 目前輸出 `watch_events.json`，entry 使用 `VwapBreakoutStrategy`，open position 會優先走 exit dry-run，13:20 後新 entry 會被拒絕為 `after_hard_stop`。
 
 驗收：
 
-- fixture bars 可產生 approved entry、rejected entry、exit trigger、no-action candidate。
-- 13:20 後不允許新進場。
+- fixture bars 可產生 approved entry、rejected entry、exit trigger、no-action candidate：已完成。
+- 13:20 後不允許新進場：已完成。
 
-### C3: Execution / Exit / Force-Exit Policy
+### C3: Execution Policy + Force Exit / Cancel Enforcement
 
+目前狀態：下一步。
+
+- 將 `watch_events.json` 的 approved entry / approved exit 轉成 dry-run order intents。
+- 接 fake / Shioaji simulation gate，但預設仍不登入、不送單。
+- 處理 duplicate intent、pending order、partial fill、callback ordering、max position、daily risk。
+- 13:20 後禁止新進場，並對 open position / stale pending order 產生 force-exit / cancel intent。
 - 正式 live trading 繼續 blocked。
-- dry-run / fake / Shioaji simulation 必須明確 gate。
-- 實作 duplicate intent、max positions、daily risk、pending orders、partial fill、callback ordering、terminal-state conflict 的交易日層級處理。
-- 13:20 執行 stop-new-entry、force-exit、stale order cancel 與 manual action report。
 
 驗收：
 

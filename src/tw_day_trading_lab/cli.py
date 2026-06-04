@@ -1051,6 +1051,240 @@ def _read_rows_from_json_or_jsonl(path: Path) -> list[dict[str, object]]:
     return []
 
 
+def _parse_optional_float(value: object) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_intraday_bars_by_symbol(path: Path | None) -> dict[str, list[dict[str, object]]]:
+    """Load fixture intraday bars and group them by candidate symbol."""
+    if path is None or not path.exists():
+        return {}
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    grouped: dict[str, list[dict[str, object]]] = {}
+    if isinstance(raw, dict):
+        for key in ("bars", "data", "rows", "items"):
+            value = raw.get(key)
+            if isinstance(value, list):
+                raw = value
+                break
+        else:
+            for symbol, bars in raw.items():
+                if isinstance(bars, list):
+                    grouped[str(symbol)] = [dict(item) for item in bars if isinstance(item, dict)]
+            return grouped
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol") or item.get("stock_id") or "")
+            if symbol:
+                grouped.setdefault(symbol, []).append(dict(item))
+    return grouped
+
+
+def _load_open_positions_by_symbol(path: Path | None) -> dict[str, dict[str, object]]:
+    """Load dry-run position state for exit-first watch-loop evaluation."""
+    if path is None or not path.exists():
+        return {}
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, dict):
+        positions = raw.get("open_positions", raw.get("positions", []))
+    else:
+        positions = raw
+    grouped: dict[str, dict[str, object]] = {}
+    if isinstance(positions, list):
+        for item in positions:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol") or item.get("stock_id") or "")
+            if symbol:
+                grouped[symbol] = dict(item)
+    return grouped
+
+
+def _bars_until_time(
+    bars: list[dict[str, object]],
+    current_time: str,
+) -> list[dict[str, object]]:
+    """Return bars visible at the current scan time; bars without time are treated as visible."""
+    visible = []
+    for bar in sorted(bars, key=lambda item: str(item.get("time", ""))):
+        bar_time = str(bar.get("time") or "")
+        if not bar_time or bar_time <= current_time:
+            visible.append(bar)
+    return visible
+
+
+def _signal_to_dict(signal: object) -> dict[str, object]:
+    return {
+        "triggered": bool(getattr(signal, "triggered", False)),
+        "direction": str(getattr(signal, "direction", "")),
+        "entry_price": getattr(signal, "entry_price", None),
+        "stop_price": getattr(signal, "stop_price", None),
+        "target_price": getattr(signal, "target_price", None),
+        "reason": str(getattr(signal, "reason", "")),
+    }
+
+
+def _evaluate_exit_signal(
+    *,
+    position: dict[str, object],
+    bars: list[dict[str, object]],
+    current_time: str,
+    hard_stop_time: str,
+) -> dict[str, object]:
+    """Evaluate dry-run exits before any new entry logic for an open position."""
+    entry_price = _parse_optional_float(position.get("entry_price"))
+    stop_price = _parse_optional_float(position.get("stop_price"))
+    target_price = _parse_optional_float(position.get("target_price"))
+    if entry_price is None or stop_price is None or target_price is None:
+        return {
+            "triggered": False,
+            "direction": "sell",
+            "reason": "position_state_incomplete",
+        }
+
+    visible_bars = _bars_until_time(bars, current_time)
+    for bar in visible_bars:
+        low_value = _parse_optional_float(bar.get("low", bar.get("min")))
+        high_value = _parse_optional_float(bar.get("high", bar.get("max")))
+        if low_value is not None and low_value <= stop_price:
+            return {
+                "triggered": True,
+                "direction": "sell",
+                "exit_price": stop_price,
+                "reason": "stop_loss",
+            }
+        if high_value is not None and high_value >= target_price:
+            return {
+                "triggered": True,
+                "direction": "sell",
+                "exit_price": target_price,
+                "reason": "take_profit",
+            }
+
+    if current_time >= hard_stop_time:
+        exit_price = entry_price
+        if visible_bars:
+            last_bar = visible_bars[-1]
+            exit_price = _parse_optional_float(last_bar.get("close", last_bar.get("close_price"))) or entry_price
+        return {
+            "triggered": True,
+            "direction": "sell",
+            "exit_price": exit_price,
+            "reason": "time_exit",
+        }
+
+    return {
+        "triggered": False,
+        "direction": "sell",
+        "reason": "exit_not_triggered",
+    }
+
+
+def build_intraday_watch_events(
+    *,
+    trading_day_run_id: str,
+    trading_date: str,
+    candidates: list[CandidateScore],
+    bars_by_symbol: dict[str, list[dict[str, object]]],
+    positions_by_symbol: dict[str, dict[str, object]],
+    market_data_artifact: Path | None,
+    current_time: str,
+    hard_stop_time: str,
+    observation_minutes: int = 15,
+    volume_surge_ratio: float = 1.5,
+) -> list[dict[str, object]]:
+    """Evaluate candidate-only intraday watch events in dry-run mode."""
+    strategy = VwapBreakoutStrategy(
+        observation_minutes=observation_minutes,
+        volume_surge_ratio=volume_surge_ratio,
+    )
+    events: list[dict[str, object]] = []
+    for candidate in candidates:
+        symbol = candidate.symbol
+        all_bars = bars_by_symbol.get(symbol, [])
+        visible_bars = _bars_until_time(all_bars, current_time)
+        position = positions_by_symbol.get(symbol)
+        base_event = {
+            "event_id": f"{trading_day_run_id}:{current_time}:{symbol}",
+            "trading_day_run_id": trading_day_run_id,
+            "trading_date": trading_date,
+            "timestamp": f"{trading_date}T{current_time}:00+08:00",
+            "symbol": symbol,
+            "candidate_rank": candidate.rank,
+            "candidate_actionable": candidate.next_day_actionable,
+            "bars_seen": len(visible_bars),
+            "market_data_artifact": str(market_data_artifact) if market_data_artifact else None,
+            "entry_signal": None,
+            "exit_signal": None,
+            "risk_decision": {"approved": False, "reason": "not_evaluated"},
+            "action": "no_action",
+            "reason": "not_evaluated",
+            "order_intent_id": None,
+            "side_effects": [],
+        }
+
+        if not visible_bars:
+            base_event["reason"] = "intraday_data_missing"
+            events.append(base_event)
+            continue
+
+        if position is not None:
+            exit_signal = _evaluate_exit_signal(
+                position=position,
+                bars=all_bars,
+                current_time=current_time,
+                hard_stop_time=hard_stop_time,
+            )
+            base_event["exit_signal"] = exit_signal
+            base_event["reason"] = str(exit_signal["reason"])
+            if exit_signal.get("triggered"):
+                base_event["action"] = "exit_approved"
+                base_event["risk_decision"] = {"approved": True, "reason": "open_position_exit_first"}
+                base_event["order_intent_id"] = f"{trading_day_run_id}:{symbol}:exit:{current_time}"
+            else:
+                base_event["action"] = "no_action"
+                base_event["risk_decision"] = {"approved": False, "reason": "exit_not_triggered"}
+            events.append(base_event)
+            continue
+
+        if current_time >= hard_stop_time:
+            base_event["action"] = "entry_rejected"
+            base_event["reason"] = "after_hard_stop"
+            base_event["risk_decision"] = {"approved": False, "reason": "after_hard_stop"}
+            events.append(base_event)
+            continue
+
+        if not candidate.next_day_actionable:
+            base_event["reason"] = "candidate_not_actionable"
+            base_event["risk_decision"] = {"approved": False, "reason": "candidate_not_actionable"}
+            events.append(base_event)
+            continue
+
+        entry_signal = strategy.generate_signal(symbol, visible_bars)
+        base_event["entry_signal"] = _signal_to_dict(entry_signal)
+        base_event["reason"] = entry_signal.reason
+        if entry_signal.triggered:
+            base_event["action"] = "entry_approved"
+            base_event["risk_decision"] = {
+                "approved": True,
+                "reason": "dry_run_strategy_signal",
+                "quantity": 1000,
+            }
+            base_event["order_intent_id"] = f"{trading_day_run_id}:{symbol}:entry:{current_time}"
+        else:
+            base_event["action"] = "no_action"
+            base_event["risk_decision"] = {"approved": False, "reason": entry_signal.reason}
+        events.append(base_event)
+    return events
+
+
 def resolve_trading_data_probe(
     *,
     trading_date: str,
@@ -1138,6 +1372,8 @@ def build_trading_day_cycle_state(args: argparse.Namespace) -> dict[str, object]
     state_output = Path(args.state_output) if args.state_output else output_dir / "trading_day_run_state.json"
     cache_dir = Path(args.cache_dir)
     candidate_artifact = Path(args.candidates_input) if args.candidates_input else output_dir / "candidates.json"
+    position_state_artifact = Path(args.position_state_input) if args.position_state_input else output_dir / "position_state.json"
+    watch_events_artifact = Path(args.watch_events_output) if args.watch_events_output else output_dir / "watch_events.json"
     trading_data_input = Path(args.trading_data_input) if args.trading_data_input else None
 
     data_probe = resolve_trading_data_probe(
@@ -1211,9 +1447,21 @@ def build_trading_day_cycle_state(args: argparse.Namespace) -> dict[str, object]
         },
         "trading_data_probe": data_probe,
         "position_state_artifact": {
-            "path": str(output_dir / "position_state.json"),
-            "exists": False,
-            "checksum": None,
+            "path": str(position_state_artifact),
+            "exists": position_state_artifact.exists(),
+            "checksum": get_file_checksum(position_state_artifact) if position_state_artifact.exists() else None,
+        },
+        "watch_events_artifact": {
+            "path": str(watch_events_artifact),
+            "exists": watch_events_artifact.exists(),
+            "checksum": get_file_checksum(watch_events_artifact) if watch_events_artifact.exists() else None,
+            "summary": {
+                "total": 0,
+                "entry_approved": 0,
+                "entry_rejected": 0,
+                "exit_approved": 0,
+                "no_action": 0,
+            },
         },
         "report_artifact": {
             "path": str(output_dir / "report.md"),
@@ -1246,11 +1494,52 @@ def cmd_simulate_trading_day_cycle(args: argparse.Namespace) -> None:
     """Dry-run the trading-day cycle state machine and write run state."""
     state = build_trading_day_cycle_state(args)
     state_output = Path(str(state.pop("_state_output")))
+    watch_events_output = Path(str(state["watch_events_artifact"]["path"]))
+    intraday_bars_input = Path(args.intraday_bars_input) if args.intraday_bars_input else None
+    candidates_input = Path(args.candidates_input) if args.candidates_input else None
+    position_state_input = Path(args.position_state_input) if args.position_state_input else None
+
+    if (
+        state["calendar_status"] == "trading_day"
+        and intraday_bars_input is not None
+        and candidates_input is not None
+        and candidates_input.exists()
+    ):
+        events = build_intraday_watch_events(
+            trading_day_run_id=str(state["trading_day_run_id"]),
+            trading_date=str(state["trading_date"]),
+            candidates=load_candidate_scores(candidates_input),
+            bars_by_symbol=_load_intraday_bars_by_symbol(intraday_bars_input),
+            positions_by_symbol=_load_open_positions_by_symbol(position_state_input),
+            market_data_artifact=intraday_bars_input,
+            current_time=args.current_time,
+            hard_stop_time=args.hard_stop_time,
+            observation_minutes=args.strategy_observation_minutes,
+            volume_surge_ratio=args.strategy_volume_surge_ratio,
+        )
+        write_json(watch_events_output, {"events": events})
+        summary = {
+            "total": len(events),
+            "entry_approved": sum(1 for event in events if event["action"] == "entry_approved"),
+            "entry_rejected": sum(1 for event in events if event["action"] == "entry_rejected"),
+            "exit_approved": sum(1 for event in events if event["action"] == "exit_approved"),
+            "no_action": sum(1 for event in events if event["action"] == "no_action"),
+        }
+        state["watch_events_artifact"] = {
+            "path": str(watch_events_output),
+            "exists": watch_events_output.exists(),
+            "checksum": get_file_checksum(watch_events_output),
+            "summary": summary,
+        }
+    elif state["calendar_status"] == "trading_day":
+        state["manual_actions"].append("Intraday watch loop skipped; provide --intraday-bars-input and --candidates-input.")
+
     write_json(state_output, state)
     print("Trading day cycle dry-run completed.")
     print(f"Date: {state['trading_date']}")
     print(f"Calendar status: {state['calendar_status']}")
     print(f"Stage: {state['stage']}")
+    print(f"Watch events: {state['watch_events_artifact']['path']}")
     print(f"State: {state_output}")
 
 
@@ -2343,8 +2632,11 @@ def build_parser() -> argparse.ArgumentParser:
     trading_day_cycle.add_argument("--trading-data-input")
     trading_day_cycle.add_argument("--market-proxy-stock-id", default="0050")
     trading_day_cycle.add_argument("--candidates-input")
+    trading_day_cycle.add_argument("--intraday-bars-input")
+    trading_day_cycle.add_argument("--position-state-input")
     trading_day_cycle.add_argument("--output-dir")
     trading_day_cycle.add_argument("--state-output")
+    trading_day_cycle.add_argument("--watch-events-output")
     trading_day_cycle.add_argument("--run-id")
     trading_day_cycle.add_argument("--start-policy", choices=("09:05", "10:00"), default="09:05")
     trading_day_cycle.add_argument("--hard-stop-time", default="13:20")
@@ -2354,6 +2646,8 @@ def build_parser() -> argparse.ArgumentParser:
     trading_day_cycle.add_argument("--current-time", default="09:05")
     trading_day_cycle.add_argument("--max-retries", type=int, default=2)
     trading_day_cycle.add_argument("--run-all-stages", action="store_true")
+    trading_day_cycle.add_argument("--strategy-observation-minutes", type=int, default=15)
+    trading_day_cycle.add_argument("--strategy-volume-surge-ratio", type=float, default=1.5)
     trading_day_cycle.set_defaults(func=cmd_simulate_trading_day_cycle)
 
     restart_sync = simulate_sub.add_parser("restart-sync")

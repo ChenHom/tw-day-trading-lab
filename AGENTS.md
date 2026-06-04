@@ -44,7 +44,7 @@ If a task appears to require live execution, stop and design the gate/SOP first.
 - P9-P11 infrastructure is complete: operator alerts, regression import/run, and live broker adapter boundary.
 - Daily Simulation Ops Automation v1 first two implementation steps are complete: `simulate daily-ops` / `make daily-ops` orchestration and `daily_bundle_audit.json`.
 - Direction correction is complete: the project target is a full trading-day autonomous cycle, not only a single daily simulation bundle.
-- Trading Day Autonomous Cycle v1 steps 1-2 are complete: `simulate trading-day-cycle` emits `trading_day_run_state.json`, and trading-day status is based only on API/raw-cache data availability. Do not add a separate holiday calendar unless explicitly requested.
+- Trading Day Autonomous Cycle v1 steps 1-4 are complete: `simulate trading-day-cycle` emits `trading_day_run_state.json`, trading-day status is based only on API/raw-cache data availability, and fixture intraday watch events can evaluate candidate entry plus open-position exit state. Do not add a separate holiday calendar unless explicitly requested.
 - `.pfx` / `.p12` files are ignored, and `Sinopac.pfx` has been removed from reachable Git history.
 
 ## Next Development Priority
@@ -57,7 +57,7 @@ Also do not treat `daily-ops` as the whole product. It is an artifact/audit runn
 
 - 17:30 build tomorrow's candidate list.
 - 09:05 or 10:00 start the intraday candidate watch loop.
-- 09:05/10:00-13:20 repeatedly evaluate candidate entry and open-position exit strategies.
+- 09:05/10:00-13:20 repeatedly evaluate candidate entry and open-position exit strategies. Fixture dry-run support now emits `watch_events.json`; next work should wire those events into execution policy and force-exit/cancel handling.
 - 13:20 stop new entries and run force-exit / cancel policy.
 - 15:00 publish the trading-day report to GitHub and send the operator link.
 - 17:30 build the next candidate list and hand off to the next trading day.
@@ -142,6 +142,9 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate daily-ops \
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle \
   --date 2026-06-04 \
   --trading-data-input data/raw/finmind/TaiwanStockPrice/2026-06-04/0050.jsonl \
+  --candidates-input reports/2026-06-04-candidates.json \
+  --intraday-bars-input fixtures/2026-06-04-intraday-bars.json \
+  --current-time 09:20 \
   --run-all-stages
 
 make daily-ops DATE=2026-06-04 ARGS="--skip-ingestion --allow-outside-session --fail-on-audit"
