@@ -413,9 +413,11 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle \
 | `stage_history[]` | stage transition、timestamp、reason |
 | `candidate_artifact` | 本交易日候選名單 path / checksum / source run id |
 | `watch_events_artifact` | 盤中候選檢查事件 path / checksum / summary |
+| `order_intents_artifact` | dry-run order / cancel intents path / checksum / summary |
 | `position_state_artifact` | open positions / pending orders / callbacks 的 path / checksum |
 | `report_artifact` | 15:00 report path / checksum / GitHub link |
 | `next_candidate_artifact` | 17:30 next-day candidates path / checksum |
+| `end_to_end_smoke_artifact` | fixture smoke path / checksum / status |
 | `blocked_reasons[]` | blocking condition |
 | `manual_actions[]` | operator 必須處理的行動 |
 | `side_effects[]` | login / place_order / cancel_order / publish_report / send_link 等摘要 |
@@ -470,6 +472,35 @@ Stage enum：
 - 任何 13:20 後的 entry signal 必須被標記為 rejected / `after_hard_stop`。
 - 目前 fixture dry-run 的 payload shape 是 `{ "events": [...] }`。沒有持倉的候選以 `VwapBreakoutStrategy` 產生 entry signal；有 open position 的標的只先檢查 exit，不在同輪產生新的 entry intent。
 
+## Phase C Order Intent / Position State Dry-Run Contract
+
+`watch_events.json` 之後必須轉成可稽核的 dry-run execution artifact，不直接碰 broker。
+
+目前 artifact：
+
+- `order_intents.json`
+- `position_state.json`
+
+`order_intents.json` 必要欄位：
+
+| 欄位 | 說明 |
+|---|---|
+| `trading_day_run_id` | 來源 trading-day run |
+| `order_intents[]` | approved entry / exit 轉出的 dry-run order intent |
+| `cancel_intents[]` | 13:20 後 stale pending order 的 dry-run cancel intent |
+| `execution_policy` | duplicate / pending / partial-fill / max-position / daily-risk policy |
+| `manual_actions[]` | partial fill 或待人工處理事項 |
+| `summary` | intent / cancel / blocked / duplicate counts |
+| `side_effects[]` | 必須保持空陣列，除非另有明確 simulation side-effect gate |
+
+規則：
+
+- duplicate order intent 必須 `duplicate_suppressed`。
+- max open positions / daily risk stop 可以將 entry intent 標為 `blocked`。
+- 13:20 後 stale pending order 必須產生 cancel intent。
+- partial fill 只能產生 manual action，不得自動改寫 position。
+- dry-run 不做 fill mutation；`position_state.json` 只記錄原始 open positions、pending orders、generated order / cancel intents 與 manual actions。
+
 ## Phase C 15:00 Report Publish Contract
 
 15:00 報告是 operator 的主要回饋介面，不只是本地 Markdown。
@@ -494,6 +525,37 @@ Stage enum：
 - GitHub publish 與 operator send 必須可 dry-run。
 - 真實發送必須有明確 gate 與 dedupe key。
 - simulation P/L 不得被寫成 strategy edge 證明。
+
+目前 dry-run 行為：
+
+- `report.md` 是本地 artifact。
+- `report_artifact.publish_status=dry_run`。
+- `report_artifact.send_status=dry_run_not_sent`。
+- 不會真的 publish GitHub，也不會發 Telegram link。
+
+## Phase C 17:30 Next-Candidate Handoff Contract
+
+目前 artifact：
+
+- `next_candidates.json`
+
+規則：
+
+- 不查額外 holiday calendar，也不猜下一個交易日日期。
+- `next_trading_date_policy` 固定記錄為 `next_api_available_trading_day`。
+- 後續實際交易日仍由 API/raw-cache 是否有資料決定。
+
+## Phase C End-to-End Smoke Contract
+
+目前 artifact：
+
+- `end_to_end_smoke.json`
+
+規則：
+
+- smoke 只檢查 fixture dry-run artifact chain 是否完整。
+- required artifacts：candidate、watch events、order intents、position state、report、next candidates。
+- `status=ok` 不代表策略有 edge，也不代表可以 live order；只代表 simulate 上線測所需 dry-run bundle 已完整。
 
 ## Persisted Strategy Samples
 

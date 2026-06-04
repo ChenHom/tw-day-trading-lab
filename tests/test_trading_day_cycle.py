@@ -16,9 +16,14 @@ def trading_day_cycle_args(root: Path, **overrides: object) -> Namespace:
         "candidates_input": None,
         "intraday_bars_input": None,
         "position_state_input": None,
+        "position_state_output": None,
         "output_dir": str(root / "cycle"),
         "state_output": None,
         "watch_events_output": None,
+        "order_intents_output": None,
+        "report_output": None,
+        "next_candidates_output": None,
+        "end_to_end_smoke_output": None,
         "run_id": None,
         "start_policy": "09:05",
         "hard_stop_time": "13:20",
@@ -30,6 +35,8 @@ def trading_day_cycle_args(root: Path, **overrides: object) -> Namespace:
         "run_all_stages": False,
         "strategy_observation_minutes": 15,
         "strategy_volume_surge_ratio": 1.5,
+        "max_open_positions": 3,
+        "daily_risk_stop_r": -3.0,
     }
     args.update(overrides)
     return Namespace(**args)
@@ -262,6 +269,147 @@ class TradingDayCycleTest(unittest.TestCase):
             self.assertEqual(event["action"], "entry_rejected")
             self.assertEqual(event["reason"], "after_hard_stop")
             self.assertFalse(event["risk_decision"]["approved"])
+
+    def test_full_cycle_outputs_order_report_next_candidates_and_smoke(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_trading_day_probe(root)
+            candidates_path = self.write_candidates(root, ["2330", "2317"])
+            bars_path = root / "intraday_bars.json"
+            write_json(
+                bars_path,
+                {
+                    "2330": self.breakout_bars("2330"),
+                    "2317": [
+                        {"time": f"09:{minute:02d}", "open": 80, "high": 80, "low": 79, "close": 79.5, "volume": 100}
+                        for minute in range(16)
+                    ],
+                },
+            )
+
+            cmd_simulate_trading_day_cycle(
+                trading_day_cycle_args(
+                    root,
+                    candidates_input=str(candidates_path),
+                    intraday_bars_input=str(bars_path),
+                    current_time="09:20",
+                    run_all_stages=True,
+                )
+            )
+
+            order_intents = json.loads((root / "cycle" / "order_intents.json").read_text(encoding="utf-8"))
+            report_text = (root / "cycle" / "report.md").read_text(encoding="utf-8")
+            next_candidates = json.loads((root / "cycle" / "next_candidates.json").read_text(encoding="utf-8"))
+            smoke = json.loads((root / "cycle" / "end_to_end_smoke.json").read_text(encoding="utf-8"))
+            state = json.loads((root / "cycle" / "trading_day_run_state.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(order_intents["summary"]["order_intents"], 1)
+            self.assertEqual(order_intents["order_intents"][0]["status"], "dry_run_ready")
+            self.assertEqual(order_intents["order_intents"][0]["side"], "buy")
+            self.assertIn("Trading Day Report 2026-06-04", report_text)
+            self.assertEqual(next_candidates["candidate_count"], 2)
+            self.assertEqual(smoke["status"], "ok")
+            self.assertEqual(state["report_artifact"]["publish_status"], "dry_run")
+            self.assertEqual(state["end_to_end_smoke_artifact"]["status"], "ok")
+
+    def test_execution_policy_suppresses_duplicate_and_blocks_max_positions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_trading_day_probe(root)
+            candidates_path = self.write_candidates(root, ["2330", "2317"])
+            bars_path = root / "intraday_bars.json"
+            position_path = root / "position_state.json"
+            write_json(bars_path, {"2330": self.breakout_bars("2330"), "2317": self.breakout_bars("2317")})
+            write_json(
+                position_path,
+                {
+                    "open_positions": [
+                        {"symbol": "1101", "quantity": 1000},
+                        {"symbol": "1102", "quantity": 1000},
+                        {"symbol": "1103", "quantity": 1000},
+                    ],
+                    "pending_orders": [
+                        {
+                            "order_intent_id": "tdc-2026-06-04-0905:2330:entry:09:20",
+                            "symbol": "2330",
+                            "status": "submitted",
+                        }
+                    ],
+                },
+            )
+
+            cmd_simulate_trading_day_cycle(
+                trading_day_cycle_args(
+                    root,
+                    candidates_input=str(candidates_path),
+                    intraday_bars_input=str(bars_path),
+                    position_state_input=str(position_path),
+                    current_time="09:20",
+                )
+            )
+
+            payload = json.loads((root / "cycle" / "order_intents.json").read_text(encoding="utf-8"))
+            statuses = {item["symbol"]: item["status"] for item in payload["order_intents"]}
+
+            self.assertEqual(statuses["2330"], "duplicate_suppressed")
+            self.assertEqual(statuses["2317"], "blocked")
+            self.assertEqual(payload["order_intents"][1]["blocked_reason"], "max_open_positions_reached")
+
+    def test_force_exit_creates_exit_and_cancel_intents_after_hard_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_trading_day_probe(root)
+            candidates_path = self.write_candidates(root, ["2330"])
+            bars_path = root / "intraday_bars.json"
+            position_path = root / "position_state.json"
+            write_json(
+                bars_path,
+                {
+                    "2330": [
+                        {"time": "09:05", "open": 100, "high": 100, "low": 99, "close": 100, "volume": 100},
+                        {"time": "13:25", "open": 100, "high": 100, "low": 99, "close": 99.5, "volume": 100},
+                    ]
+                },
+            )
+            write_json(
+                position_path,
+                {
+                    "open_positions": [
+                        {
+                            "symbol": "2330",
+                            "entry_price": 100,
+                            "stop_price": 95,
+                            "target_price": 110,
+                            "quantity": 1000,
+                        }
+                    ],
+                    "pending_orders": [
+                        {
+                            "order_intent_id": "pending-2330-entry",
+                            "symbol": "2330",
+                            "status": "submitted",
+                        }
+                    ],
+                },
+            )
+
+            cmd_simulate_trading_day_cycle(
+                trading_day_cycle_args(
+                    root,
+                    candidates_input=str(candidates_path),
+                    intraday_bars_input=str(bars_path),
+                    position_state_input=str(position_path),
+                    current_time="13:25",
+                )
+            )
+
+            watch_event = json.loads((root / "cycle" / "watch_events.json").read_text(encoding="utf-8"))["events"][0]
+            payload = json.loads((root / "cycle" / "order_intents.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(watch_event["action"], "exit_approved")
+            self.assertEqual(watch_event["exit_signal"]["reason"], "time_exit")
+            self.assertEqual(payload["order_intents"][0]["side"], "sell")
+            self.assertEqual(payload["cancel_intents"][0]["reason"], "stale_pending_order_after_hard_stop")
 
 
 if __name__ == "__main__":

@@ -209,7 +209,7 @@ P8 之後每個 phase close-out 不能只列「新增命令」或「新增文件
 
 ### C1: Trading Day Scheduler / Run State
 
-目前狀態：第 1-4 步已完成 fixture / dry-run 版。
+目前狀態：第 1-8 步已完成 fixture / dry-run 版。
 
 - 建立 trading-day state machine。
 - 支援 09:05 或 10:00 啟動 policy。
@@ -223,7 +223,7 @@ P8 之後每個 phase close-out 不能只列「新增命令」或「新增文件
 
 - fixture trading day 可 dry-run 完整 stage transition：已完成。
 - 無交易資料時可輸出 `calendar_status=non_trading_day` 並停在 `blocked`：已完成。
-- 重跑同一 trading day 不會重複送單、重複發 report 或覆蓋不可覆蓋的候選清單：dry-run state 已有 idempotency key / lock policy，實際 side effect enforcement 留到 C3/C4。
+- 重跑同一 trading day 不會重複送單、重複發 report 或覆蓋不可覆蓋的候選清單：dry-run state 已有 idempotency key / lock policy，duplicate intent 會被 `duplicate_suppressed`，真實 side effect enforcement 留到 explicit send / broker gates。
 
 ### C2: Intraday Candidate Watch Loop
 
@@ -243,7 +243,7 @@ P8 之後每個 phase close-out 不能只列「新增命令」或「新增文件
 
 ### C3: Execution Policy + Force Exit / Cancel Enforcement
 
-目前狀態：下一步。
+目前狀態：fixture / dry-run MVP 已完成。
 
 - 將 `watch_events.json` 的 approved entry / approved exit 轉成 dry-run order intents。
 - 接 fake / Shioaji simulation gate，但預設仍不登入、不送單。
@@ -253,10 +253,14 @@ P8 之後每個 phase close-out 不能只列「新增命令」或「新增文件
 
 驗收：
 
-- force-exit fixture 可證明 open position 被處理或明確列入 manual action。
-- partial fill / callback ordering issue 不會被當成正常完成。
+- force-exit fixture 可證明 open position 被處理或明確列入 manual action：已完成。
+- stale pending order 會產生 dry-run cancel intent：已完成。
+- duplicate intent 會被 suppress，max positions / daily risk 可 block 新 entry：已完成。
+- partial fill lifecycle decision 會列入 manual action：已完成。
 
 ### C4: 15:00 GitHub Report Publish
+
+目前狀態：local / would-send dry-run MVP 已完成。
 
 - 產生當日交易結果報告：候選監控、進場、出場、跳過原因、P/L 或 simulation P/L、優點、缺點、blockers、next actions。
 - 將報告發布到 GitHub artifact。
@@ -265,10 +269,12 @@ P8 之後每個 phase close-out 不能只列「新增命令」或「新增文件
 
 驗收：
 
-- dry-run mode 可建立 report artifact 與 would-send link。
+- dry-run mode 可建立 report artifact 與 would-send link：已完成，`publish_status=dry_run` / `send_status=dry_run_not_sent`。
 - 真實發送前必須另有 gate。
 
 ### C5: 17:30 Next-Day Candidates
+
+目前狀態：next-candidate handoff dry-run MVP 已完成。
 
 - 盤後 ingestion / validation。
 - 產生下一交易日 candidates。
@@ -277,4 +283,12 @@ P8 之後每個 phase close-out 不能只列「新增命令」或「新增文件
 
 驗收：
 
-- fixture post-market run 可產生 next-day candidate file，並正確關聯下一交易日。
+- fixture post-market run 可產生 next-day candidate file，並正確關聯下一交易日：已完成。因老闆要求不查額外交易日曆，handoff 只標記 `next_api_available_trading_day`，不猜日期。
+
+### C6: End-to-End Simulate Smoke
+
+目前狀態：fixture end-to-end smoke 已完成。
+
+- 一次 dry-run 產出 run state、watch events、order intents、position state、report、next candidates 與 smoke summary。
+- smoke 檢查 required artifacts 是否存在。
+- 所有 artifact 仍保持 `side_effects=[]`，不登入券商、不送單、不發通知。

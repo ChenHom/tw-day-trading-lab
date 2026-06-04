@@ -44,7 +44,7 @@ If a task appears to require live execution, stop and design the gate/SOP first.
 - P9-P11 infrastructure is complete: operator alerts, regression import/run, and live broker adapter boundary.
 - Daily Simulation Ops Automation v1 first two implementation steps are complete: `simulate daily-ops` / `make daily-ops` orchestration and `daily_bundle_audit.json`.
 - Direction correction is complete: the project target is a full trading-day autonomous cycle, not only a single daily simulation bundle.
-- Trading Day Autonomous Cycle v1 steps 1-4 are complete: `simulate trading-day-cycle` emits `trading_day_run_state.json`, trading-day status is based only on API/raw-cache data availability, and fixture intraday watch events can evaluate candidate entry plus open-position exit state. Do not add a separate holiday calendar unless explicitly requested.
+- Trading Day Autonomous Cycle v1 steps 1-8 are complete as dry-run artifacts: `simulate trading-day-cycle` emits run state, watch events, order intents, position state, 15:00 report, 17:30 next-candidate handoff, and end-to-end smoke. Trading-day status is based only on API/raw-cache data availability. Do not add a separate holiday calendar unless explicitly requested.
 - `.pfx` / `.p12` files are ignored, and `Sinopac.pfx` has been removed from reachable Git history.
 
 ## Next Development Priority
@@ -57,20 +57,18 @@ Also do not treat `daily-ops` as the whole product. It is an artifact/audit runn
 
 - 17:30 build tomorrow's candidate list.
 - 09:05 or 10:00 start the intraday candidate watch loop.
-- 09:05/10:00-13:20 repeatedly evaluate candidate entry and open-position exit strategies. Fixture dry-run support now emits `watch_events.json`; next work should wire those events into execution policy and force-exit/cancel handling.
+- 09:05/10:00-13:20 repeatedly evaluate candidate entry and open-position exit strategies.
 - 13:20 stop new entries and run force-exit / cancel policy.
-- 15:00 publish the trading-day report to GitHub and send the operator link.
-- 17:30 build the next candidate list and hand off to the next trading day.
+- 15:00 build a local GitHub-report dry-run artifact and operator would-send metadata.
+- 17:30 build the next-candidate handoff.
 
 Recommended next implementation:
 
-1. Add fixture-based intraday watch loop tests for repeated candidate checks, entry trigger, exit trigger, no-action candidate, and 13:20 stop.
-2. Implement the intraday candidate watch loop against the existing candidate list only; do not scan the whole market intraday.
-3. Connect entry / exit strategy evaluation to position state so open positions are checked for exits before new entries.
-4. Add execution policy tests for duplicate intents, pending orders, partial fills, callback ordering, and force-exit behavior.
-5. Add 15:00 GitHub report publish dry-run and 17:30 next-candidate handoff artifacts.
-6. Only after the dry-run trading-day cycle is auditable should 3-5 day stability observation become the acceptance evidence.
-7. Keep real alert sending, Shioaji simulation side effects, and live order execution blocked unless a separate task explicitly designs and verifies the gate.
+1. Run 3-5 fixture / Shioaji-simulation-side-effect gated smoke days.
+2. Replace fixture intraday bars with an API-backed intraday market-data adapter while preserving the same `watch_events.json` contract.
+3. Add a separate explicit gate for real GitHub publish / Telegram operator link send.
+4. Keep formal live order blocked until a separate production approval SOP exists.
+5. Do not treat fixture smoke OK as strategy edge or live-order readiness.
 
 ## Important Docs
 

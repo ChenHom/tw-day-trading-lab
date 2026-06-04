@@ -1739,3 +1739,44 @@ Next-run seed：
 2. 補 execution policy：duplicate intent、pending order、partial fill、callback ordering、max position、daily risk。
 3. 補 13:20 force-exit / stale pending cancel policy。
 4. 正式 live order 繼續 blocked；Shioaji simulation side effect 仍需明確 gate。
+
+## 2026-06-04 Trading Day Cycle Steps 5-8
+
+已將 `simulate trading-day-cycle` 從 watch-loop fixture 擴成完整 dry-run bundle。
+
+新增 artifacts：
+
+```text
+reports/{date}-trading-day-cycle/order_intents.json
+reports/{date}-trading-day-cycle/position_state.json
+reports/{date}-trading-day-cycle/report.md
+reports/{date}-trading-day-cycle/next_candidates.json
+reports/{date}-trading-day-cycle/end_to_end_smoke.json
+```
+
+目前行為：
+
+- `watch_events.json` 的 approved entry / exit 會轉成 `order_intents.json`。
+- duplicate intent 會標為 `duplicate_suppressed`。
+- max open positions / daily risk stop 可 block 新 entry。
+- 13:20 後 stale pending order 會產生 dry-run cancel intent。
+- open position 在 hard stop 後可產生 time-exit dry-run sell intent。
+- partial fill lifecycle decision 只列為 manual action，不自動改寫 position。
+- `position_state.json` 不做 fill mutation，只保存 source state、generated order / cancel intents 與 manual actions。
+- `report.md` 是 15:00 local / would-send dry-run report，`publish_status=dry_run`、`send_status=dry_run_not_sent`。
+- `next_candidates.json` 是 17:30 handoff；不查額外交易日曆，不猜日期，使用 `next_api_available_trading_day` policy。
+- `end_to_end_smoke.json` 檢查 candidate / watch / order intents / position / report / next-candidate artifact 是否完整。
+- 本輪仍為 dry-run / fixture；`side_effects=[]`，不登入券商、不送單、不發通知。
+
+新增測試：
+
+- `test_full_cycle_outputs_order_report_next_candidates_and_smoke`
+- `test_execution_policy_suppresses_duplicate_and_blocks_max_positions`
+- `test_force_exit_creates_exit_and_cancel_intents_after_hard_stop`
+
+Next-run seed：
+
+1. 跑 3-5 個 fixture / simulation-side-effect gated smoke days，觀察 bundle 穩定性。
+2. 接 API-backed intraday market-data adapter，但保持 `watch_events.json` contract 不變。
+3. 另開 gate 實作真實 GitHub publish / Telegram operator link send。
+4. 正式 live order 繼續 blocked；不得把 smoke OK 解讀成策略有 edge。

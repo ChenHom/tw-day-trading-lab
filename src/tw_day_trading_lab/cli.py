@@ -1107,6 +1107,38 @@ def _load_open_positions_by_symbol(path: Path | None) -> dict[str, dict[str, obj
     return grouped
 
 
+def _load_position_state_payload(path: Path | None) -> dict[str, object]:
+    """Load dry-run position state while keeping a stable default shape."""
+    if path is None or not path.exists():
+        return {
+            "open_positions": [],
+            "pending_orders": [],
+            "lifecycle_decisions": [],
+            "summary": {},
+        }
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw, dict):
+        return {
+            "open_positions": raw.get("open_positions", raw.get("positions", [])) if isinstance(raw.get("open_positions", raw.get("positions", [])), list) else [],
+            "pending_orders": raw.get("pending_orders", []) if isinstance(raw.get("pending_orders", []), list) else [],
+            "lifecycle_decisions": raw.get("lifecycle_decisions", []) if isinstance(raw.get("lifecycle_decisions", []), list) else [],
+            "summary": raw.get("summary", {}) if isinstance(raw.get("summary", {}), dict) else {},
+        }
+    if isinstance(raw, list):
+        return {
+            "open_positions": raw,
+            "pending_orders": [],
+            "lifecycle_decisions": [],
+            "summary": {},
+        }
+    return {
+        "open_positions": [],
+        "pending_orders": [],
+        "lifecycle_decisions": [],
+        "summary": {},
+    }
+
+
 def _bars_until_time(
     bars: list[dict[str, object]],
     current_time: str,
@@ -1285,6 +1317,259 @@ def build_intraday_watch_events(
     return events
 
 
+def build_trading_day_order_intents(
+    *,
+    trading_day_run_id: str,
+    trading_date: str,
+    watch_events: list[dict[str, object]],
+    position_state: dict[str, object],
+    current_time: str,
+    hard_stop_time: str,
+    max_open_positions: int = 3,
+    daily_risk_stop_r: float = -3.0,
+) -> dict[str, object]:
+    """Convert watch events into dry-run order and cancel intents."""
+    open_positions = [item for item in position_state.get("open_positions", []) if isinstance(item, dict)]
+    pending_orders = [item for item in position_state.get("pending_orders", []) if isinstance(item, dict)]
+    lifecycle_decisions = [item for item in position_state.get("lifecycle_decisions", []) if isinstance(item, dict)]
+    positions_by_symbol = {str(item.get("symbol") or item.get("stock_id") or ""): item for item in open_positions}
+    existing_ids = {
+        str(item.get("order_intent_id") or item.get("intent_id") or item.get("idempotency_key") or "")
+        for item in pending_orders
+    }
+    existing_ids.discard("")
+    seen_ids: set[str] = set(existing_ids)
+    daily_realized_r = _parse_optional_float(position_state.get("summary", {}).get("daily_realized_r")) or 0.0
+
+    order_intents: list[dict[str, object]] = []
+    cancel_intents: list[dict[str, object]] = []
+    manual_actions: list[str] = []
+
+    for pending in pending_orders:
+        status = str(pending.get("status") or "submitted")
+        if current_time >= hard_stop_time and status not in {"filled", "cancelled", "rejected"}:
+            pending_id = str(pending.get("order_intent_id") or pending.get("intent_id") or pending.get("idempotency_key") or "")
+            cancel_intents.append(
+                {
+                    "cancel_intent_id": f"{trading_day_run_id}:{pending_id or 'pending'}:cancel:{current_time}",
+                    "source_order_intent_id": pending_id or None,
+                    "symbol": str(pending.get("symbol") or ""),
+                    "reason": "stale_pending_order_after_hard_stop",
+                    "status": "dry_run_ready",
+                    "side_effects": [],
+                }
+            )
+
+    for decision in lifecycle_decisions:
+        if str(decision.get("normalized_status") or "") == "partial_filled":
+            manual_actions.append("Partial fill requires manual reconciliation before online simulation.")
+
+    for event in watch_events:
+        action = str(event.get("action") or "")
+        if action not in {"entry_approved", "exit_approved"}:
+            continue
+        intent_id = str(event.get("order_intent_id") or f"{trading_day_run_id}:{event.get('symbol')}:{action}:{current_time}")
+        symbol = str(event.get("symbol") or "")
+        side = "buy" if action == "entry_approved" else "sell"
+        price = None
+        quantity = 1000
+        source_signal = event.get("entry_signal") if side == "buy" else event.get("exit_signal")
+        if isinstance(source_signal, dict):
+            price = source_signal.get("entry_price") if side == "buy" else source_signal.get("exit_price")
+        if side == "buy" and isinstance(event.get("risk_decision"), dict):
+            quantity = int(event["risk_decision"].get("quantity") or quantity)
+        if side == "sell" and symbol in positions_by_symbol:
+            quantity = int(positions_by_symbol[symbol].get("quantity") or quantity)
+
+        status = "dry_run_ready"
+        blocked_reason = None
+        if intent_id in seen_ids:
+            status = "duplicate_suppressed"
+            blocked_reason = "duplicate_intent"
+        elif side == "buy" and len(open_positions) >= max_open_positions:
+            status = "blocked"
+            blocked_reason = "max_open_positions_reached"
+        elif side == "buy" and daily_realized_r <= daily_risk_stop_r:
+            status = "blocked"
+            blocked_reason = "daily_risk_stop_reached"
+        else:
+            seen_ids.add(intent_id)
+
+        order_intents.append(
+            {
+                "order_intent_id": intent_id,
+                "trading_day_run_id": trading_day_run_id,
+                "trading_date": trading_date,
+                "symbol": symbol,
+                "side": side,
+                "quantity": quantity,
+                "price": price,
+                "source_event_id": event.get("event_id"),
+                "status": status,
+                "blocked_reason": blocked_reason,
+                "mode": "dry_run",
+                "side_effects": [],
+            }
+        )
+
+    return {
+        "trading_day_run_id": trading_day_run_id,
+        "trading_date": trading_date,
+        "mode": "dry_run",
+        "order_intents": order_intents,
+        "cancel_intents": cancel_intents,
+        "execution_policy": {
+            "max_open_positions": max_open_positions,
+            "daily_risk_stop_r": daily_risk_stop_r,
+            "duplicate_intent_policy": "suppress",
+            "pending_order_policy": "cancel_after_hard_stop",
+            "partial_fill_policy": "manual_reconciliation",
+        },
+        "manual_actions": manual_actions,
+        "summary": {
+            "order_intents": len(order_intents),
+            "dry_run_ready": sum(1 for item in order_intents if item["status"] == "dry_run_ready"),
+            "blocked": sum(1 for item in order_intents if item["status"] == "blocked"),
+            "duplicate_suppressed": sum(1 for item in order_intents if item["status"] == "duplicate_suppressed"),
+            "cancel_intents": len(cancel_intents),
+            "manual_actions": len(manual_actions),
+        },
+        "side_effects": [],
+    }
+
+
+def build_trading_day_position_state(
+    *,
+    trading_day_run_id: str,
+    trading_date: str,
+    source_state: dict[str, object],
+    order_intents_payload: dict[str, object],
+) -> dict[str, object]:
+    """Create a dry-run position-state artifact without mutating fills."""
+    return {
+        "trading_day_run_id": trading_day_run_id,
+        "trading_date": trading_date,
+        "mode": "dry_run",
+        "open_positions": source_state.get("open_positions", []),
+        "pending_orders": source_state.get("pending_orders", []),
+        "generated_order_intents": order_intents_payload.get("order_intents", []),
+        "generated_cancel_intents": order_intents_payload.get("cancel_intents", []),
+        "manual_actions": order_intents_payload.get("manual_actions", []),
+        "summary": order_intents_payload.get("summary", {}),
+        "mutation_policy": "no_fill_mutation_in_dry_run",
+        "side_effects": [],
+    }
+
+
+def render_trading_day_report_markdown(
+    *,
+    state: dict[str, object],
+    watch_events: list[dict[str, object]],
+    order_intents_payload: dict[str, object],
+) -> str:
+    """Render the 15:00 dry-run trading-day report."""
+    summary = order_intents_payload.get("summary", {})
+    action_counts: dict[str, int] = {}
+    for event in watch_events:
+        action = str(event.get("action") or "unknown")
+        action_counts[action] = action_counts.get(action, 0) + 1
+    lines = [
+        f"# Trading Day Report {state['trading_date']}",
+        "",
+        "## Summary",
+        "",
+        f"- mode: `{state['mode']}`",
+        f"- run id: `{state['trading_day_run_id']}`",
+        f"- stage: `{state['stage']}`",
+        f"- calendar status: `{state['calendar_status']}`",
+        f"- watch events: {len(watch_events)}",
+        f"- order intents: {summary.get('order_intents', 0)}",
+        f"- cancel intents: {summary.get('cancel_intents', 0)}",
+        f"- blocked intents: {summary.get('blocked', 0)}",
+        f"- duplicate suppressed: {summary.get('duplicate_suppressed', 0)}",
+        "",
+        "## Action Counts",
+        "",
+    ]
+    for action in sorted(action_counts):
+        lines.append(f"- {action}: {action_counts[action]}")
+    lines.extend(
+        [
+            "",
+            "## Pros",
+            "",
+            "- Candidate-only watch loop avoids scanning the whole market.",
+            "- Approved entries/exits are captured as dry-run intents before any broker side effect.",
+            "- 13:20 hard-stop policy rejects new entries and prepares cancel/exit handling.",
+            "",
+            "## Cons / Blockers",
+            "",
+        ]
+    )
+    blockers = list(state.get("blocked_reasons", [])) + list(order_intents_payload.get("manual_actions", []))
+    if blockers:
+        lines.extend(f"- {item}" for item in blockers)
+    else:
+        lines.append("- No blocking condition in this dry-run fixture.")
+    lines.extend(
+        [
+            "",
+            "## Next Actions",
+            "",
+            "- Run a multi-day fixture smoke before enabling Shioaji simulation side effects.",
+            "- Keep live order execution blocked until a separate approval gate exists.",
+            "",
+            "## Dry-Run Links",
+            "",
+            "- GitHub publish status: `dry_run`",
+            "- Operator link send status: `dry_run_not_sent`",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def build_next_candidates_handoff(
+    *,
+    trading_day_run_id: str,
+    trading_date: str,
+    candidates: list[CandidateScore],
+) -> dict[str, object]:
+    """Build the 17:30 next-candidate handoff without guessing the next trading date."""
+    return {
+        "trading_day_run_id": trading_day_run_id,
+        "source_trading_date": trading_date,
+        "next_trading_date_policy": "next_api_available_trading_day",
+        "candidate_count": len(candidates),
+        "candidates": [candidate.to_dict() for candidate in candidates if candidate.next_day_actionable],
+        "side_effects": [],
+    }
+
+
+def build_end_to_end_smoke_summary(state: dict[str, object]) -> dict[str, object]:
+    """Summarize whether the dry-run trading-day artifact chain is complete."""
+    required_artifacts = [
+        "candidate_artifact",
+        "watch_events_artifact",
+        "order_intents_artifact",
+        "position_state_artifact",
+        "report_artifact",
+        "next_candidate_artifact",
+    ]
+    checks = []
+    for key in required_artifacts:
+        artifact = state.get(key, {})
+        exists = bool(isinstance(artifact, dict) and artifact.get("exists"))
+        checks.append({"artifact": key, "exists": exists, "path": artifact.get("path") if isinstance(artifact, dict) else None})
+    status = "ok" if state.get("calendar_status") == "trading_day" and all(item["exists"] for item in checks) else "blocked"
+    return {
+        "trading_day_run_id": state.get("trading_day_run_id"),
+        "trading_date": state.get("trading_date"),
+        "status": status,
+        "checks": checks,
+        "side_effects": [],
+    }
+
+
 def resolve_trading_data_probe(
     *,
     trading_date: str,
@@ -1372,8 +1657,12 @@ def build_trading_day_cycle_state(args: argparse.Namespace) -> dict[str, object]
     state_output = Path(args.state_output) if args.state_output else output_dir / "trading_day_run_state.json"
     cache_dir = Path(args.cache_dir)
     candidate_artifact = Path(args.candidates_input) if args.candidates_input else output_dir / "candidates.json"
-    position_state_artifact = Path(args.position_state_input) if args.position_state_input else output_dir / "position_state.json"
+    position_state_artifact = Path(args.position_state_output) if args.position_state_output else output_dir / "position_state.json"
     watch_events_artifact = Path(args.watch_events_output) if args.watch_events_output else output_dir / "watch_events.json"
+    order_intents_artifact = Path(args.order_intents_output) if args.order_intents_output else output_dir / "order_intents.json"
+    report_artifact = Path(args.report_output) if args.report_output else output_dir / "report.md"
+    next_candidate_artifact = Path(args.next_candidates_output) if args.next_candidates_output else output_dir / "next_candidates.json"
+    smoke_artifact = Path(args.end_to_end_smoke_output) if args.end_to_end_smoke_output else output_dir / "end_to_end_smoke.json"
     trading_data_input = Path(args.trading_data_input) if args.trading_data_input else None
 
     data_probe = resolve_trading_data_probe(
@@ -1451,6 +1740,11 @@ def build_trading_day_cycle_state(args: argparse.Namespace) -> dict[str, object]
             "exists": position_state_artifact.exists(),
             "checksum": get_file_checksum(position_state_artifact) if position_state_artifact.exists() else None,
         },
+        "source_position_state_artifact": {
+            "path": str(args.position_state_input) if args.position_state_input else None,
+            "exists": Path(args.position_state_input).exists() if args.position_state_input else False,
+            "checksum": get_file_checksum(Path(args.position_state_input)) if args.position_state_input and Path(args.position_state_input).exists() else None,
+        },
         "watch_events_artifact": {
             "path": str(watch_events_artifact),
             "exists": watch_events_artifact.exists(),
@@ -1463,15 +1757,35 @@ def build_trading_day_cycle_state(args: argparse.Namespace) -> dict[str, object]
                 "no_action": 0,
             },
         },
+        "order_intents_artifact": {
+            "path": str(order_intents_artifact),
+            "exists": order_intents_artifact.exists(),
+            "checksum": get_file_checksum(order_intents_artifact) if order_intents_artifact.exists() else None,
+            "summary": {
+                "order_intents": 0,
+                "dry_run_ready": 0,
+                "blocked": 0,
+                "duplicate_suppressed": 0,
+                "cancel_intents": 0,
+                "manual_actions": 0,
+            },
+        },
         "report_artifact": {
-            "path": str(output_dir / "report.md"),
+            "path": str(report_artifact),
             "github_url": None,
             "publish_status": "not_started",
+            "exists": report_artifact.exists(),
+            "checksum": get_file_checksum(report_artifact) if report_artifact.exists() else None,
         },
         "next_candidate_artifact": {
-            "path": str(output_dir / "next_candidates.json"),
-            "exists": False,
-            "checksum": None,
+            "path": str(next_candidate_artifact),
+            "exists": next_candidate_artifact.exists(),
+            "checksum": get_file_checksum(next_candidate_artifact) if next_candidate_artifact.exists() else None,
+        },
+        "end_to_end_smoke_artifact": {
+            "path": str(smoke_artifact),
+            "exists": smoke_artifact.exists(),
+            "checksum": get_file_checksum(smoke_artifact) if smoke_artifact.exists() else None,
         },
         "idempotency_key": f"{trading_date}:{start_policy}:trading-day-cycle",
         "lock": {
@@ -1495,9 +1809,17 @@ def cmd_simulate_trading_day_cycle(args: argparse.Namespace) -> None:
     state = build_trading_day_cycle_state(args)
     state_output = Path(str(state.pop("_state_output")))
     watch_events_output = Path(str(state["watch_events_artifact"]["path"]))
+    order_intents_output = Path(str(state["order_intents_artifact"]["path"]))
+    position_state_output = Path(str(state["position_state_artifact"]["path"]))
+    report_output = Path(str(state["report_artifact"]["path"]))
+    next_candidates_output = Path(str(state["next_candidate_artifact"]["path"]))
+    smoke_output = Path(str(state["end_to_end_smoke_artifact"]["path"]))
     intraday_bars_input = Path(args.intraday_bars_input) if args.intraday_bars_input else None
     candidates_input = Path(args.candidates_input) if args.candidates_input else None
     position_state_input = Path(args.position_state_input) if args.position_state_input else None
+    watch_events: list[dict[str, object]] = []
+    candidates: list[CandidateScore] = []
+    source_position_state = _load_position_state_payload(position_state_input)
 
     if (
         state["calendar_status"] == "trading_day"
@@ -1505,25 +1827,30 @@ def cmd_simulate_trading_day_cycle(args: argparse.Namespace) -> None:
         and candidates_input is not None
         and candidates_input.exists()
     ):
-        events = build_intraday_watch_events(
+        candidates = load_candidate_scores(candidates_input)
+        watch_events = build_intraday_watch_events(
             trading_day_run_id=str(state["trading_day_run_id"]),
             trading_date=str(state["trading_date"]),
-            candidates=load_candidate_scores(candidates_input),
+            candidates=candidates,
             bars_by_symbol=_load_intraday_bars_by_symbol(intraday_bars_input),
-            positions_by_symbol=_load_open_positions_by_symbol(position_state_input),
+            positions_by_symbol={
+                str(item.get("symbol") or item.get("stock_id") or ""): item
+                for item in source_position_state.get("open_positions", [])
+                if isinstance(item, dict)
+            },
             market_data_artifact=intraday_bars_input,
             current_time=args.current_time,
             hard_stop_time=args.hard_stop_time,
             observation_minutes=args.strategy_observation_minutes,
             volume_surge_ratio=args.strategy_volume_surge_ratio,
         )
-        write_json(watch_events_output, {"events": events})
+        write_json(watch_events_output, {"events": watch_events})
         summary = {
-            "total": len(events),
-            "entry_approved": sum(1 for event in events if event["action"] == "entry_approved"),
-            "entry_rejected": sum(1 for event in events if event["action"] == "entry_rejected"),
-            "exit_approved": sum(1 for event in events if event["action"] == "exit_approved"),
-            "no_action": sum(1 for event in events if event["action"] == "no_action"),
+            "total": len(watch_events),
+            "entry_approved": sum(1 for event in watch_events if event["action"] == "entry_approved"),
+            "entry_rejected": sum(1 for event in watch_events if event["action"] == "entry_rejected"),
+            "exit_approved": sum(1 for event in watch_events if event["action"] == "exit_approved"),
+            "no_action": sum(1 for event in watch_events if event["action"] == "no_action"),
         }
         state["watch_events_artifact"] = {
             "path": str(watch_events_output),
@@ -1534,12 +1861,87 @@ def cmd_simulate_trading_day_cycle(args: argparse.Namespace) -> None:
     elif state["calendar_status"] == "trading_day":
         state["manual_actions"].append("Intraday watch loop skipped; provide --intraday-bars-input and --candidates-input.")
 
+    if state["calendar_status"] == "trading_day":
+        if not candidates and candidates_input is not None and candidates_input.exists():
+            candidates = load_candidate_scores(candidates_input)
+        order_intents_payload = build_trading_day_order_intents(
+            trading_day_run_id=str(state["trading_day_run_id"]),
+            trading_date=str(state["trading_date"]),
+            watch_events=watch_events,
+            position_state=source_position_state,
+            current_time=args.current_time,
+            hard_stop_time=args.hard_stop_time,
+            max_open_positions=args.max_open_positions,
+            daily_risk_stop_r=args.daily_risk_stop_r,
+        )
+        write_json(order_intents_output, order_intents_payload)
+        state["order_intents_artifact"] = {
+            "path": str(order_intents_output),
+            "exists": order_intents_output.exists(),
+            "checksum": get_file_checksum(order_intents_output),
+            "summary": order_intents_payload["summary"],
+        }
+
+        position_payload = build_trading_day_position_state(
+            trading_day_run_id=str(state["trading_day_run_id"]),
+            trading_date=str(state["trading_date"]),
+            source_state=source_position_state,
+            order_intents_payload=order_intents_payload,
+        )
+        write_json(position_state_output, position_payload)
+        state["position_state_artifact"] = {
+            "path": str(position_state_output),
+            "exists": position_state_output.exists(),
+            "checksum": get_file_checksum(position_state_output),
+        }
+
+        report_markdown = render_trading_day_report_markdown(
+            state=state,
+            watch_events=watch_events,
+            order_intents_payload=order_intents_payload,
+        )
+        write_text(report_output, report_markdown)
+        state["report_artifact"] = {
+            "path": str(report_output),
+            "github_url": None,
+            "publish_status": "dry_run",
+            "send_status": "dry_run_not_sent",
+            "exists": report_output.exists(),
+            "checksum": get_file_checksum(report_output),
+        }
+
+        next_candidates_payload = build_next_candidates_handoff(
+            trading_day_run_id=str(state["trading_day_run_id"]),
+            trading_date=str(state["trading_date"]),
+            candidates=candidates,
+        )
+        write_json(next_candidates_output, next_candidates_payload)
+        state["next_candidate_artifact"] = {
+            "path": str(next_candidates_output),
+            "exists": next_candidates_output.exists(),
+            "checksum": get_file_checksum(next_candidates_output),
+            "candidate_count": next_candidates_payload["candidate_count"],
+        }
+
+        smoke_payload = build_end_to_end_smoke_summary(state)
+        write_json(smoke_output, smoke_payload)
+        state["end_to_end_smoke_artifact"] = {
+            "path": str(smoke_output),
+            "exists": smoke_output.exists(),
+            "checksum": get_file_checksum(smoke_output),
+            "status": smoke_payload["status"],
+        }
+
     write_json(state_output, state)
     print("Trading day cycle dry-run completed.")
     print(f"Date: {state['trading_date']}")
     print(f"Calendar status: {state['calendar_status']}")
     print(f"Stage: {state['stage']}")
     print(f"Watch events: {state['watch_events_artifact']['path']}")
+    print(f"Order intents: {state['order_intents_artifact']['path']}")
+    print(f"Report: {state['report_artifact']['path']}")
+    print(f"Next candidates: {state['next_candidate_artifact']['path']}")
+    print(f"End-to-end smoke: {state['end_to_end_smoke_artifact']['path']}")
     print(f"State: {state_output}")
 
 
@@ -2634,9 +3036,14 @@ def build_parser() -> argparse.ArgumentParser:
     trading_day_cycle.add_argument("--candidates-input")
     trading_day_cycle.add_argument("--intraday-bars-input")
     trading_day_cycle.add_argument("--position-state-input")
+    trading_day_cycle.add_argument("--position-state-output")
     trading_day_cycle.add_argument("--output-dir")
     trading_day_cycle.add_argument("--state-output")
     trading_day_cycle.add_argument("--watch-events-output")
+    trading_day_cycle.add_argument("--order-intents-output")
+    trading_day_cycle.add_argument("--report-output")
+    trading_day_cycle.add_argument("--next-candidates-output")
+    trading_day_cycle.add_argument("--end-to-end-smoke-output")
     trading_day_cycle.add_argument("--run-id")
     trading_day_cycle.add_argument("--start-policy", choices=("09:05", "10:00"), default="09:05")
     trading_day_cycle.add_argument("--hard-stop-time", default="13:20")
@@ -2648,6 +3055,8 @@ def build_parser() -> argparse.ArgumentParser:
     trading_day_cycle.add_argument("--run-all-stages", action="store_true")
     trading_day_cycle.add_argument("--strategy-observation-minutes", type=int, default=15)
     trading_day_cycle.add_argument("--strategy-volume-surge-ratio", type=float, default=1.5)
+    trading_day_cycle.add_argument("--max-open-positions", type=int, default=3)
+    trading_day_cycle.add_argument("--daily-risk-stop-r", type=float, default=-3.0)
     trading_day_cycle.set_defaults(func=cmd_simulate_trading_day_cycle)
 
     restart_sync = simulate_sub.add_parser("restart-sync")
