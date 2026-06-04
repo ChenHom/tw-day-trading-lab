@@ -1,4 +1,4 @@
-.PHONY: test sample-report ops-run
+.PHONY: test sample-report ops-run daily-ops
 
 test:
 	PYTHONPATH=src python3 -m unittest discover -s tests
@@ -10,3 +10,5 @@ sample-report:
 ops-run:
 	PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate ops-run $(ARGS)
 
+daily-ops:
+	PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate daily-ops $(if $(DATE),--date $(DATE),) $(ARGS)

@@ -108,6 +108,11 @@ python3 -m tw_day_trading_lab.cli simulate ops-run \
   --allow-outside-session
 python3 -m tw_day_trading_lab.cli simulate regression-import \
   --manifest reports/2026-06-04-ops/ops_run_manifest.json
+python3 -m tw_day_trading_lab.cli simulate daily-ops \
+  --date 2026-06-04 \
+  --skip-ingestion \
+  --allow-outside-session \
+  --fail-on-audit
 ```
 
 ### 一鍵執行當沖模擬 (Simplified Daily Ops Run)
@@ -121,6 +126,33 @@ make ops-run
 # 自訂附加參數 (例如於非交易時段強制執行)
 make ops-run ARGS="--allow-outside-session"
 ```
+
+### 每日營運鏈 (Daily Simulation Ops Automation)
+
+`Daily Simulation Ops Automation v1` 已提供上層 orchestration，將 ingestion、candidate build、`simulate ops-run`、close report、alerts、regression import 與 bundle audit 串成單一命令。此命令預設忽略 `IS_SIMULATION` 環境變數，不會因環境殘留而登入 Shioaji；只有明確帶 `--simulation-on` 才會走 simulation broker side effect。
+
+```bash
+# 完整每日鏈，預設會為當日產生 FinMind ingestion requests；alert 預設 dry-run
+make daily-ops DATE=2026-06-04
+
+# 本地 fixture / 無 token 驗證，可跳過 ingestion 並強制 audit 失敗時回傳非 0
+make daily-ops DATE=2026-06-04 ARGS="--skip-ingestion --allow-outside-session --fail-on-audit"
+
+# 只有明確允許時才真實發送 alert
+make daily-ops DATE=2026-06-04 ARGS="--send-alerts"
+```
+
+預設輸出在 `reports/{date}-daily-ops/`：
+
+- `candidates.json`
+- `ops/ops_run_manifest.json`
+- `ops/alerts.json`
+- `ops/readiness_report.json`
+- `ops/simulation_output.json`
+- `close.md`
+- `telegram-summary.txt`
+- `regression/`
+- `daily_bundle_audit.json`
 
 如果沒有安裝 package，先加上 `PYTHONPATH=src`：
 
@@ -208,7 +240,8 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 - P8 Simulation Ops Go-live 已完成：`simulate ops-run` 可產生 input plan、simulation output、callback store、restart-sync、readiness report、alerts 與 `ops_run_manifest`。
 - P9-P11 infrastructure 已完成：alerts、regression import/run、live adapter boundary。
 - 最新安全維護：`.pfx` / `.p12` 已加入 `.gitignore`，`Sinopac.pfx` 已從可達 Git history 移除。
-- 下一步不是再做 P8，也不是推正式下單；下一步是 `Daily Simulation Ops Automation v1`，把 ingestion -> candidate build -> ops-run -> report/alerts -> regression-import 串成每日可重跑作業鏈。
+- `Daily Simulation Ops Automation v1` 前兩步已完成：`simulate daily-ops` / `make daily-ops` 可啟動每日作業鏈，`daily_bundle_audit.json` 可檢查 manifest、artifact checksum、readiness、alerts operator fields、close report 與 regression case traceability。
+- 下一步不是再做 P8，也不是推正式下單；下一步是跑 3-5 個交易日穩定性觀察，統計 blockers、partial fills、ordering issues、alert noise 與 candidate quality 問題。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。
 - P6 已支援 `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition` dry-run，simulation sample 與 replay expectancy 分開，重送同一 intent 不會重複開倉。
@@ -227,16 +260,14 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 
 ## Next Development Priority
 
-下一個 coding phase 是 `Daily Simulation Ops Automation v1`。
+目前 `Daily Simulation Ops Automation v1` 已完成前兩步：daily runner / Make target 與 daily bundle audit。
 
-先做文件同步，再做最小可重跑作業鏈：
+下一步是穩定性觀察與小修：
 
-- 新增每日 runner 或 Make target，例如 `make daily-ops DATE=2026-06-04`。
-- 串接 FinMind ingestion、0050 regime 檢查、candidate build、`simulate ops-run`、close report / alerts、`regression-import`。
-- 產出單一 daily bundle，包含 manifest、input/output artifact、readiness、alerts、close report、regression cases。
-- 檢查必要 artifact 是否存在、checksum 是否齊全、alerts 是否帶 owner / manual action / send gate。
-- `simulation-on` 與任何真實 Shioaji side effect 仍必須明確 gate；正式 live order 仍禁止。
-- 完成後再跑 3-5 個交易日穩定性觀察，統計 blockers、partial fills、ordering issues、alert noise 與 candidate quality 問題。
+- 用 `make daily-ops DATE=YYYY-MM-DD` 連續跑 3-5 個交易日或 fixture 日期。
+- 彙總 `daily_bundle_audit.json`、`alerts.json`、`readiness_report.json` 的 blocker / warning / alert noise。
+- 將重複 blocker 或 candidate quality 問題轉成 P10 regression case，再做小步修正。
+- `send-alerts`、`simulation-on` 與任何真實 Shioaji side effect 仍必須明確 gate；正式 live order 仍禁止。
 
 核心邊界固定不變：simulation / readiness 只能證明執行鏈可控，不能當成 strategy edge 或獲利證明。
 

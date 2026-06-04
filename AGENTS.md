@@ -42,41 +42,22 @@ If a task appears to require live execution, stop and design the gate/SOP first.
 - P7 Production Readiness Gate is complete as a report contract.
 - P8 Simulation Ops Go-live is complete with `simulate ops-run`, `ops_run_manifest`, pre-order gates, input plan, readiness, alerts, and regression traceability.
 - P9-P11 infrastructure is complete: operator alerts, regression import/run, and live broker adapter boundary.
+- Daily Simulation Ops Automation v1 first two implementation steps are complete: `simulate daily-ops` / `make daily-ops` orchestration and `daily_bundle_audit.json`.
 - `.pfx` / `.p12` files are ignored, and `Sinopac.pfx` has been removed from reachable Git history.
 
 ## Next Development Priority
 
-The next coding phase is `Daily Simulation Ops Automation v1`.
+The next coding phase is Daily Simulation Ops stability observation and fixes.
 
-Do not go back to P8 as if it were unimplemented. P8-P11 already exist. The next deliverable is to turn the existing commands into a repeatable daily operating chain.
+Do not go back to P8 as if it were unimplemented. P8-P11 already exist. The daily operating chain now has a one-command runner and bundle audit.
 
-Recommended first implementation:
+Recommended next implementation:
 
-1. Documentation baseline sync
-   - README current status.
-   - AGENTS next priority.
-   - `docs/development-work.md` close-out / next-run seed.
-
-2. Daily runner / Make target
-   - Example target: `make daily-ops DATE=2026-06-04`.
-   - Run FinMind ingestion.
-   - Ensure 0050 market regime input is present.
-   - Build candidates.
-   - Run `simulate ops-run`.
-   - Generate close report / alerts.
-   - Run `simulate regression-import`.
-
-3. Daily bundle audit
-   - one run id
-   - input/output artifacts
-   - checksums
-   - readiness report
-   - alerts with owner / manual action / send gate
-   - regression cases when alerts exist
-
-The phase is done when a daily simulation ops run can be started from one command, audited from one bundle, and rerun without guessing artifact paths.
-
-After this, collect 3-5 trading days of stability evidence before considering any expansion toward live execution.
+1. Run `make daily-ops DATE=YYYY-MM-DD` across 3-5 trading days or fixture dates.
+2. Compare `daily_bundle_audit.json`, `ops/alerts.json`, and `ops/readiness_report.json`.
+3. Summarize blockers, partial fills, ordering issues, alert noise, candidate quality warnings, and repeated regression cases.
+4. Fix only repeated or operator-blocking issues in small bounded sprints.
+5. Keep real alert sending, Shioaji simulation side effects, and live order execution blocked unless a separate task explicitly designs and verifies the gate.
 
 ## Important Docs
 
@@ -137,9 +118,19 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate ops-run \
 
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate regression-import \
   --manifest reports/2026-06-04-ops/ops_run_manifest.json
+
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate daily-ops \
+  --date 2026-06-04 \
+  --skip-ingestion \
+  --allow-outside-session \
+  --fail-on-audit
+
+make daily-ops DATE=2026-06-04 ARGS="--skip-ingestion --allow-outside-session --fail-on-audit"
 ```
 
 Do not run gated real Shioaji login/order/cancel smoke unless the task explicitly calls for it and the gate is clear.
+Do not run `simulate daily-ops --send-alerts` unless the task explicitly calls for real Telegram alerts.
+Do not run `simulate daily-ops --simulation-on` unless the task explicitly calls for Shioaji simulation login/order side effects.
 
 ## Commit / Close-out
 

@@ -736,6 +736,283 @@ def check_ops_lock(lock_path: Path) -> dict:
     }
 
 
+def audit_daily_ops_bundle(
+    *,
+    manifest_path: Path,
+    close_report_path: Path,
+    regression_dir: Path | None = None,
+) -> dict[str, object]:
+    """Verify that a daily ops bundle can be audited from its manifest."""
+    checks: list[dict[str, object]] = []
+
+    def add_check(name: str, ok: bool, detail: str = "") -> None:
+        checks.append({"name": name, "ok": bool(ok), "detail": detail})
+
+    if not manifest_path.exists():
+        add_check("manifest_exists", False, str(manifest_path))
+        return {
+            "status": "failed",
+            "summary": {"total": 1, "ok": 0, "failed": 1},
+            "checks": checks,
+        }
+
+    add_check("manifest_exists", True, str(manifest_path))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    run_id = str(manifest.get("run_id") or "")
+    trading_date = str(manifest.get("trading_date") or "")
+    add_check("run_id_present", bool(run_id), run_id)
+    add_check("trading_date_present", bool(trading_date), trading_date)
+
+    all_artifacts = list(manifest.get("input_artifacts", [])) + list(manifest.get("output_artifacts", []))
+    add_check("artifact_list_present", bool(all_artifacts), f"{len(all_artifacts)} artifacts")
+    artifact_paths: list[Path] = []
+    for artifact in all_artifacts:
+        path = Path(str(artifact.get("path", "")))
+        artifact_paths.append(path)
+        expected_checksum = str(artifact.get("checksum", ""))
+        exists = path.exists()
+        add_check(f"artifact_exists:{path.name}", exists, str(path))
+        if exists:
+            actual_checksum = get_file_checksum(path)
+            add_check(
+                f"artifact_checksum:{path.name}",
+                bool(expected_checksum) and actual_checksum == expected_checksum,
+                str(path),
+            )
+
+    required_suffixes = {
+        "input_plan.json",
+        "simulation_output.json",
+        "restart_sync.json",
+        "readiness_report.json",
+        "alerts.json",
+        "callback_store.json",
+    }
+    present_names = {path.name for path in artifact_paths}
+    for suffix in sorted(required_suffixes):
+        add_check(f"required_artifact:{suffix}", suffix in present_names, suffix)
+
+    readiness_paths = [path for path in artifact_paths if path.name == "readiness_report.json" and path.exists()]
+    if readiness_paths:
+        readiness = json.loads(readiness_paths[0].read_text(encoding="utf-8"))
+        add_check("readiness_status_present", bool(readiness.get("status")), str(readiness.get("status", "")))
+        add_check("readiness_summary_present", isinstance(readiness.get("summary"), dict), readiness_paths[0].as_posix())
+    else:
+        add_check("readiness_status_present", False, "readiness_report.json missing")
+        add_check("readiness_summary_present", False, "readiness_report.json missing")
+
+    alerts_count = 0
+    alerts_paths = [path for path in artifact_paths if path.name == "alerts.json" and path.exists()]
+    if alerts_paths:
+        alerts_payload = json.loads(alerts_paths[0].read_text(encoding="utf-8"))
+        add_check("alerts_is_list", isinstance(alerts_payload, list), alerts_paths[0].as_posix())
+        required_alert_fields = {"alert_id", "severity", "category", "owner", "manual_action", "send_gate", "dedupe_key"}
+        if isinstance(alerts_payload, list):
+            alerts_count = len(alerts_payload)
+            missing_alerts = [
+                str(alert.get("alert_id") or idx)
+                for idx, alert in enumerate(alerts_payload)
+                if not required_alert_fields.issubset(set(alert))
+            ]
+            add_check("alerts_operator_fields", not missing_alerts, ",".join(missing_alerts))
+    else:
+        add_check("alerts_is_list", False, "alerts.json missing")
+        add_check("alerts_operator_fields", False, "alerts.json missing")
+
+    add_check("close_report_exists", close_report_path.exists(), str(close_report_path))
+
+    if regression_dir is not None:
+        regression_cases = sorted(regression_dir.glob("case-*.json")) if regression_dir.exists() else []
+        add_check(
+            "regression_dir_present",
+            regression_dir.exists(),
+            str(regression_dir),
+        )
+        add_check(
+            "regression_cases_traceable",
+            all(run_id in path.name for path in regression_cases),
+            f"{len(regression_cases)} cases",
+        )
+        add_check(
+            "regression_cases_for_alerts",
+            alerts_count == 0 or len(regression_cases) > 0,
+            f"alerts={alerts_count} cases={len(regression_cases)}",
+        )
+
+    ok_count = sum(1 for check in checks if check["ok"])
+    failed_count = len(checks) - ok_count
+    return {
+        "run_id": run_id,
+        "trading_date": trading_date,
+        "status": "ok" if failed_count == 0 else "failed",
+        "summary": {"total": len(checks), "ok": ok_count, "failed": failed_count},
+        "checks": checks,
+    }
+
+
+def cmd_simulate_daily_ops(args: argparse.Namespace) -> None:
+    """Run the daily simulation ops chain and audit the produced bundle."""
+    from datetime import datetime
+
+    trading_date = args.date or datetime.now().strftime("%Y-%m-%d")
+    output_dir = Path(args.output_dir) if args.output_dir else Path("reports") / f"{trading_date}-daily-ops"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    cache_dir = Path(args.cache_dir)
+    candidate_output = Path(args.candidates_output) if args.candidates_output else output_dir / "candidates.json"
+    ops_output_dir = Path(args.ops_output_dir) if args.ops_output_dir else output_dir / "ops"
+    close_report_path = Path(args.close_report_output) if args.close_report_output else output_dir / "close.md"
+    telegram_summary_path = (
+        Path(args.telegram_summary_output)
+        if args.telegram_summary_output
+        else output_dir / "telegram-summary.txt"
+    )
+    regression_output_dir = (
+        Path(args.regression_output_dir)
+        if args.regression_output_dir
+        else output_dir / "regression"
+    )
+    audit_output = Path(args.audit_output) if args.audit_output else output_dir / "daily_bundle_audit.json"
+
+    steps: list[dict[str, object]] = []
+
+    def record_step(name: str, status: str, detail: str = "") -> None:
+        steps.append({"name": name, "status": status, "detail": detail})
+
+    if args.skip_ingestion:
+        record_step("finmind_ingestion", "skipped", "--skip-ingestion")
+    else:
+        requests_path = args.requests
+        if not requests_path:
+            requests_path = str(output_dir / "ingestion_requests.json")
+            write_json(
+                Path(requests_path),
+                [
+                    {
+                        "dataset": "TaiwanStockPrice",
+                        "trading_date": trading_date,
+                        "stock_id": args.stock_id or "market",
+                        "start_date": args.start_date,
+                    },
+                    {
+                        "dataset": "TaiwanStockInfo",
+                        "trading_date": trading_date,
+                        "stock_id": "market",
+                    },
+                    {
+                        "dataset": "TaiwanStockPrice",
+                        "trading_date": trading_date,
+                        "stock_id": args.market_proxy_stock_id,
+                        "start_date": args.market_proxy_start_date or args.start_date or trading_date,
+                    },
+                ],
+            )
+        try:
+            cmd_ingest_finmind(
+                argparse.Namespace(
+                    date=trading_date,
+                    requests=requests_path,
+                    dataset=args.dataset,
+                    stock_id=args.stock_id,
+                    start_date=args.start_date,
+                    cache_dir=args.cache_dir,
+                    token=args.token,
+                    quota_limit=args.quota_limit,
+                )
+            )
+            record_step("finmind_ingestion", "ok", requests_path)
+        except Exception as exc:
+            record_step("finmind_ingestion", "failed", str(exc))
+            if not args.allow_ingestion_failure:
+                raise
+
+    candidate_result = build_candidates_from_raw_cache(
+        cache_dir=cache_dir,
+        trading_date=trading_date,
+        limit=args.limit,
+        min_trading_money=args.min_trading_money,
+    )
+    write_json(candidate_output, candidate_result.to_payload())
+    record_step(
+        "candidate_build",
+        "ok",
+        f"{candidate_output} market_regime={candidate_result.summary.get('market_regime')}",
+    )
+
+    cmd_simulate_ops_run(
+        argparse.Namespace(
+            date=trading_date,
+            candidates_input=str(candidate_output),
+            candidate_date=args.candidate_date,
+            cache_dir=str(cache_dir),
+            execution_sync_store=args.execution_sync_store,
+            output_dir=str(ops_output_dir),
+            simulation_on=bool(args.simulation_on),
+            allow_outside_session=bool(args.allow_outside_session),
+            current_time=args.current_time,
+            allow_live_trading=False,
+            manual_approval_token=None,
+            expected_manual_approval_token=None,
+            max_pending_orders=args.max_pending_orders,
+            disable_cancel_retry_plan=bool(args.disable_cancel_retry_plan),
+            alert_dry_run=not bool(getattr(args, "send_alerts", False)),
+            ignore_env_simulation=True,
+        )
+    )
+    manifest_path = ops_output_dir / "ops_run_manifest.json"
+    record_step("ops_run", "ok", str(manifest_path))
+
+    simulation_output_path = ops_output_dir / "simulation_output.json"
+    readiness_report_path = ops_output_dir / "readiness_report.json"
+    cmd_report_close(
+        argparse.Namespace(
+            date=trading_date,
+            candidates=str(candidate_output),
+            replay=None,
+            simulation=str(simulation_output_path),
+            readiness=str(readiness_report_path),
+            output=str(close_report_path),
+            telegram_summary_output=str(telegram_summary_path),
+        )
+    )
+    record_step("close_report", "ok", str(close_report_path))
+
+    if args.skip_regression_import:
+        record_step("regression_import", "skipped", "--skip-regression-import")
+    else:
+        cmd_simulate_regression_import(
+            argparse.Namespace(
+                manifest=str(manifest_path),
+                output_dir=str(regression_output_dir),
+            )
+        )
+        record_step("regression_import", "ok", str(regression_output_dir))
+
+    audit = audit_daily_ops_bundle(
+        manifest_path=manifest_path,
+        close_report_path=close_report_path,
+        regression_dir=None if args.skip_regression_import else regression_output_dir,
+    )
+    audit["steps"] = steps + [
+        {
+            "name": "bundle_audit",
+            "status": str(audit["status"]),
+            "detail": str(audit_output),
+        }
+    ]
+    write_json(audit_output, audit)
+
+    if args.fail_on_audit and audit["status"] != "ok":
+        print(f"Daily ops bundle audit failed: {audit_output}")
+        raise SystemExit(1)
+
+    print("Daily simulation ops automation completed.")
+    print(f"Date: {trading_date}")
+    print(f"Output dir: {output_dir}")
+    print(f"Manifest: {manifest_path}")
+    print(f"Audit: {audit_output}")
+
+
 def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
     """Run the daily simulation ops runner to generate candidate inputs, execute gates, place orders, check readiness, and produce run manifest."""
     import uuid
@@ -940,7 +1217,7 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
 
     # Determine if we are simulation on
     simulation_on = bool(args.simulation_on)
-    if not simulation_on:
+    if not simulation_on and not bool(getattr(args, "ignore_env_simulation", False)):
         env_sim = os.getenv("IS_SIMULATION", "").lower()
         if env_sim in ("true", "1", "yes", "on"):
             simulation_on = True
@@ -1126,7 +1403,7 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
     # Generate P9 Alerts
     alerts = generate_alerts_from_run(run_id, candidates_list, results, readiness_report)
     from .simulation import send_alerts_telegram
-    alerts = send_alerts_telegram(alerts, dry_run=False)
+    alerts = send_alerts_telegram(alerts, dry_run=bool(getattr(args, "alert_dry_run", False)))
     alerts_path = output_dir / "alerts.json"
     write_json(alerts_path, [alert.to_dict() for alert in alerts])
 
@@ -1774,6 +2051,7 @@ def build_parser() -> argparse.ArgumentParser:
     ops_run.add_argument("--execution-sync-store")
     ops_run.add_argument("--output-dir")
     ops_run.add_argument("--simulation-on", action="store_true")
+    ops_run.add_argument("--ignore-env-simulation", action="store_true")
     ops_run.add_argument("--allow-outside-session", action="store_true")
     ops_run.add_argument("--current-time")
     ops_run.add_argument("--allow-live-trading", action="store_true")
@@ -1781,7 +2059,42 @@ def build_parser() -> argparse.ArgumentParser:
     ops_run.add_argument("--expected-manual-approval-token")
     ops_run.add_argument("--max-pending-orders", type=int, default=0)
     ops_run.add_argument("--disable-cancel-retry-plan", action="store_true")
+    ops_run.add_argument("--alert-dry-run", action="store_true")
     ops_run.set_defaults(func=cmd_simulate_ops_run)
+
+    daily_ops = simulate_sub.add_parser("daily-ops")
+    daily_ops.add_argument("--date")
+    daily_ops.add_argument("--cache-dir", default="data/raw")
+    daily_ops.add_argument("--requests")
+    daily_ops.add_argument("--dataset", default="TaiwanStockPrice")
+    daily_ops.add_argument("--stock-id")
+    daily_ops.add_argument("--start-date")
+    daily_ops.add_argument("--market-proxy-stock-id", default="0050")
+    daily_ops.add_argument("--market-proxy-start-date")
+    daily_ops.add_argument("--token")
+    daily_ops.add_argument("--quota-limit", type=int, default=540)
+    daily_ops.add_argument("--skip-ingestion", action="store_true")
+    daily_ops.add_argument("--allow-ingestion-failure", action="store_true")
+    daily_ops.add_argument("--candidates-output")
+    daily_ops.add_argument("--candidate-date")
+    daily_ops.add_argument("--limit", type=int, default=80)
+    daily_ops.add_argument("--min-trading-money", type=float, default=80_000_000)
+    daily_ops.add_argument("--execution-sync-store")
+    daily_ops.add_argument("--output-dir")
+    daily_ops.add_argument("--ops-output-dir")
+    daily_ops.add_argument("--simulation-on", action="store_true")
+    daily_ops.add_argument("--allow-outside-session", action="store_true")
+    daily_ops.add_argument("--current-time", default="12:00")
+    daily_ops.add_argument("--max-pending-orders", type=int, default=0)
+    daily_ops.add_argument("--disable-cancel-retry-plan", action="store_true")
+    daily_ops.add_argument("--close-report-output")
+    daily_ops.add_argument("--telegram-summary-output")
+    daily_ops.add_argument("--regression-output-dir")
+    daily_ops.add_argument("--skip-regression-import", action="store_true")
+    daily_ops.add_argument("--audit-output")
+    daily_ops.add_argument("--fail-on-audit", action="store_true")
+    daily_ops.add_argument("--send-alerts", action="store_true")
+    daily_ops.set_defaults(func=cmd_simulate_daily_ops)
 
     restart_sync = simulate_sub.add_parser("restart-sync")
     restart_sync.add_argument("--store", required=True)

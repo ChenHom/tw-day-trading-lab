@@ -1469,3 +1469,61 @@ Grill-me close-out verdict：
 
 - README / AGENTS 已同步，但 `MEMORY.md` 仍有部分長期摘要停在較舊的 phase 認知，後續若需要可另開 memory promotion / cleanup。
 - Daily ops runner 尚未實作；目前只是文件基線修正。
+
+## 14. Daily Simulation Ops Automation v1 - Steps 1-2 - 2026-06-04
+
+本輪目標：照文件 next-run seed 往下實作兩步，先完成 one-command daily ops runner / Make target，再完成 daily bundle audit。仍不啟用正式下單。
+
+### Step 1: Daily Runner / Make Target
+
+已新增 `simulate daily-ops` 子命令，作為每日營運鏈上層 orchestration：
+
+1. 選定 `trading_date` 與輸出目錄，預設為 `reports/{date}-daily-ops/`。
+2. 執行 FinMind ingestion；未提供 `--requests` 時會依當日自動產生 market / stock info / 0050 proxy requests，本地 fixture 或無 token 驗證可用 `--skip-ingestion`。
+3. 從 raw cache 建立 `candidates.json`，並保留 market regime summary。
+4. 呼叫既有 `simulate ops-run`，產出 `ops/ops_run_manifest.json`、`alerts.json`、`readiness_report.json`、`simulation_output.json` 等 artifact。
+5. 呼叫 `report close` 產出 `close.md` 與 `telegram-summary.txt`。
+6. 呼叫 `simulate regression-import`，將 alerts 轉成可追蹤 regression cases。
+
+安全邊界：`simulate daily-ops` 預設將 alert 發送視為 dry-run，且預設忽略 `IS_SIMULATION` 環境變數以避免環境殘留觸發 Shioaji side effect；只有明確帶 `--send-alerts` 或 `--simulation-on` 才會允許對應外部動作。
+
+同步新增 Make target：
+
+```bash
+make daily-ops DATE=2026-06-04
+make daily-ops DATE=2026-06-04 ARGS="--skip-ingestion --allow-outside-session --fail-on-audit"
+make daily-ops DATE=2026-06-04 ARGS="--send-alerts"
+```
+
+### Step 2: Daily Bundle Audit
+
+已新增 `audit_daily_ops_bundle`，並在 `simulate daily-ops` 尾端產生 `daily_bundle_audit.json`。
+
+Audit 檢查項目：
+
+- manifest 是否存在。
+- run id / trading date 是否存在。
+- input / output artifact 是否存在。
+- artifact checksum 是否與 manifest 相符。
+- 必要 artifact 是否齊全：`input_plan.json`、`simulation_output.json`、`restart_sync.json`、`readiness_report.json`、`alerts.json`、`callback_store.json`。
+- readiness report 是否含 status / summary。
+- alerts 是否為 list，且每筆 alert 都有 severity、category、owner、manual_action、send_gate、dedupe_key。
+- close report 是否存在。
+- regression cases 是否可追到同一 run id。
+
+### 驗證
+
+- 新增 `tests/test_daily_ops.py`：
+  - `test_daily_ops_builds_auditable_bundle`
+  - `test_bundle_audit_detects_missing_artifact`
+- 本輪 smoke 使用 `--skip-ingestion --allow-outside-session --fail-on-audit`，確認每日鏈可在無 FinMind token / 無正式下單下產出 auditable bundle。
+
+### Next-run Seed
+
+下一輪不應直接推正式下單。建議做「3-5 日穩定性觀察」：
+
+1. 對 3-5 個交易日或 fixture 日期跑 `make daily-ops DATE=YYYY-MM-DD`。
+2. 彙總每次 `daily_bundle_audit.json`、`ops/alerts.json`、`ops/readiness_report.json`。
+3. 找出重複 blocker、alert noise、candidate quality、partial fill、ordering issue。
+4. 只針對重複且會阻礙操作者的問題開小 sprint 修正。
+5. 若要開啟真實 Telegram alert 或 Shioaji simulation side effect，另開 gate review，不要在一般 smoke 裡使用 `--send-alerts` 或 `--simulation-on`。
