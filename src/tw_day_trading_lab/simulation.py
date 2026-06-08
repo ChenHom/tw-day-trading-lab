@@ -636,34 +636,32 @@ class ShioajiSdkSimulationGateway:
 
         # Automatically activate CA cert (Sinopac.pfx) if variables are set
         import os
-        ca_path = os.getenv("CERT_PATH", "")
+        ca_path = os.getenv("CERT_PATH") or os.getenv("SJ_CA_PATH") or ""
         if not ca_path:
             # Fallback to Sinopac.pfx in current working directory
             fallback_path = os.path.join(os.getcwd(), "Sinopac.pfx")
             if os.path.exists(fallback_path):
                 ca_path = fallback_path
 
-        ca_passwd = os.getenv("CA_PASSWORD", "")
+        ca_passwd = os.getenv("CA_PASSWORD") or os.getenv("SJ_CA_PASSWD") or ""
         ca_id = os.getenv("CA_ID", "")
 
         if ca_path and ca_passwd and ca_id:
             if not os.path.isabs(ca_path):
-                cwd_ca_path = os.path.join(os.getcwd(), ca_path)
-                if os.path.exists(cwd_ca_path):
-                    ca_path = cwd_ca_path
-
-            if os.path.exists(ca_path) and hasattr(self._api, "activate_ca"):
-                try:
-                    self._api.activate_ca(
-                        ca_path=ca_path,
-                        ca_passwd=ca_passwd,
-                        person_id=ca_id,
-                    )
-                except Exception as e:
-                    # Do not crash the login process if activation fails in dry-run/simulation-mock setups
-                    print(f"Warning: Failed to activate CA cert at {ca_path}: {e}")
-
-        return {"mode": "simulation", "session_id": "shioaji-sdk"}
+                ca_path = os.path.abspath(ca_path)
+            if os.path.exists(ca_path):
+                self._api.activate_ca(
+                    ca_path=ca_path,
+                    ca_passwd=ca_passwd,
+                    person_id=ca_id,
+                )
+        return {
+            "mode": "simulation",
+            "session_id": "shioaji-sdk",
+            "status": "logged_in",
+            "accounts": [str(a) for a in accounts],
+            "default_account": str(self._account) if self._account else "",
+        }
 
     def fetch_contract_details(self, symbol: str) -> dict[str, Any] | None:
         try:
@@ -689,7 +687,15 @@ class ShioajiSdkSimulationGateway:
         request: ShioajiOrderRequest,
     ) -> dict[str, Any]:
         contract = self._api.Contracts.Stocks[request.symbol]
-        order = self._api.Order(
+
+        # Check if StockOrder class exists directly on shioaji module (Shioaji 1.5+)
+        # Otherwise fallback to the deprecated api.Order class (Shioaji 1.3)
+        import shioaji as sj  # type: ignore
+        order_factory = getattr(sj, "StockOrder", None)
+        if order_factory is None:
+            order_factory = self._api.Order
+
+        order = order_factory(
             price=request.price if request.price is not None else 0,
             quantity=request.quantity,
             action=self._resolve_sdk_value("Action", request.side.capitalize()),

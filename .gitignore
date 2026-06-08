@@ -16,3 +16,5 @@ shioaji.log
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !reports/.gitkeep
+.agents/
+
