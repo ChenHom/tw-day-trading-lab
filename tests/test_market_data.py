@@ -9,7 +9,7 @@ from pathlib import Path
 from queue import Empty
 from types import SimpleNamespace
 
-from tw_day_trading_lab.cli import cmd_simulate_shioaji_tick_smoke
+from tw_day_trading_lab.cli import cmd_bars_build_1m, cmd_simulate_shioaji_tick_smoke
 from tw_day_trading_lab.market_data import (
     DEGRADED,
     FAILED,
@@ -20,6 +20,7 @@ from tw_day_trading_lab.market_data import (
     evaluate_live_validation,
     normalize_shioaji_tick,
     raw_tick_path,
+    replay_raw_ticks,
     run_gated_shioaji_tick_stream_smoke,
 )
 
@@ -736,6 +737,74 @@ class LiveValidationTest(unittest.TestCase):
         self.assertEqual(report["status"], "ok")
         self.assertFalse(report["live_validation"]["passed"])
         self.assertIn("raw_ticks_received", report["live_validation"]["failed"])
+
+
+class RawTickReplayTest(unittest.TestCase):
+    def test_replay_reproduces_exactly_what_the_stream_emitted(self):
+        """Live and replay must produce the same MarketTicks, filters included."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            emitted = []
+            stream = build_stream(sink=emitted.append, cache_dir=cache_dir)
+
+            stream.handle_tick(TSE, FakeTick(volume=3, total_volume=100))
+            stream.handle_tick(TSE, FakeTick(simtrade=True))
+            stream.handle_tick(TSE, FakeTick(volume=5, total_volume=105))
+            stream.handle_tick(TSE, FakeTick(volume=5, total_volume=105))
+            stream.drain()
+
+            replayed = replay_raw_ticks(raw_tick_path(cache_dir, "2026-08-14", "2330"))
+
+        self.assertEqual(len(emitted), 2)
+        self.assertEqual(replayed, emitted)
+
+    def test_replay_of_a_missing_file_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(replay_raw_ticks(Path(tmp) / "nope.jsonl"), [])
+
+
+class BarsBuildCliTest(unittest.TestCase):
+    def test_build_1m_rebuilds_canonical_bars_from_raw_ticks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp) / "raw"
+            stream = build_stream(cache_dir=cache_dir)
+            for seconds, price, volume, cumulative in (
+                (2, "100.0", 3, 100),
+                (45, "101.0", 2, 102),
+                (70, "99.0", 1, 103),
+            ):
+                stream.handle_tick(
+                    TSE,
+                    FakeTick(
+                        datetime=dt.datetime(2026, 8, 14, 9, 0) + dt.timedelta(seconds=seconds),
+                        close=Decimal(price),
+                        volume=volume,
+                        total_volume=cumulative,
+                    ),
+                )
+            stream.drain()
+
+            output = Path(tmp) / "bars.json"
+            cmd_bars_build_1m(
+                Namespace(
+                    date="2026-08-14",
+                    symbols="2330",
+                    candidates_input=None,
+                    cache_dir=str(cache_dir),
+                    lateness_seconds=3.0,
+                    output=str(output),
+                )
+            )
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(len(payload["bars"]), 2)
+        self.assertTrue(payload["volume_check"]["consistent"])
+        self.assertEqual(payload["bars"][0]["start_at"], "2026-08-14T09:00:00")
+        self.assertEqual(payload["bars"][0]["open"], 100.0)
+        self.assertEqual(payload["bars"][0]["close"], 101.0)
+        self.assertEqual(payload["bars"][0]["volume"], 5000)
+        self.assertEqual(payload["bars"][1]["start_at"], "2026-08-14T09:01:00")
+        self.assertEqual(payload["bars"][1]["volume"], 1000)
 
 
 class TickSmokeCliTest(unittest.TestCase):

@@ -13,8 +13,17 @@ from .finmind_ingestion import (
     ingest_finmind_requests,
     read_request_file,
 )
+from .bars import (
+    OneMinuteBarAggregator,
+    check_bar_volume,
+    latest_bars,
+)
 from .ledger import PaperLedger
-from .market_data import run_gated_shioaji_tick_stream_smoke
+from .market_data import (
+    raw_tick_path,
+    replay_raw_ticks,
+    run_gated_shioaji_tick_stream_smoke,
+)
 from .models import CandidateInput, CandidateScore
 from .old_log_importer import import_trade_log_csv, render_failure_replay_markdown
 from .replay import ReplayAssumptions, render_replay_markdown, replay_samples
@@ -3033,6 +3042,44 @@ def cmd_simulate_shioaji_smoke(args: argparse.Namespace) -> None:
     print(output)
 
 
+def cmd_bars_build_1m(args: argparse.Namespace) -> None:
+    """Rebuild canonical 1m bars from the stored raw Shioaji tick artifacts."""
+    cache_dir = Path(args.cache_dir)
+    symbols = _resolve_tick_smoke_symbols(args)
+    if not symbols:
+        raise ValueError("--symbols or --candidates-input is required")
+
+    ticks = []
+    sources = []
+    for symbol in symbols:
+        path = raw_tick_path(cache_dir, args.date, symbol)
+        symbol_ticks = replay_raw_ticks(path)
+        sources.append({"symbol": symbol, "path": str(path), "ticks": len(symbol_ticks)})
+        ticks.extend(symbol_ticks)
+    # Bars are built on event time, so a multi-symbol replay must be merged.
+    ticks.sort(key=lambda item: (item.timestamp, item.symbol, item.sequence))
+
+    aggregator = OneMinuteBarAggregator(lateness_seconds=args.lateness_seconds)
+    emitted = []
+    for tick in ticks:
+        emitted.extend(aggregator.on_tick(tick))
+    emitted.extend(aggregator.close_all())
+    bars = latest_bars(emitted)
+
+    payload = {
+        "trading_date": args.date,
+        "timeframe": "1m",
+        "sources": sources,
+        "aggregator": aggregator.stats(),
+        "volume_check": check_bar_volume(bars, ticks),
+        "bars": [bar.to_dict() for bar in bars],
+    }
+    output = Path(args.output) if args.output else Path("reports") / f"{args.date}-1m-bars.json"
+    write_json(output, payload)
+    print(output)
+    print(f"bars: {len(bars)}  ticks: {len(ticks)}  volume_consistent: {payload['volume_check']['consistent']}")
+
+
 def _resolve_tick_smoke_symbols(args: argparse.Namespace) -> list[str]:
     """Resolve the candidate-scoped symbol list for the tick stream smoke."""
     if args.symbols:
@@ -3281,6 +3328,17 @@ def build_parser() -> argparse.ArgumentParser:
     samples_persist.set_defaults(func=cmd_samples_persist)
     samples_summary = samples_sub.add_parser("summary")
     samples_summary.set_defaults(func=cmd_samples_summary)
+
+    bars = subparsers.add_parser("bars")
+    bars_sub = bars.add_subparsers(required=True)
+    build_1m = bars_sub.add_parser("build-1m")
+    build_1m.add_argument("--date", required=True)
+    build_1m.add_argument("--symbols")
+    build_1m.add_argument("--candidates-input")
+    build_1m.add_argument("--cache-dir", default="data/raw")
+    build_1m.add_argument("--lateness-seconds", type=float, default=3.0)
+    build_1m.add_argument("--output")
+    build_1m.set_defaults(func=cmd_bars_build_1m)
 
     replay = subparsers.add_parser("replay")
     replay_sub = replay.add_subparsers(required=True)

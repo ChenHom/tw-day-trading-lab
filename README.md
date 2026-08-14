@@ -239,6 +239,17 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-tick-smoke \
 
 開 gate 後只登入行情（`fetch_contract=True`、`subscribe_trade=False`），不碰委託鏈路、不送單、不取消。訂閱範圍限定候選名單，不掃全市場。raw tick 全部寫入 `data/raw/shioaji/ticks/{date}/{symbol}.jsonl`，包含被拒絕的 `simtrade` / 盤中零股 rows，供 audit。
 
+### 由 Tick 重建 1m K 棒 (Price Action P2)
+
+```bash
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli bars build-1m \
+  --date 2026-08-17 \
+  --symbols 2330 \
+  --cache-dir data/raw
+```
+
+從 P1 的 raw tick artifact 重建 canonical 1m bar，輸出 `reports/{date}-1m-bars.json`（含 `aggregator` 統計與 `volume_check`）。replay 套用與 live stream 相同的過濾、sequence 與 dedupe 規則，因此重播一場 session 會得到與當時一模一樣的 MarketTick 與 bar。
+
 如果沒有安裝 package，先加上 `PYTHONPATH=src`：
 
 ```bash
@@ -255,6 +266,7 @@ src/tw_day_trading_lab/
   ledger.py             # paper / simulation idempotency 與部位生命週期骨架
   live.py               # live execution adapter boundary / approval token gate
   market_data.py        # Price Action P1 Shioaji tick -> normalized MarketTick
+  bars.py               # Price Action P2 MarketTick -> canonical 1m MarketBar
   market_regime.py      # 0050 proxy 大盤環境過濾
   performance.py        # rolling expectancy / drawdown feedback
   reports.py            # Markdown / HTML 報告與 daily close report
@@ -332,6 +344,7 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 - Price Action Intraday P1 已完成：`market_data.py` 提供 `MarketTick`、`normalize_shioaji_tick`、`ShioajiTickStream` 與 `data/raw/shioaji/ticks/{date}/{symbol}.jsonl` raw store。`simtrade` / 盤中零股 / 暫停交易 tick 一律拒絕，成交量統一換算成股。strategy 層不依賴 Shioaji SDK，`market_data.py` 也不 import SDK。P2 tick → 1m 尚未實作。
 - P1 code review 修正已完成：provider callback 只入佇列不做 I/O（避免卡住行情 feed），壞掉的 `volume` 一律 `needs_review` 不再靜默轉成 0，ingestion 端二次檢查 candidate scope，duplicate tick 以 `(symbol, timestamp, cumulative_volume)` 去重，`code` 缺失的 tick 保存到 `_unknown.jsonl`，subscribe 例外與觀察窗中斷都保證 unsubscribe / logout。
 - P1 market data health 已完成：`dropped_queue_full` / `worker_errors` / `raw_write_errors` / `sink_errors` / `worker_failed` / `worker_stop_timeout` 皆可觀察，聚合成 `HEALTHY` / `DEGRADED` / `FAILED`。系統不保證永不掉 tick，但掉了一定知道；health 非 `HEALTHY` 時 smoke fail closed 並回傳非 0，下游禁止產生新進場訊號。另有逐檔 volume sanity check 交叉驗證 `cumulative_volume` 差值與 `trade_volume` 加總。
+- Price Action Intraday P2 已達 Gate A `P2_CODE_COMPLETE`：`bars.py` 提供 `MarketBar` 與 `OneMinuteBarAggregator`，半開 bucket `[09:00:00, 09:01:00)`、事件時間 watermark、多股票各自狀態、late tick 窗內併入／窗外 `CORRECTED` rev+1／超窗 `dropped_late`、sequence gap 逐 bar 標記。**沒有成交的分鐘不補 synthetic bar**，以保持「真的量 0 / 沒人交易 / feed 漏資料」三者可分辨。`bars build-1m` 可從 P1 raw tick 重建 1m bar，replay 與 live 共用同一套 aggregator。Gate B `P2_LIVE_VALIDATED` 未達成，需真實 tick 聚合結果與盤後 provider 分 K 比對。詳見 `docs/price-action-p2-design.md`。
 - **P1 驗收分兩段**：Gate A `P1_CODE_COMPLETE` 已達成（50 個 unit / adversarial tests）；Gate B `P1_LIVE_VALIDATED` 未達成，仍缺一次交易時段的真實 simulation quote smoke。smoke report 的 `live_validation.passed` 會自己算出有沒有達標，不需人工核對欄位。P2 可以用 fixture / synthetic `MarketTick` 開始開發，但 Gate B 通過前不得宣告 Tick → 1m pipeline 已可用於每日 paper trading。詳見 `docs/price-action-p1-design.md`。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。

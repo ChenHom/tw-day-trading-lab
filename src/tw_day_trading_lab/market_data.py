@@ -27,6 +27,7 @@ from dataclasses import asdict, dataclass
 from decimal import Decimal
 from pathlib import Path
 from queue import Empty, Full, Queue
+from types import SimpleNamespace
 from typing import Any, Callable, Mapping, Sequence
 
 SHARES_PER_LOT = 1000
@@ -129,6 +130,48 @@ def append_raw_ticks(
         for row in rows:
             handle.write(json.dumps(dict(row), ensure_ascii=False, sort_keys=True) + "\n")
     return path
+
+
+def read_raw_ticks(path: Path) -> list[dict[str, Any]]:
+    """Read one raw tick JSONL file written by `append_raw_ticks`."""
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            row = json.loads(line)
+            if isinstance(row, dict):
+                rows.append(row)
+    return rows
+
+
+def replay_raw_ticks(path: Path) -> list[MarketTick]:
+    """Rebuild MarketTicks from a stored raw tick file.
+
+    Applies the same filters, per-symbol sequence rule and dedupe key as the
+    live stream, so replaying a session reproduces exactly the MarketTicks it
+    emitted. This is what lets live and replay share one aggregator.
+    """
+    ticks: list[MarketTick] = []
+    sequences: dict[str, int] = {}
+    seen: dict[str, set[tuple[str, int]]] = {}
+    for row in read_raw_ticks(path):
+        payload = SimpleNamespace(**row)
+        symbol = str(row.get("code") or "")
+        sequence = sequences.get(symbol, 0)
+        market_tick, _reason = normalize_shioaji_tick(
+            row.get("exchange", ""), payload, sequence=sequence
+        )
+        if market_tick is None:
+            continue
+        key = (market_tick.timestamp, market_tick.cumulative_volume)
+        symbol_seen = seen.setdefault(symbol, set())
+        if key in symbol_seen:
+            continue
+        symbol_seen.add(key)
+        sequences[symbol] = sequence + 1
+        ticks.append(market_tick)
+    return ticks
 
 
 class ShioajiTickStream:

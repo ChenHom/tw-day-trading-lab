@@ -742,6 +742,62 @@ idle --start()--> running --stop()--> stopped
 - 觀察窗結束或中途例外，一律 `finally` unsubscribe 並 logout。
 - subscribe / callback 註冊同時支援 `api.quote.*`（1.3）與 `api.*`（較新版本）兩種 API 形狀；smoke 必須在實際安裝版本上跑過。
 
+## MarketBar Contract
+
+Price Action P2。canonical 1m bar，由 `MarketTick` 聚合而成。實作在 `bars.py`，只 import stdlib 與 `MarketTick`。
+
+| 欄位 | 說明 |
+|---|---|
+| `symbol` | 股票代號 |
+| `timeframe` | 第一版固定 `1m` |
+| `start_at` / `end_at` | bucket 起訖 ISO 字串，半開區間 `[start, end)` |
+| `open` / `high` / `low` / `close` | OHLC；open / close 依**事件時間**決定，不依抵達順序 |
+| `volume` | 該分鐘 `trade_volume` 加總，單位股 |
+| `trade_count` | 該分鐘 tick 筆數 |
+| `status` | `OPEN` / `CLOSED` / `CORRECTED` |
+| `revision` | 從 1 起算，每次 correction +1 |
+| `source` | 第一版固定 `shioaji_tick_aggregated` |
+| `sequence_gap` | 該 bar 期間是否出現 P1 sequence 斷號 |
+
+規則：
+
+- bucket 為半開區間：`09:00:59` 屬於 09:00 bar，`09:01:00` 開始新 bucket。
+- **volume 只加 `trade_volume`**；`cumulative_volume` 僅用於完整性檢查，不進聚合。
+- **watermark 只由 tick timestamp 推進，不讀系統時鐘**，因此 replay 與 live 產生位元相同的 bar。盤中要在無成交時收 bar，由呼叫端 `flush(now=...)` 提供時鐘。
+- `MarketBar` 是 frozen dataclass；correction 產生新物件，已發出的 revision 永不改寫，策略記錄的 `bar_revision_used` 自然成立。
+- 任何加總 bar 的地方必須先過 `latest_bars()`，否則被 correct 過的分鐘會算兩次。
+
+**Missing minute：不補 synthetic bar。** 沒有成交的分鐘不產生 `MarketBar`。這是為了讓三件事保持可分辨：
+
+| 事實 | 表現 |
+|---|---|
+| 真的成交量 0 | 有 bar，`volume=0`、`trade_count>0` |
+| 根本沒有交易 | 沒有 bar；`stats.no_trade_minutes` 計數 |
+| feed 漏資料 | `market_data` health 轉 `DEGRADED` / `FAILED` |
+
+因此 `MarketBar` 沒有 `is_synthetic` 欄位。這推翻了 `docs/price-action-intraday-plan.md` 原本的 Missing Minute Policy，該文件已標註修正。
+
+Late tick policy（第一版 `lateness_seconds=3`、`correction_window_minutes=10`）：
+
+| 情境 | 結果 |
+|---|---|
+| 分鐘結束但未過 lateness window | bar 維持 pending，不 close |
+| watermark 越過 `end + lateness` | 發出 `CLOSED` rev=1 |
+| 窗內遲到 tick | 直接併入該 bar，不產生 correction |
+| 已 CLOSED 後遲到 | 發出 `CORRECTED` rev=2，前一版物件不變 |
+| 超出 correction window | 計入 `dropped_late` 並丟棄 |
+
+Aggregator counters（`stats()`）：`ticks` / `bars_closed` / `bars_corrected` / `late_ticks` / `dropped_late` / `sequence_gaps` / `no_trade_minutes` / `invalid_timestamps` / `pending_bars` / `watermark`。
+
+Replay：`market_data.replay_raw_ticks` 從 `data/raw/shioaji/ticks/{date}/{symbol}.jsonl` 重建 MarketTick，套用與 live stream 相同的過濾、sequence 與 dedupe 規則。CLI：
+
+```bash
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli bars build-1m \
+  --date 2026-08-17 --symbols 2330 --cache-dir data/raw
+```
+
+輸出 `reports/{date}-1m-bars.json`：`sources` / `aggregator` / `volume_check` / `bars`。
+
 ## Persisted Strategy Samples
 
 TiDB `valid_samples` table 目前保存 classified strategy samples。雖然沿用 `valid_samples` 名稱，實際內容包含：

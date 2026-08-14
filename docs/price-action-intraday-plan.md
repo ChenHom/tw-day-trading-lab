@@ -458,7 +458,17 @@ finmind
 
 ## Missing Minute Policy
 
-若某分鐘完全沒有成交：
+> **已於 P2 修正。** 下方原始版本要求 canonical 1m 直接補 synthetic bar，實作時改為不補。原因見 `docs/price-action-p2-design.md`：
+>
+> ```text
+> 真的成交量 0（有成交，量為 0）
+> vs 根本沒有交易（該分鐘無人成交）
+> vs feed 漏資料（我們沒收到）
+> ```
+>
+> 這三件事不能在 canonical layer 混成同一種 bar。現行契約是：**沒有成交的分鐘不產生 MarketBar**，缺口由 `no_trade_minutes` 計數，feed 漏資料由 `market_data.py` 的 health 回報。要不要補空棒，交給下游 normalization layer（P3 5m 聚合與 P5 TOD-RVOL）依用途決定。`MarketBar` 因此也沒有 `is_synthetic` 欄位。
+
+原始版本（保留供對照，**不採用**）：
 
 ```text
 open   = previous close
@@ -468,10 +478,6 @@ close  = previous close
 volume = 0
 is_synthetic = true
 ```
-
-不可直接跳過該分鐘。
-
-否則 5m bucket 與歷史同時段統計會失真。
 
 ---
 
