@@ -219,6 +219,26 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle-smok
 
 真實 raw-cache observation 應加上 `--require-intraday-bars`，要求每個候選股都有 candidate-scoped intraday rows；若只有日線交易 probe、缺候選股分 K，該日期會標成 `blocked` / `required_intraday_bars_missing`，避免把「artifact chain 可產出」誤讀成「真實盤中資料已可用」。
 
+### 即時行情 Tick 訂閱 (Price Action P1, gated)
+
+`simulate shioaji-tick-smoke` 預設 blocked：不 import Shioaji、不登入、不訂閱，只輸出 `enable_tick_stream_required` report。
+
+```bash
+# 預設 dry gate，確認 side_effects 為空
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-tick-smoke \
+  --date 2026-08-14 \
+  --candidates-input reports/2026-08-14-candidates.json
+
+# 明確開 gate 才會登入 simulation 並訂閱候選股 tick
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-tick-smoke \
+  --date 2026-08-14 \
+  --candidates-input reports/2026-08-14-candidates.json \
+  --duration-seconds 60 \
+  --enable-tick-stream
+```
+
+開 gate 後只登入行情（`fetch_contract=True`、`subscribe_trade=False`），不碰委託鏈路、不送單、不取消。訂閱範圍限定候選名單，不掃全市場。raw tick 全部寫入 `data/raw/shioaji/ticks/{date}/{symbol}.jsonl`，包含被拒絕的 `simtrade` / 盤中零股 rows，供 audit。
+
 如果沒有安裝 package，先加上 `PYTHONPATH=src`：
 
 ```bash
@@ -234,6 +254,7 @@ src/tw_day_trading_lab/
   cost.py               # 台股當沖成本與 tick size 滑價模型
   ledger.py             # paper / simulation idempotency 與部位生命週期骨架
   live.py               # live execution adapter boundary / approval token gate
+  market_data.py        # Price Action P1 Shioaji tick -> normalized MarketTick
   market_regime.py      # 0050 proxy 大盤環境過濾
   performance.py        # rolling expectancy / drawdown feedback
   reports.py            # Markdown / HTML 報告與 daily close report
@@ -308,6 +329,7 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 - `Daily Simulation Ops Automation v1` 前兩步已完成：`simulate daily-ops` / `make daily-ops` 可啟動每日作業鏈，`daily_bundle_audit.json` 可檢查 manifest、artifact checksum、readiness、alerts operator fields、close report 與 regression case traceability。
 - Trading Day Autonomous Cycle v1 第 1-8 步已完成 dry-run 版：`simulate trading-day-cycle` 可產出 run state、watch events、order intents、position state、15:00 report、17:30 next candidates handoff 與 end-to-end smoke。交易日不用額外日曆判斷；取不到交易資料即 `non_trading_day`。
 - Simulate online-test preparation 已開始：`simulate trading-day-cycle` 可用 candidate-scoped raw-cache intraday adapter 取代 fixture bars，`simulate trading-day-cycle-smoke` 可連跑多日並輸出 stability summary。Shioaji side effect、GitHub publish、Telegram send 仍維持 disabled / dry-run gate。
+- Price Action Intraday P1 已完成：`market_data.py` 提供 `MarketTick`、`normalize_shioaji_tick`、`ShioajiTickStream` 與 `data/raw/shioaji/ticks/{date}/{symbol}.jsonl` raw store。`simtrade` / 盤中零股 / 暫停交易 tick 一律拒絕，成交量統一換算成股。strategy 層不依賴 Shioaji SDK，`market_data.py` 也不 import SDK。P2 tick → 1m 尚未實作。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。
 - P6 已支援 `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition` dry-run，simulation sample 與 replay expectancy 分開，重送同一 intent 不會重複開倉。

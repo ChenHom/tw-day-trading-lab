@@ -184,6 +184,17 @@ ShioajiTickStream.handle_tick
 
 這不影響 P1，但 P5 的 TOD-RVOL 需要 20 個交易日的歷史分 K，補資料的前置時間要現在就排。
 
+## Implementation Status
+
+P1 已實作完成（`src/tw_day_trading_lab/market_data.py`、`tests/test_market_data.py`、`cli.py` 的 `simulate shioaji-tick-smoke`）。P2 tick → 1m 未實作，維持本文件第 2 節的範圍界定。
+
+實作時與本設計的兩處偏離：
+
+1. **`normalize_shioaji_tick` 回傳 `tuple[MarketTick | None, str]`**，而非只回 `MarketTick | None`。第 6 節測試案例 2/3/4/7 要求 reject reason 可觀察，用 tuple 比再開一個分類函式短。
+2. **`append_raw_ticks` 沒有重用 `finmind_ingestion.write_jsonl`**。該函式用 `path.write_text` 整檔覆寫，tick 流每筆都改寫整個檔案會變成 O(n²)。改成直接以 `"a"` 模式 append，四行 stdlib。
+
+另外新增了設計時未列出的 `contract_not_found` reject reason：`api.Contracts.Stocks[symbol]` 查不到候選股時記錄並跳過，不中斷其他標的的訂閱。
+
 ## Verification
 
 本文件的事實依據來自以下實際執行的檢查：

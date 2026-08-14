@@ -24,6 +24,7 @@ The old repo `~/services/stock/quantitative-trading-decision-system` is only a d
 - Do not print API keys, secrets, CA passwords, approval tokens, or `.env` values.
 - Any real Shioaji smoke must be explicitly gated and must use `sj.Shioaji(simulation=True)`.
 - `ShioajiSdkSimulationGateway` and callback stream code must continue to reject `api.simulation=False`.
+- `ShioajiTickStream` and any future quote/market-data stream must also reject `api.simulation=False`, and must subscribe only candidate-scoped symbols.
 
 If a task appears to require live execution, stop and design the gate/SOP first. Do not "just test it".
 
@@ -47,6 +48,7 @@ If a task appears to require live execution, stop and design the gate/SOP first.
 - Trading Day Autonomous Cycle v1 steps 1-8 are complete as dry-run artifacts: `simulate trading-day-cycle` emits run state, watch events, order intents, position state, 15:00 report, 17:30 next-candidate handoff, and end-to-end smoke. Trading-day status is based only on API/raw-cache data availability. Do not add a separate holiday calendar unless explicitly requested.
 - Simulate online-test preparation is in progress: `simulate trading-day-cycle` can read candidate-scoped intraday bars from raw cache when no fixture is supplied, and `simulate trading-day-cycle-smoke` can run multi-day stability checks. Keep Shioaji side effects, GitHub publish, and Telegram send disabled unless a later task explicitly opens those gates.
 - `.pfx` / `.p12` files are ignored, and `Sinopac.pfx` has been removed from reachable Git history.
+- Price Action Intraday P1 is complete: `market_data.py` provides `MarketTick`, `normalize_shioaji_tick`, `ShioajiTickStream`, the `data/raw/shioaji/ticks/` raw store, and the gated `simulate shioaji-tick-smoke`. Tick to 1m aggregation (P2) is not implemented. `market_data.py` must stay free of Shioaji SDK imports.
 
 ## Next Development Priority
 

@@ -622,6 +622,63 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle-smok
 - 真實 raw-cache observation 應使用 `--require-intraday-bars`；若候選股缺分 K / intraday rows，日期應標為 `blocked` 並列出 `required_intraday_bars_missing`。
 - Shioaji simulation side effects、GitHub publish、Telegram send 都必須維持 disabled / dry-run，直到另有 explicit gate。
 
+## MarketTick Contract
+
+Price Action P1。Shioaji 即時 tick 進入系統的唯一入口，strategy 層不得直接讀 provider payload。實作在 `market_data.py`，該模組不 import Shioaji SDK。
+
+| 欄位 | 說明 |
+|---|---|
+| `symbol` | 股票代號，來自 `tick.code` |
+| `exchange` | `TSE` / `OTC`，來自 callback 第一個參數的 `Exchange.value` |
+| `timestamp` | `tick.datetime` 的 ISO 字串；naive local time，不掛 tzinfo |
+| `price` | 成交價，來自 `tick.close`；`Decimal` 一律轉 `float` |
+| `trade_volume` | 單筆成交增量，單位股 |
+| `cumulative_volume` | 當日累積成交量，單位股 |
+| `source` | 固定 `shioaji_tick` |
+| `sequence` | 由 stream 指派的 per-`(date, symbol)` 遞增序號 |
+
+規則：
+
+- **單位一律是股。** Shioaji 整股 tick 的 `volume` / `total_volume` 單位是張（K shares），normalize 時乘 1000。K 棒聚合只能用 `trade_volume`，不可把 `cumulative_volume` 相加。
+- **`simtrade` / `intraday_odd` / `suspend` 一律拒絕**，`normalize_shioaji_tick` 回傳 `(None, reason)`。試撮價不是真成交，盤中零股 volume 單位是股不是張，混入會讓成交量差 1000 倍。
+- 缺 `code` / `datetime` / `close` 回傳 `(None, "needs_review")`，不拋例外。
+- `sequence` 只在同一 process 內有效，重啟會歸零。replay 的排序 / 去重鍵是 `(timestamp, cumulative_volume)`。
+- `cumulative_volume` 較前一筆小的 tick 仍會輸出，但計入 stream 的 `out_of_order`。
+- 被拒絕的 tick 不佔用 `sequence`，因此 MarketTick 序號連續無洞。
+
+Raw tick store：
+
+```text
+data/raw/shioaji/ticks/{date}/{symbol}.jsonl
+```
+
+- 保存**全部** provider payload，包含被拒絕的 `simtrade` / odd-lot rows，供 audit 與 rebuild。
+- append-only；`market_data.append_raw_ticks` 不使用 `finmind_ingestion.write_jsonl`，因為後者是整檔覆寫。
+
+Gated tick stream smoke：
+
+`simulate shioaji-tick-smoke` 預設 blocked，不 import Shioaji、不登入、不訂閱。
+
+| 欄位 | 說明 |
+|---|---|
+| `status` | `blocked` / `ok` |
+| `mode` | 固定 `shioaji_tick_stream` |
+| `checks.gate_enabled` | 是否帶了 `--enable-tick-stream` |
+| `checks.credentials_present` | credential env 是否齊全 |
+| `checks.simulation_api` | api 是否為 `simulation=True` |
+| `checks.candidate_scoped` | 必須為 true |
+| `checks.symbol_count` | 訂閱的候選股數 |
+| `checks.orders_allowed` | 必須為 false |
+| `side_effects[]` | 未開 gate 時必須為空；開啟後只有 `quote_subscribe` |
+| `review_reason` | `enable_tick_stream_required` / `shioaji_credentials_required` / `candidate_symbols_required` / `shioaji_import_failed` |
+| `summary` | symbols / subscribed / raw_ticks / market_ticks / out_of_order / rejected |
+
+規則：
+
+- 只訂閱 `--candidates-input` 或 `--symbols` 指定的候選股，不盤中掃全市場。
+- `ShioajiTickStream` 與既有 order gateway 一樣拒絕 `api.simulation=False`。
+- 這個 smoke 只登入行情：`fetch_contract=True`、`subscribe_trade=False`，不碰委託鏈路、不送單、不取消。
+
 ## Persisted Strategy Samples
 
 TiDB `valid_samples` table 目前保存 classified strategy samples。雖然沿用 `valid_samples` 名稱，實際內容包含：

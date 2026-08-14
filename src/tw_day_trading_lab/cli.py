@@ -14,6 +14,7 @@ from .finmind_ingestion import (
     read_request_file,
 )
 from .ledger import PaperLedger
+from .market_data import run_gated_shioaji_tick_stream_smoke
 from .models import CandidateInput, CandidateScore
 from .old_log_importer import import_trade_log_csv, render_failure_replay_markdown
 from .replay import ReplayAssumptions, render_replay_markdown, replay_samples
@@ -3032,6 +3033,65 @@ def cmd_simulate_shioaji_smoke(args: argparse.Namespace) -> None:
     print(output)
 
 
+def _resolve_tick_smoke_symbols(args: argparse.Namespace) -> list[str]:
+    """Resolve the candidate-scoped symbol list for the tick stream smoke."""
+    if args.symbols:
+        return [item.strip() for item in str(args.symbols).split(",") if item.strip()]
+    if args.candidates_input:
+        return [candidate.symbol for candidate in load_candidate_scores(Path(args.candidates_input))]
+    return []
+
+
+def cmd_simulate_shioaji_tick_smoke(args: argparse.Namespace) -> None:
+    """Run the explicitly gated Shioaji candidate-scoped tick stream smoke."""
+    symbols = _resolve_tick_smoke_symbols(args)
+    enabled = bool(args.enable_tick_stream)
+    api_key = os.getenv(args.api_key_env) if enabled else None
+    secret_key = os.getenv(args.secret_key_env) if enabled else None
+    credentials_present = bool(api_key and secret_key)
+    api = None
+    import_error = ""
+
+    if enabled and credentials_present and symbols:
+        try:
+            import shioaji as sj  # type: ignore
+        except Exception as error:
+            import_error = str(error)
+        else:
+            api = sj.Shioaji(simulation=True)
+            # Market data only: contracts are needed to subscribe, order callbacks are not.
+            api.login(
+                api_key=api_key,
+                secret_key=secret_key,
+                fetch_contract=True,
+                subscribe_trade=False,
+            )
+
+    if import_error:
+        report: dict[str, object] = {
+            "status": "blocked",
+            "mode": "shioaji_tick_stream",
+            "trading_date": args.date,
+            "review_reason": "shioaji_import_failed",
+            "error": import_error,
+            "side_effects": [],
+        }
+    else:
+        report = run_gated_shioaji_tick_stream_smoke(
+            api=api,
+            trading_date=args.date,
+            symbols=symbols,
+            enabled=enabled,
+            credentials_present=credentials_present,
+            cache_dir=Path(args.cache_dir) if args.cache_dir else None,
+            duration_seconds=args.duration_seconds,
+        )
+
+    output = Path(args.output) if args.output else Path("reports") / f"{args.date}-shioaji-tick-smoke.json"
+    write_json(output, report)
+    print(output)
+
+
 def cmd_simulate_production_readiness(args: argparse.Namespace) -> None:
     """Build the P7 production readiness gate report from execution sync state."""
     store = FileExecutionSyncStore(Path(args.store))
@@ -3380,6 +3440,17 @@ def build_parser() -> argparse.ArgumentParser:
     shioaji_smoke.add_argument("--fetch-contract", action="store_true")
     shioaji_smoke.add_argument("--subscribe-trade", action="store_true")
     shioaji_smoke.set_defaults(func=cmd_simulate_shioaji_smoke)
+    shioaji_tick_smoke = simulate_sub.add_parser("shioaji-tick-smoke")
+    shioaji_tick_smoke.add_argument("--date", required=True)
+    shioaji_tick_smoke.add_argument("--candidates-input")
+    shioaji_tick_smoke.add_argument("--symbols")
+    shioaji_tick_smoke.add_argument("--cache-dir", default="data/raw")
+    shioaji_tick_smoke.add_argument("--duration-seconds", type=float, default=60.0)
+    shioaji_tick_smoke.add_argument("--api-key-env", default="SHIOAJI_API_KEY")
+    shioaji_tick_smoke.add_argument("--secret-key-env", default="SHIOAJI_SECRET_KEY")
+    shioaji_tick_smoke.add_argument("--enable-tick-stream", action="store_true")
+    shioaji_tick_smoke.add_argument("--output")
+    shioaji_tick_smoke.set_defaults(func=cmd_simulate_shioaji_tick_smoke)
     production_readiness = simulate_sub.add_parser("production-readiness")
     production_readiness.add_argument("--date", required=True)
     production_readiness.add_argument("--store", required=True)
