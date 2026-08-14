@@ -330,6 +330,7 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 - Trading Day Autonomous Cycle v1 第 1-8 步已完成 dry-run 版：`simulate trading-day-cycle` 可產出 run state、watch events、order intents、position state、15:00 report、17:30 next candidates handoff 與 end-to-end smoke。交易日不用額外日曆判斷；取不到交易資料即 `non_trading_day`。
 - Simulate online-test preparation 已開始：`simulate trading-day-cycle` 可用 candidate-scoped raw-cache intraday adapter 取代 fixture bars，`simulate trading-day-cycle-smoke` 可連跑多日並輸出 stability summary。Shioaji side effect、GitHub publish、Telegram send 仍維持 disabled / dry-run gate。
 - Price Action Intraday P1 已完成：`market_data.py` 提供 `MarketTick`、`normalize_shioaji_tick`、`ShioajiTickStream` 與 `data/raw/shioaji/ticks/{date}/{symbol}.jsonl` raw store。`simtrade` / 盤中零股 / 暫停交易 tick 一律拒絕，成交量統一換算成股。strategy 層不依賴 Shioaji SDK，`market_data.py` 也不 import SDK。P2 tick → 1m 尚未實作。
+- P1 code review 修正已完成：provider callback 只入佇列不做 I/O（避免卡住行情 feed），壞掉的 `volume` 一律 `needs_review` 不再靜默轉成 0，ingestion 端二次檢查 candidate scope，duplicate tick 以 `(symbol, timestamp, cumulative_volume)` 去重，`code` 缺失的 tick 保存到 `_unknown.jsonl`，subscribe 例外與觀察窗中斷都保證 unsubscribe / logout。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。
 - P6 已支援 `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition` dry-run，simulation sample 與 replay expectancy 分開，重送同一 intent 不會重複開倉。

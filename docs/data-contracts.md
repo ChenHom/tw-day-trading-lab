@@ -637,22 +637,47 @@ Price Action P1。Shioaji 即時 tick 進入系統的唯一入口，strategy 層
 | `source` | 固定 `shioaji_tick` |
 | `sequence` | 由 stream 指派的 per-`(date, symbol)` 遞增序號 |
 
+Required fields：`code`、`datetime`、`close`、`volume`、`total_volume` 缺一即 `needs_review`。
+
 規則：
 
 - **單位一律是股。** Shioaji 整股 tick 的 `volume` / `total_volume` 單位是張（K shares），normalize 時乘 1000。K 棒聚合只能用 `trade_volume`，不可把 `cumulative_volume` 相加。
 - **`simtrade` / `intraday_odd` / `suspend` 一律拒絕**，`normalize_shioaji_tick` 回傳 `(None, reason)`。試撮價不是真成交，盤中零股 volume 單位是股不是張，混入會讓成交量差 1000 倍。
-- 缺 `code` / `datetime` / `close` 回傳 `(None, "needs_review")`，不拋例外。
+- **壞掉的 volume 不可以變成 0。** `volume` / `total_volume` 缺失、無法解析或為負，一律 `needs_review`，不得輸出成 `trade_volume=0`。下游 TOD-RVOL / Cum-RVOL / breakout volume 會把 0 讀成「這分鐘沒量」，那是資料錯誤被當成市場事實。`volume=0` 本身是合法值，只有無法解析才拒絕。
+- 缺 `code` / `datetime` / `close` 同樣回傳 `(None, "needs_review")`，不拋例外。
 - `sequence` 只在同一 process 內有效，重啟會歸零。replay 的排序 / 去重鍵是 `(timestamp, cumulative_volume)`。
 - `cumulative_volume` 較前一筆小的 tick 仍會輸出，但計入 stream 的 `out_of_order`。
-- 被拒絕的 tick 不佔用 `sequence`，因此 MarketTick 序號連續無洞。
+- 被拒絕與重複的 tick 都不佔用 `sequence`，因此 MarketTick 序號連續無洞。
+
+Ingestion pipeline：
+
+```text
+Shioaji quote callback
+    ↓  put_nowait          ← callback 只做入佇列，不做 I/O、不做解析
+Queue (bounded)
+    ↓
+worker thread
+    ↓ raw JSONL append → candidate scope → normalize → dedupe → sink
+```
+
+- **provider callback 內不得做檔案 I/O 或解析。** 卡住 quote callback 會讓整條 tick feed 延遲，1m volume 與所有 RVOL 特徵會靜默失真。
+- queue 滿時丟棄並計入 `dropped_queue_full`，不阻塞 callback；資料遺失必須在 summary 可見。
+- **candidate scope 在 ingestion 端再檢查一次。** 同一 api 物件的 quote callback 是共用的，其他訂閱者的標的也會進到同一個 callback；`subscribe` 的範圍不等於 ingestion 的範圍。非候選股計入 `outside_candidate_scope`，絕不進 sink。
+- **duplicate tick 必須在 P1 擋掉**，key 為 `(symbol, timestamp, cumulative_volume)`，計入 `duplicate`。重送的 tick 若進入 P2 聚合會直接把成交量灌大。
+- `start()` 中途 subscribe 失敗會回退已訂閱的 contract；`stop()` 一律先 unsubscribe 再收工。Shioaji 對同一 `person_id` 有連線數上限，不能靠 process 結束自然清理。
+
+Reject reasons：`simtrade` / `intraday_odd` / `suspend` / `needs_review` / `outside_candidate_scope` / `duplicate` / `contract_not_found` / `unsubscribe_failed`。
 
 Raw tick store：
 
 ```text
 data/raw/shioaji/ticks/{date}/{symbol}.jsonl
+data/raw/shioaji/ticks/{date}/_unknown.jsonl   # code 缺失的 tick
 ```
 
-- 保存**全部** provider payload，包含被拒絕的 `simtrade` / odd-lot rows，供 audit 與 rebuild。
+- 保存**全部** provider payload，包含被拒絕的 `simtrade` / odd-lot / `needs_review` rows，供 audit 與 rebuild。
+- 缺 `code` 的 tick 寫入 `_unknown.jsonl`；那正是最需要事後追查的一種，不可因為沒有 symbol 就丟掉。
+- 非候選股的 tick 不寫入（不是本 stream 的資料），只計數。
 - append-only；`market_data.append_raw_ticks` 不使用 `finmind_ingestion.write_jsonl`，因為後者是整檔覆寫。
 
 Gated tick stream smoke：
@@ -670,14 +695,17 @@ Gated tick stream smoke：
 | `checks.symbol_count` | 訂閱的候選股數 |
 | `checks.orders_allowed` | 必須為 false |
 | `side_effects[]` | 未開 gate 時必須為空；開啟後只有 `quote_subscribe` |
-| `review_reason` | `enable_tick_stream_required` / `shioaji_credentials_required` / `candidate_symbols_required` / `shioaji_import_failed` |
-| `summary` | symbols / subscribed / raw_ticks / market_ticks / out_of_order / rejected |
+| `review_reason` | `enable_tick_stream_required` / `shioaji_credentials_required` / `candidate_symbols_required` / `shioaji_import_failed` / `shioaji_login_failed` |
+| `summary` | symbols / subscribed / raw_ticks / market_ticks / out_of_order / dropped_queue_full / queue_backlog / rejected |
 
 規則：
 
 - 只訂閱 `--candidates-input` 或 `--symbols` 指定的候選股，不盤中掃全市場。
 - `ShioajiTickStream` 與既有 order gateway 一樣拒絕 `api.simulation=False`。
 - 這個 smoke 只登入行情：`fetch_contract=True`、`subscribe_trade=False`，不碰委託鏈路、不送單、不取消。
+- 登入失敗轉成 `blocked` / `shioaji_login_failed`，不讓 traceback 取代 report。
+- 觀察窗結束或中途例外，一律 `finally` unsubscribe 並 logout。
+- subscribe / callback 註冊同時支援 `api.quote.*`（1.3）與 `api.*`（較新版本）兩種 API 形狀；smoke 必須在實際安裝版本上跑過。
 
 ## Persisted Strategy Samples
 

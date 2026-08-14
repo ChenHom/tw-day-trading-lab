@@ -41,10 +41,46 @@ class FakeTick:
 
 
 class FakeQuote:
-    def __init__(self):
+    def __init__(self, fail_on=None):
         self.callback = None
         self.subscribed = []
         self.unsubscribed = []
+        self._fail_on = fail_on
+
+    def set_on_tick_stk_v1_callback(self, func, bind=False):
+        self.callback = func
+
+    def subscribe(self, contract, **kwargs):
+        if contract == self._fail_on:
+            raise RuntimeError(f"subscribe failed: {contract}")
+        self.subscribed.append(contract)
+
+    def unsubscribe(self, contract, **kwargs):
+        self.unsubscribed.append(contract)
+
+
+class FakeApi:
+    """Shioaji 1.3-shaped api: quote methods live on api.quote."""
+
+    def __init__(self, symbols=("2330",), simulation=True, fail_subscribe_on=None):
+        self.simulation = simulation
+        self.quote = FakeQuote(fail_on=fail_subscribe_on)
+        self.Contracts = SimpleNamespace(
+            Stocks={symbol: f"contract-{symbol}" for symbol in symbols}
+        )
+
+
+class FakeFlatApi:
+    """Newer Shioaji shape: subscribe / callback setter on the api itself."""
+
+    def __init__(self, symbols=("2330",)):
+        self.simulation = True
+        self.callback = None
+        self.subscribed = []
+        self.unsubscribed = []
+        self.Contracts = SimpleNamespace(
+            Stocks={symbol: f"contract-{symbol}" for symbol in symbols}
+        )
 
     def set_on_tick_stk_v1_callback(self, func, bind=False):
         self.callback = func
@@ -56,13 +92,13 @@ class FakeQuote:
         self.unsubscribed.append(contract)
 
 
-class FakeApi:
-    def __init__(self, symbols=("2330",), simulation=True):
-        self.simulation = simulation
-        self.quote = FakeQuote()
-        self.Contracts = SimpleNamespace(
-            Stocks={symbol: f"contract-{symbol}" for symbol in symbols}
-        )
+def build_stream(api=None, symbols=("2330",), **kwargs):
+    return ShioajiTickStream(
+        api if api is not None else FakeApi(symbols=symbols),
+        trading_date="2026-08-14",
+        symbols=list(symbols),
+        **kwargs,
+    )
 
 
 class NormalizeShioajiTickTest(unittest.TestCase):
@@ -126,23 +162,42 @@ class NormalizeShioajiTickTest(unittest.TestCase):
         self.assertEqual((no_time, time_reason), (None, "needs_review"))
         self.assertEqual((no_price, price_reason), (None, "needs_review"))
 
+    def test_broken_volume_is_never_reported_as_zero_volume(self):
+        """A missing or unparseable volume must not look like a quiet minute."""
+        for overrides in (
+            {"volume": None},
+            {"volume": "xxx"},
+            {"volume": -1},
+            {"total_volume": None},
+            {"total_volume": "xxx"},
+            {"total_volume": -5},
+        ):
+            with self.subTest(**overrides):
+                tick, reason = normalize_shioaji_tick(
+                    TSE, FakeTick(**overrides), sequence=0
+                )
+
+                self.assertIsNone(tick)
+                self.assertEqual(reason, "needs_review")
+
+    def test_zero_volume_tick_is_still_valid_data(self):
+        tick, reason = normalize_shioaji_tick(TSE, FakeTick(volume=0), sequence=0)
+
+        self.assertEqual(reason, "")
+        self.assertEqual(tick.trade_volume, 0)
+
 
 class ShioajiTickStreamTest(unittest.TestCase):
     def test_stream_rejects_non_simulation_api(self):
         with self.assertRaises(ValueError):
-            ShioajiTickStream(
-                FakeApi(simulation=False),
-                trading_date="2026-08-14",
-                symbols=["2330"],
-            )
+            build_stream(FakeApi(simulation=False))
 
     def test_start_subscribes_only_candidate_symbols(self):
         api = FakeApi(symbols=("2330", "2317", "6180", "1101"))
-        stream = ShioajiTickStream(
-            api, trading_date="2026-08-14", symbols=["2330", "2317", "6180"]
-        )
+        stream = build_stream(api, symbols=("2330", "2317", "6180"))
 
         stream.start()
+        self.addCleanup(stream.stop)
 
         self.assertEqual(
             api.quote.subscribed,
@@ -150,29 +205,66 @@ class ShioajiTickStreamTest(unittest.TestCase):
         )
         self.assertEqual(api.quote.callback, stream.handle_tick)
 
-    def test_unknown_symbol_is_recorded_and_does_not_stop_subscription(self):
-        api = FakeApi(symbols=("2330",))
-        stream = ShioajiTickStream(
-            api, trading_date="2026-08-14", symbols=["9999", "2330"]
-        )
+    def test_flat_api_shape_is_supported(self):
+        api = FakeFlatApi(symbols=("2330",))
+        stream = build_stream(api)
 
         stream.start()
+        stream.stop()
+
+        self.assertEqual(api.subscribed, ["contract-2330"])
+        self.assertEqual(api.unsubscribed, ["contract-2330"])
+        self.assertEqual(api.callback, stream.handle_tick)
+
+    def test_unknown_symbol_is_recorded_and_does_not_stop_subscription(self):
+        api = FakeApi(symbols=("2330",))
+        stream = build_stream(api, symbols=("9999", "2330"))
+
+        stream.start()
+        self.addCleanup(stream.stop)
 
         self.assertEqual(api.quote.subscribed, ["contract-2330"])
         self.assertEqual(stream.rejected["contract_not_found"], 1)
 
+    def test_failed_subscribe_rolls_back_earlier_subscriptions(self):
+        api = FakeApi(symbols=("2330", "2317"), fail_subscribe_on="contract-2317")
+        stream = build_stream(api, symbols=("2330", "2317"))
+
+        with self.assertRaises(RuntimeError):
+            stream.start()
+
+        self.assertEqual(api.quote.unsubscribed, ["contract-2330"])
+
+    def test_callback_does_no_disk_io(self):
+        """The provider callback must only enqueue; writing happens on drain."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            stream = build_stream(cache_dir=cache_dir)
+            path = raw_tick_path(cache_dir, "2026-08-14", "2330")
+
+            stream.handle_tick(TSE, FakeTick())
+            self.assertFalse(path.exists())
+
+            self.assertEqual(stream.drain(), 1)
+            self.assertTrue(path.exists())
+
+    def test_queue_overflow_is_counted_instead_of_blocking(self):
+        stream = build_stream(queue_maxsize=1)
+
+        for _ in range(3):
+            stream.handle_tick(TSE, FakeTick())
+
+        self.assertEqual(stream.dropped_queue_full, 2)
+        self.assertEqual(stream.summary()["dropped_queue_full"], 2)
+
     def test_sequence_increments_per_symbol(self):
         emitted = []
-        stream = ShioajiTickStream(
-            FakeApi(),
-            trading_date="2026-08-14",
-            symbols=["2330", "2317"],
-            sink=emitted.append,
-        )
+        stream = build_stream(symbols=("2330", "2317"), sink=emitted.append)
 
         stream.handle_tick(TSE, FakeTick(code="2330", total_volume=10))
         stream.handle_tick(TSE, FakeTick(code="2317", total_volume=20))
         stream.handle_tick(TSE, FakeTick(code="2330", total_volume=30))
+        stream.drain()
 
         self.assertEqual(
             [(tick.symbol, tick.sequence) for tick in emitted],
@@ -181,25 +273,64 @@ class ShioajiTickStreamTest(unittest.TestCase):
 
     def test_rejected_ticks_do_not_consume_a_sequence_number(self):
         emitted = []
-        stream = ShioajiTickStream(
-            FakeApi(), trading_date="2026-08-14", symbols=["2330"], sink=emitted.append
-        )
+        stream = build_stream(sink=emitted.append)
 
         stream.handle_tick(TSE, FakeTick(simtrade=True))
         stream.handle_tick(TSE, FakeTick())
+        stream.drain()
 
         self.assertEqual([tick.sequence for tick in emitted], [0])
         self.assertEqual(stream.rejected["simtrade"], 1)
 
+    def test_ticks_outside_the_candidate_list_never_reach_the_sink(self):
+        """One api object shares its quote callback across subscribers."""
+        emitted = []
+        stream = build_stream(symbols=("2330",), sink=emitted.append)
+
+        stream.handle_tick(TSE, FakeTick(code="2603"))
+        stream.handle_tick(TSE, FakeTick(code="2330"))
+        stream.drain()
+
+        self.assertEqual([tick.symbol for tick in emitted], ["2330"])
+        self.assertEqual(stream.rejected["outside_candidate_scope"], 1)
+
+    def test_duplicate_tick_is_dropped_and_keeps_the_sequence_intact(self):
+        emitted = []
+        stream = build_stream(sink=emitted.append)
+
+        stream.handle_tick(TSE, FakeTick(total_volume=100))
+        stream.handle_tick(TSE, FakeTick(total_volume=100))
+        stream.handle_tick(TSE, FakeTick(total_volume=101))
+        stream.drain()
+
+        self.assertEqual(
+            [(tick.cumulative_volume, tick.sequence) for tick in emitted],
+            [(100000, 0), (101000, 1)],
+        )
+        self.assertEqual(stream.rejected["duplicate"], 1)
+
+    def test_same_cumulative_volume_at_a_later_timestamp_is_not_a_duplicate(self):
+        emitted = []
+        stream = build_stream(sink=emitted.append)
+
+        stream.handle_tick(TSE, FakeTick(total_volume=100))
+        stream.handle_tick(
+            TSE,
+            FakeTick(total_volume=100, datetime=dt.datetime(2026, 8, 14, 9, 2, 0)),
+        )
+        stream.drain()
+
+        self.assertEqual(len(emitted), 2)
+        self.assertEqual(stream.rejected["duplicate"], 0)
+
     def test_out_of_order_cumulative_volume_is_counted_but_still_emitted(self):
         emitted = []
-        stream = ShioajiTickStream(
-            FakeApi(), trading_date="2026-08-14", symbols=["2330"], sink=emitted.append
-        )
+        stream = build_stream(sink=emitted.append)
 
         stream.handle_tick(TSE, FakeTick(total_volume=100))
         stream.handle_tick(TSE, FakeTick(total_volume=90))
         stream.handle_tick(TSE, FakeTick(total_volume=110))
+        stream.drain()
 
         self.assertEqual(stream.out_of_order, 1)
         self.assertEqual(
@@ -208,29 +339,32 @@ class ShioajiTickStreamTest(unittest.TestCase):
 
     def test_stop_unsubscribes_every_subscribed_contract(self):
         api = FakeApi(symbols=("2330", "2317"))
-        stream = ShioajiTickStream(
-            api, trading_date="2026-08-14", symbols=["2330", "2317"]
-        )
+        stream = build_stream(api, symbols=("2330", "2317"))
         stream.start()
 
         stream.stop()
 
         self.assertEqual(api.quote.unsubscribed, ["contract-2330", "contract-2317"])
 
+    def test_stop_flushes_queued_ticks(self):
+        emitted = []
+        stream = build_stream(sink=emitted.append)
+        stream.start()
+
+        stream.handle_tick(TSE, FakeTick())
+        stream.stop()
+
+        self.assertEqual(len(emitted), 1)
+
     def test_raw_ticks_keep_simtrade_rows_that_market_ticks_drop(self):
         emitted = []
         with tempfile.TemporaryDirectory() as tmp:
             cache_dir = Path(tmp)
-            stream = ShioajiTickStream(
-                FakeApi(),
-                trading_date="2026-08-14",
-                symbols=["2330"],
-                sink=emitted.append,
-                cache_dir=cache_dir,
-            )
+            stream = build_stream(sink=emitted.append, cache_dir=cache_dir)
 
             stream.handle_tick(TSE, FakeTick(simtrade=True))
             stream.handle_tick(TSE, FakeTick())
+            stream.drain()
 
             path = raw_tick_path(cache_dir, "2026-08-14", "2330")
             rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
@@ -239,6 +373,21 @@ class ShioajiTickStreamTest(unittest.TestCase):
         self.assertEqual([row["simtrade"] for row in rows], [True, False])
         self.assertEqual(rows[0]["exchange"], "TSE")
         self.assertEqual(len(emitted), 1)
+
+    def test_tick_without_a_code_is_still_kept_for_audit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            stream = build_stream(cache_dir=cache_dir)
+
+            stream.handle_tick(TSE, FakeTick(code=""))
+            stream.drain()
+
+            path = raw_tick_path(cache_dir, "2026-08-14", "_unknown")
+            rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["code"], "")
+        self.assertEqual(stream.rejected["needs_review"], 1)
 
 
 class RawTickStoreTest(unittest.TestCase):
@@ -299,6 +448,24 @@ class GatedTickStreamSmokeTest(unittest.TestCase):
         self.assertEqual(report["summary"]["subscribed"], 2)
         self.assertEqual(slept, [5])
         self.assertEqual(len(api.quote.unsubscribed), 2)
+
+    def test_observation_failure_still_releases_subscriptions(self):
+        api = FakeApi(symbols=("2330",))
+
+        def explode(_seconds):
+            raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            run_gated_shioaji_tick_stream_smoke(
+                api=api,
+                trading_date="2026-08-14",
+                symbols=["2330"],
+                enabled=True,
+                duration_seconds=5,
+                sleep=explode,
+            )
+
+        self.assertEqual(api.quote.unsubscribed, ["contract-2330"])
 
 
 class TickSmokeCliTest(unittest.TestCase):

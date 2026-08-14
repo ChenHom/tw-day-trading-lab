@@ -3050,42 +3050,64 @@ def cmd_simulate_shioaji_tick_smoke(args: argparse.Namespace) -> None:
     secret_key = os.getenv(args.secret_key_env) if enabled else None
     credentials_present = bool(api_key and secret_key)
     api = None
-    import_error = ""
+    blocked_reason = ""
+    blocked_error = ""
 
     if enabled and credentials_present and symbols:
         try:
             import shioaji as sj  # type: ignore
         except Exception as error:
-            import_error = str(error)
+            blocked_reason, blocked_error = "shioaji_import_failed", str(error)
         else:
-            api = sj.Shioaji(simulation=True)
-            # Market data only: contracts are needed to subscribe, order callbacks are not.
-            api.login(
-                api_key=api_key,
-                secret_key=secret_key,
-                fetch_contract=True,
-                subscribe_trade=False,
-            )
+            try:
+                api = sj.Shioaji(simulation=True)
+                # Market data only: contracts are needed to subscribe, order callbacks are not.
+                api.login(
+                    api_key=api_key,
+                    secret_key=secret_key,
+                    fetch_contract=True,
+                    subscribe_trade=False,
+                )
+            except Exception as error:
+                blocked_reason, blocked_error = "shioaji_login_failed", str(error)
+                api = None
 
-    if import_error:
+    if blocked_reason:
         report: dict[str, object] = {
             "status": "blocked",
             "mode": "shioaji_tick_stream",
             "trading_date": args.date,
-            "review_reason": "shioaji_import_failed",
-            "error": import_error,
+            "checks": {
+                "gate_enabled": enabled,
+                "credentials_present": credentials_present,
+                "simulation_api": False,
+                "candidate_scoped": True,
+                "symbol_count": len(symbols),
+                "orders_allowed": False,
+            },
             "side_effects": [],
+            "review_reason": blocked_reason,
+            "error": blocked_error,
         }
     else:
-        report = run_gated_shioaji_tick_stream_smoke(
-            api=api,
-            trading_date=args.date,
-            symbols=symbols,
-            enabled=enabled,
-            credentials_present=credentials_present,
-            cache_dir=Path(args.cache_dir) if args.cache_dir else None,
-            duration_seconds=args.duration_seconds,
-        )
+        try:
+            report = run_gated_shioaji_tick_stream_smoke(
+                api=api,
+                trading_date=args.date,
+                symbols=symbols,
+                enabled=enabled,
+                credentials_present=credentials_present,
+                cache_dir=Path(args.cache_dir) if args.cache_dir else None,
+                duration_seconds=args.duration_seconds,
+            )
+        finally:
+            if api is not None:
+                try:
+                    # Shioaji caps concurrent connections per person_id, so the
+                    # session must not be left for process exit to clean up.
+                    api.logout()
+                except Exception:
+                    pass
 
     output = Path(args.output) if args.output else Path("reports") / f"{args.date}-shioaji-tick-smoke.json"
     write_json(output, report)

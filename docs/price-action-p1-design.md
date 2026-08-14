@@ -169,11 +169,20 @@ ShioajiTickStream.handle_tick
 
 ## 8. 風險與前置作業
 
-### 風險 A（阻斷級，未查證）
+### 風險 A（已降級為待實測）
 
-**Shioaji simulation 帳號能不能收到即時 tick，尚未驗證。** AGENTS.md 禁止 `simulation=False`，所以整條即時路線只能走 simulation 登入。萬一 simulation 環境沒有行情推送，P1–P3 寫完會全部無法在真實環境驗證。
+原本列為阻斷級：Shioaji simulation 帳號能不能收到即時 tick。
 
-建議把第 5 節步驟 4 的 gated smoke **提前到 P2 之前**跑一次：登入 simulation、訂一檔、開盤時段收 60 秒、印出收到幾筆／幾筆 `simtrade`。這是 5 分鐘的事，但它決定後面三個 phase 值不值得寫。
+P1 code review 回報官方 Simulation Mode 文件已明列可用 `quote.subscribe` / `quote.unsubscribe` / `ticks` / `kbars` / `snapshots`，因此 **API capability 層面確認可行**（來源為 review 引用的官方文件，本專案未自行查證）。
+
+仍待實測的是「本帳號 + 已安裝 SDK 版本 + 本實作」是否真的收得到資料。P2 之前必須跑一次：
+
+```bash
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-tick-smoke \
+  --date <交易日> --symbols 2330 --duration-seconds 60 --enable-tick-stream
+```
+
+檢查 `summary.raw_ticks` 是否為 0、`rejected` 分佈是否合理、`dropped_queue_full` 是否為 0。本機安裝版本為 shioaji 1.3.2，只有 `api.quote.*` 介面；較新版本改用 `api.subscribe` / `api.set_on_tick_stk_v1_callback`，實作已同時支援兩種形狀，但 API compatibility 只能由實跑確認。
 
 ### 風險 B（非阻斷，但有前置時間）
 
@@ -194,6 +203,24 @@ P1 已實作完成（`src/tw_day_trading_lab/market_data.py`、`tests/test_marke
 2. **`append_raw_ticks` 沒有重用 `finmind_ingestion.write_jsonl`**。該函式用 `path.write_text` 整檔覆寫，tick 流每筆都改寫整個檔案會變成 O(n²)。改成直接以 `"a"` 模式 append，四行 stdlib。
 
 另外新增了設計時未列出的 `contract_not_found` reject reason：`api.Contracts.Stocks[symbol]` 查不到候選股時記錄並跳過，不中斷其他標的的訂閱。
+
+### P1 Code Review 修正（第二輪）
+
+首版 P1 通過架構審查但被擋在資料正確性上，以下六項已修正：
+
+| 原問題 | 修正 |
+|---|---|
+| provider callback 內同步寫 JSONL，會卡住行情接收 | callback 只 `put_nowait` 進 bounded queue，raw 寫入 / normalize / dedupe / sink 全部移到 worker thread。queue 滿時計入 `dropped_queue_full`，不阻塞 callback |
+| `volume` 缺失或無法解析被靜默轉成 0 | `volume` / `total_volume` 納入 required fields；缺失、無法解析或為負一律 `needs_review`。`volume=0` 仍是合法值 |
+| candidate scope 只在 subscribe 端成立 | `_process` 再檢查一次 `symbol in candidate set`，非候選股計入 `outside_candidate_scope` 且不進 sink。同一 api 的 quote callback 是共用的 |
+| duplicate tick 會重複進 sink，灌大成交量 | 以 `(symbol, timestamp, cumulative_volume)` 去重，計入 `duplicate`，不佔用 `sequence` |
+| `code` 缺失的 tick 不寫 raw，audit 找不到 | 改寫入 `_unknown.jsonl` |
+| 例外時可能沒 unsubscribe | `start()` 中途失敗回退已訂閱 contract；`stop()` 先 unsubscribe；gate 函式 `try/finally`；CLI `finally` logout |
+| CLI 登入失敗直接拋 traceback | 轉成 `blocked` / `shioaji_login_failed` |
+
+同時補上 `api.quote.*`（1.3）與 `api.*`（較新版本）兩種 subscribe / callback 形狀的相容處理與測試。
+
+測試從 21 個增加到 33 個，新增的都是 adversarial case：callback 不碰硬碟、queue overflow、壞 volume、跨候選股 tick、duplicate、`_unknown` audit、partial-subscribe rollback、觀察窗例外仍 unsubscribe、flat api 形狀。
 
 ## Verification
 
