@@ -694,9 +694,44 @@ Gated tick stream smoke：
 | `checks.candidate_scoped` | 必須為 true |
 | `checks.symbol_count` | 訂閱的候選股數 |
 | `checks.orders_allowed` | 必須為 false |
+| `status` | `blocked` / `ok` / `degraded` / `failed` |
+| `health` | `HEALTHY` / `DEGRADED` / `FAILED` |
 | `side_effects[]` | 未開 gate 時必須為空；開啟後只有 `quote_subscribe` |
-| `review_reason` | `enable_tick_stream_required` / `shioaji_credentials_required` / `candidate_symbols_required` / `shioaji_import_failed` / `shioaji_login_failed` |
-| `summary` | symbols / subscribed / raw_ticks / market_ticks / out_of_order / dropped_queue_full / queue_backlog / rejected |
+| `review_reason` | `enable_tick_stream_required` / `shioaji_credentials_required` / `candidate_symbols_required` / `shioaji_import_failed` / `shioaji_login_failed` / `market_data_degraded` / `market_data_failed` |
+| `summary` | state / health / symbols / subscribed / raw_ticks / market_ticks / out_of_order / dropped_queue_full / worker_errors / raw_write_errors / sink_errors / worker_failed / worker_stop_timeout / worker_alive / queue_backlog / last_error / rejected / volume_checks |
+
+Market data health：
+
+| 狀態 | 條件 |
+|---|---|
+| `HEALTHY` | 所有 loss counter 皆為 0 |
+| `DEGRADED` | `dropped_queue_full` / `worker_errors` / `raw_write_errors` / `sink_errors` 任一 > 0 |
+| `FAILED` | `worker_failed` 或 `worker_stop_timeout` |
+
+- 系統不保證永不掉 tick，但**掉了一定要可觀察**。每一種遺失路徑都有獨立 counter。
+- health 非 `HEALTHY` 時 smoke status 為 `degraded` / `failed`，CLI 回傳非 0（fail closed）。
+- 下游交易 pipeline 必須在 health 非 `HEALTHY` 時**禁止產生新進場訊號**。
+
+Volume sanity check（`summary.volume_checks[]`，逐檔）：
+
+```text
+last_cumulative_volume - first_cumulative_volume
+==
+sum_trade_volume - first_trade_volume
+```
+
+盤中才開始訂閱是正常的，所以不變式建立在差值上。不成立即 `consistent=false`，代表漏 tick、duplicate 未擋掉，或張／股換算錯誤。
+
+Session lifecycle：
+
+```text
+idle --start()--> running --stop()--> stopped
+```
+
+- `start()` subscribe 中途失敗會回退已訂閱 contract 再 re-raise。
+- `stop()` 先 unsubscribe、再 join worker、最後 flush 佇列。**worker join 逾時不 drain**，改標記 `worker_stop_timeout` 並回報 `FAILED`；兩條 thread 同時消費會破壞 sequence / dedupe / volume 狀態。
+- `drain()` 在 worker 存活時直接 raise。
+- login / logout 屬於建立 api 物件的呼叫端；stream 只擁有 subscription 與 worker。
 
 規則：
 

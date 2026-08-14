@@ -222,6 +222,112 @@ P1 已實作完成（`src/tw_day_trading_lab/market_data.py`、`tests/test_marke
 
 測試從 21 個增加到 33 個，新增的都是 adversarial case：callback 不碰硬碟、queue overflow、壞 volume、跨候選股 tick、duplicate、`_unknown` audit、partial-subscribe rollback、觀察窗例外仍 unsubscribe、flat api 形狀。
 
+## Quote Session Lifecycle Contract
+
+`ShioajiTickStream` 擁有一個候選股 scoped 的 quote session，與委託鏈路完全不共用狀態。
+
+```text
+idle --start()--> running --stop()--> stopped
+```
+
+- `start()`：註冊 tick callback → 逐檔 subscribe → 啟動 consumer thread。subscribe 中途失敗會回退已訂閱的 contract 再 re-raise。
+- `running`：唯一會 ingest tick 的狀態。provider callback 只 `put_nowait` 後返回，不在 provider thread 上做任何其他事。
+- `stop()`：先 unsubscribe → join worker → flush 佇列。**worker join 逾時就不 drain**，改標記 `worker_stop_timeout` 並回報 `FAILED`；兩條 thread 同時跑 `_process` 會破壞 sequence / dedupe / volume 狀態。
+- `drain()` 在 worker 存活時直接 raise，不允許並行消費。
+- login / logout 屬於建立 api 物件的呼叫端（CLI）；stream 只負責 subscription 與 worker。
+
+## Market Data Health
+
+| 狀態 | 條件 | 下游規則 |
+|---|---|---|
+| `HEALTHY` | 所有 loss counter 皆為 0 | 允許產生新進場訊號 |
+| `DEGRADED` | `dropped_queue_full` / `worker_errors` / `raw_write_errors` / `sink_errors` 任一 > 0 | 禁止新進場 |
+| `FAILED` | `worker_failed` 或 `worker_stop_timeout` | 禁止新進場 |
+
+系統不保證永不掉 tick，但保證**掉了一定知道**。可觀察欄位：`dropped_queue_full`、`worker_errors`、`raw_write_errors`、`sink_errors`、`worker_failed`、`worker_stop_timeout`、`worker_alive`、`queue_backlog`、`last_error`。
+
+`simulate shioaji-tick-smoke` 已 fail closed：health 非 `HEALTHY` 時 status 為 `degraded` / `failed`，CLI 回傳非 0。**P2 接上 aggregator 時必須先檢查 `stream.is_healthy`，不健康就不得產生新進場訊號。**
+
+## Volume Sanity Check
+
+盤中才開始訂閱是正常情況，所以不變式建立在差值上：
+
+```text
+last_cumulative_volume - first_cumulative_volume
+==
+sum(trade_volume) - first_trade_volume
+```
+
+不成立代表：漏 tick、duplicate 沒擋掉，或張／股換算錯誤。`summary.volume_checks[]` 逐檔輸出 `first/last_cumulative_volume`、`sum_trade_volume`、`cumulative_delta`、`trade_volume_after_first`、`consistent`。
+
+## P1 Definition of Done
+
+```text
+[x] MarketTick contract fixed
+[x] canonical volume unit = shares
+[x] invalid provider data rejected
+[x] simtrade / odd-lot / suspend rejected
+[x] candidate scope enforced at ingestion
+[x] duplicate tick suppressed
+[x] rejected/unknown raw data auditable
+[x] provider callback only enqueues
+[x] bounded queue exists
+[x] queue overflow observable
+[x] worker exception observable
+[x] worker failure marks market data unhealthy
+[x] unhealthy market data fails closed          (smoke gate;  P2 須自行檢查 is_healthy)
+[x] stop cannot drain concurrently with live worker
+[x] partial subscribe rollback works
+[x] unsubscribe guaranteed
+[x] logout guaranteed
+[x] ShioajiTickStream owns a clearly defined quote-session lifecycle
+[x] simulation=False rejected
+[x] market_data.py has no Shioaji SDK dependency
+[x] adversarial unit tests pass                 (44 tests)
+[ ] real simulation quote smoke receives ticks  ← 待交易時段實跑
+[ ] dropped_queue_full == 0 in smoke            ← 待交易時段實跑
+[ ] worker_errors == 0 in smoke                 ← 待交易時段實跑
+[ ] queue_backlog == 0 after stop               ← 機制有 unit test，數值待實跑
+[ ] raw tick artifact can be inspected/replayed ← 寫入有 unit test，真實 artifact 待實跑
+
+→ P1 NOT CLOSED
+→ 剩 1 件事：交易時段的 real simulation quote smoke
+```
+
+Go / No-Go 四條：
+
+1. P2 收到的 MarketTick 可以無條件信任格式與單位 — **成立**（unit test）
+2. 資料掉了或 worker 掛了，系統一定知道 — **成立**（unit test）
+3. 資料健康異常時不會繼續產生交易訊號 — **P1 範圍內成立**（smoke fail closed）；P2 必須把 `is_healthy` 接進進場判斷
+4. 真實 simulation smoke 確定收得到 tick 且無資料 loss — **未成立**
+
+### 待跑的 smoke 與通過標準
+
+```bash
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-tick-smoke \
+  --date <交易日> --symbols 2330 --duration-seconds 60 --enable-tick-stream
+```
+
+| 欄位 | 通過標準 |
+|---|---|
+| `status` | `ok` |
+| `health` | `HEALTHY` |
+| `summary.subscribed` | 1 |
+| `summary.raw_ticks` | > 0 |
+| `summary.market_ticks` | > 0 |
+| `summary.dropped_queue_full` | 0 |
+| `summary.worker_errors` | 0 |
+| `summary.raw_write_errors` | 0 |
+| `summary.sink_errors` | 0 |
+| `summary.queue_backlog` | 0 |
+| `summary.rejected.outside_candidate_scope` | 0 或可解釋 |
+| `summary.rejected.duplicate` | 可 > 0，但要可解釋 |
+| `summary.rejected.needs_review` | 0，或在 raw 中找得到對應 row |
+| `summary.volume_checks[].consistent` | true |
+| logout | 成功 |
+
+之後抽查 `data/raw/shioaji/ticks/{date}/2330.jsonl`，確認 `datetime` / `close` / `volume` / `total_volume` 與 callback 收到的一致。
+
 ## Verification
 
 本文件的事實依據來自以下實際執行的檢查：

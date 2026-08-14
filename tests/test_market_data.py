@@ -1,14 +1,19 @@
 import datetime as dt
 import json
 import tempfile
+import threading
 import unittest
 from argparse import Namespace
 from decimal import Decimal
 from pathlib import Path
+from queue import Empty
 from types import SimpleNamespace
 
 from tw_day_trading_lab.cli import cmd_simulate_shioaji_tick_smoke
 from tw_day_trading_lab.market_data import (
+    DEGRADED,
+    FAILED,
+    HEALTHY,
     MarketTick,
     ShioajiTickStream,
     append_raw_ticks,
@@ -248,15 +253,6 @@ class ShioajiTickStreamTest(unittest.TestCase):
             self.assertEqual(stream.drain(), 1)
             self.assertTrue(path.exists())
 
-    def test_queue_overflow_is_counted_instead_of_blocking(self):
-        stream = build_stream(queue_maxsize=1)
-
-        for _ in range(3):
-            stream.handle_tick(TSE, FakeTick())
-
-        self.assertEqual(stream.dropped_queue_full, 2)
-        self.assertEqual(stream.summary()["dropped_queue_full"], 2)
-
     def test_sequence_increments_per_symbol(self):
         emitted = []
         stream = build_stream(symbols=("2330", "2317"), sink=emitted.append)
@@ -390,6 +386,147 @@ class ShioajiTickStreamTest(unittest.TestCase):
         self.assertEqual(stream.rejected["needs_review"], 1)
 
 
+class MarketDataHealthTest(unittest.TestCase):
+    """Every way the pipeline can lose a tick has to be observable."""
+
+    def test_clean_run_is_healthy(self):
+        stream = build_stream(sink=lambda tick: None)
+
+        stream.handle_tick(TSE, FakeTick())
+        stream.drain()
+
+        self.assertEqual(stream.health(), HEALTHY)
+        self.assertTrue(stream.is_healthy)
+
+    def test_queue_overflow_degrades_health(self):
+        stream = build_stream(queue_maxsize=1)
+
+        for _ in range(3):
+            stream.handle_tick(TSE, FakeTick())
+
+        self.assertEqual(stream.dropped_queue_full, 2)
+        self.assertEqual(stream.summary()["dropped_queue_full"], 2)
+        self.assertEqual(stream.health(), DEGRADED)
+
+    def test_raising_sink_is_counted_and_degrades_health(self):
+        def explode(_tick):
+            raise RuntimeError("consumer down")
+
+        stream = build_stream(sink=explode)
+
+        stream.handle_tick(TSE, FakeTick())
+        stream.drain()
+
+        self.assertEqual(stream.sink_errors, 1)
+        self.assertEqual(stream.health(), DEGRADED)
+        self.assertIn("consumer down", stream.last_error)
+
+    def test_raw_write_failure_is_counted_and_degrades_health(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            blocked = Path(tmp) / "blocked"
+            blocked.write_text("not a directory", encoding="utf-8")
+            emitted = []
+            stream = build_stream(sink=emitted.append, cache_dir=blocked)
+
+            stream.handle_tick(TSE, FakeTick())
+            stream.drain()
+
+        self.assertEqual(stream.raw_write_errors, 1)
+        self.assertEqual(stream.health(), DEGRADED)
+        # The tick itself was fine, so it still reaches the consumer.
+        self.assertEqual(len(emitted), 1)
+
+    def test_unexpected_processing_error_keeps_the_worker_alive(self):
+        stream = build_stream()
+        stream._remember = lambda *_args: (_ for _ in ()).throw(RuntimeError("boom"))
+
+        stream.handle_tick(TSE, FakeTick())
+        stream.handle_tick(TSE, FakeTick(total_volume=200))
+        processed = stream.drain()
+
+        self.assertEqual(processed, 2)
+        self.assertEqual(stream.worker_errors, 2)
+        self.assertEqual(stream.health(), DEGRADED)
+
+    def test_dead_worker_is_reported_as_failed(self):
+        class ExplodingQueue:
+            def get(self, timeout=None):
+                raise RuntimeError("queue broke")
+
+            def get_nowait(self):
+                raise Empty
+
+            def qsize(self):
+                return 0
+
+        stream = build_stream()
+        stream._queue = ExplodingQueue()
+
+        stream.start()
+        stream._worker.join(timeout=5)
+
+        self.assertTrue(stream.worker_failed)
+        self.assertEqual(stream.health(), FAILED)
+        self.assertFalse(stream.is_healthy)
+
+    def test_worker_that_will_not_join_fails_closed_without_draining(self):
+        entered = threading.Event()
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def blocking_sink(_tick):
+            entered.set()
+            release.wait(timeout=5)
+
+        stream = build_stream(sink=blocking_sink)
+        stream.start()
+        stream.handle_tick(TSE, FakeTick())
+        self.assertTrue(entered.wait(timeout=5))
+
+        stream.stop(join_timeout=0.1)
+
+        self.assertTrue(stream.worker_stop_timeout)
+        self.assertEqual(stream.health(), FAILED)
+        self.assertEqual(stream.state, "stopped")
+
+    def test_drain_refuses_to_run_beside_a_live_worker(self):
+        stream = build_stream()
+        stream.start()
+        self.addCleanup(stream.stop)
+
+        with self.assertRaises(RuntimeError):
+            stream.drain()
+
+
+class VolumeSanityTest(unittest.TestCase):
+    def test_cumulative_delta_matches_trade_volume_after_the_first_tick(self):
+        stream = build_stream()
+
+        stream.handle_tick(TSE, FakeTick(volume=3, total_volume=100))
+        stream.handle_tick(TSE, FakeTick(volume=5, total_volume=105))
+        stream.handle_tick(TSE, FakeTick(volume=7, total_volume=112))
+        stream.drain()
+
+        check = stream.volume_checks()[0]
+        self.assertEqual(check["symbol"], "2330")
+        self.assertEqual(check["ticks"], 3)
+        self.assertEqual(check["cumulative_delta"], 12000)
+        self.assertEqual(check["trade_volume_after_first"], 12000)
+        self.assertTrue(check["consistent"])
+
+    def test_missing_ticks_break_the_volume_invariant(self):
+        stream = build_stream()
+
+        stream.handle_tick(TSE, FakeTick(volume=3, total_volume=100))
+        stream.handle_tick(TSE, FakeTick(volume=5, total_volume=120))
+        stream.drain()
+
+        check = stream.volume_checks()[0]
+        self.assertEqual(check["cumulative_delta"], 20000)
+        self.assertEqual(check["trade_volume_after_first"], 5000)
+        self.assertFalse(check["consistent"])
+
+
 class RawTickStoreTest(unittest.TestCase):
     def test_append_raw_ticks_uses_provider_scoped_path_and_appends(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -442,12 +579,61 @@ class GatedTickStreamSmokeTest(unittest.TestCase):
         )
 
         self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["health"], HEALTHY)
         self.assertEqual(report["side_effects"], ["quote_subscribe"])
         self.assertFalse(report["checks"]["orders_allowed"])
         self.assertTrue(report["checks"]["candidate_scoped"])
         self.assertEqual(report["summary"]["subscribed"], 2)
+        self.assertEqual(report["summary"]["queue_backlog"], 0)
+        self.assertEqual(report["summary"]["state"], "stopped")
         self.assertEqual(slept, [5])
         self.assertEqual(len(api.quote.unsubscribed), 2)
+
+    def test_ticks_received_during_the_window_are_flushed_before_the_report(self):
+        api = FakeApi(symbols=("2330",))
+
+        def feed(_seconds):
+            api.quote.callback(TSE, FakeTick(volume=3, total_volume=100))
+            api.quote.callback(TSE, FakeTick(volume=5, total_volume=105))
+
+        report = run_gated_shioaji_tick_stream_smoke(
+            api=api,
+            trading_date="2026-08-14",
+            symbols=["2330"],
+            enabled=True,
+            duration_seconds=1,
+            sleep=feed,
+        )
+
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["summary"]["market_ticks"], 2)
+        self.assertEqual(report["summary"]["queue_backlog"], 0)
+        self.assertTrue(report["summary"]["volume_checks"][0]["consistent"])
+
+    def test_smoke_fails_closed_when_market_data_is_degraded(self):
+        api = FakeApi(symbols=("2330",))
+
+        def feed(_seconds):
+            api.quote.callback(TSE, FakeTick())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            blocked = Path(tmp) / "blocked"
+            blocked.write_text("not a directory", encoding="utf-8")
+
+            report = run_gated_shioaji_tick_stream_smoke(
+                api=api,
+                trading_date="2026-08-14",
+                symbols=["2330"],
+                enabled=True,
+                cache_dir=blocked,
+                duration_seconds=1,
+                sleep=feed,
+            )
+
+        self.assertEqual(report["status"], "degraded")
+        self.assertEqual(report["health"], DEGRADED)
+        self.assertEqual(report["review_reason"], "market_data_degraded")
+        self.assertEqual(report["summary"]["raw_write_errors"], 1)
 
     def test_observation_failure_still_releases_subscriptions(self):
         api = FakeApi(symbols=("2330",))

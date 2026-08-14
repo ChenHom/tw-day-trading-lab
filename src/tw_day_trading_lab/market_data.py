@@ -4,9 +4,15 @@ P1 scope only. This module must not import the Shioaji SDK: adapters take a
 duck-typed api object so unit tests run without the SDK installed and the
 strategy layer never depends on a provider payload shape.
 
-The provider callback only enqueues; every parse, dedupe and disk write runs on
-a consumer thread. Blocking a quote callback delays the whole tick feed, which
-would silently corrupt every volume-derived feature downstream.
+Two contracts matter to everything downstream:
+
+1. Every MarketTick that reaches a sink is already validated, unit-normalized,
+   candidate-scoped and deduped. A consumer may append `tick.trade_volume`
+   straight into a bar without re-checking the provider.
+2. Tick loss is never silent. The provider callback only enqueues, and every
+   way the pipeline can lose data - a full queue, a dead worker, a failed raw
+   write, a raising sink - increments a counter that feeds `health()`. A
+   consumer must refuse to open new positions unless health is HEALTHY.
 
 Tick -> 1m bar aggregation is P2 and deliberately not implemented.
 """
@@ -30,6 +36,10 @@ RAW_TICK_DATASET = "ticks"
 UNKNOWN_SYMBOL = "_unknown"
 TICK_QUEUE_MAXSIZE = 100_000
 DEDUPE_WINDOW = 512
+
+HEALTHY = "HEALTHY"
+DEGRADED = "DEGRADED"
+FAILED = "FAILED"
 
 
 @dataclass(frozen=True)
@@ -122,12 +132,24 @@ def append_raw_ticks(
 
 
 class ShioajiTickStream:
-    """Subscribe candidate-scoped Shioaji ticks and emit normalized MarketTick.
+    """Own one candidate-scoped Shioaji quote session and emit MarketTick.
 
-    Only the supplied candidate symbols are subscribed and only their ticks are
-    ingested; a quote callback is shared per api object, so subscription scope
-    alone does not bound what arrives. Like the order gateway, this stream
-    refuses a non-simulation api.
+    Session lifecycle, single owner, no shared state with the order chain:
+
+        idle --start()--> running --stop()--> stopped
+
+    - `start()` registers the tick callback, subscribes every candidate
+      contract, and launches the consumer thread. A subscribe failure rolls
+      back the contracts already subscribed and re-raises.
+    - `running` is the only state in which ticks are ingested. The provider
+      callback enqueues and returns; nothing else runs on the provider thread.
+    - `stop()` always unsubscribes first, then joins the worker, then flushes
+      what is still queued. If the worker will not join it is reported as
+      FAILED and the queue is left alone rather than drained concurrently.
+    - Login and logout belong to the caller that created the api object; this
+      stream owns the subscription and the worker, nothing else.
+
+    Like the order gateway, the stream refuses a non-simulation api.
     """
 
     def __init__(
@@ -155,11 +177,19 @@ class ShioajiTickStream:
         self._sequence: dict[str, int] = {}
         self._seen: dict[str, dict[tuple[str, int], None]] = {}
         self._last_cumulative: dict[str, int] = {}
+        self._volume_stats: dict[str, dict[str, int]] = {}
+        self.state = "idle"
         self.raw_count = 0
         self.accepted_count = 0
         self.subscribed_count = 0
         self.out_of_order = 0
         self.dropped_queue_full = 0
+        self.worker_errors = 0
+        self.raw_write_errors = 0
+        self.sink_errors = 0
+        self.worker_failed = False
+        self.worker_stop_timeout = False
+        self.last_error = ""
         self.rejected: Counter[str] = Counter()
 
     # -- provider callback -------------------------------------------------
@@ -169,7 +199,7 @@ class ShioajiTickStream:
         try:
             self._queue.put_nowait((exchange, tick))
         except Full:
-            # Visible data loss beats a blocked feed: the summary reports it.
+            # Visible data loss beats a blocked feed: health() turns DEGRADED.
             self.dropped_queue_full += 1
 
     # -- lifecycle ---------------------------------------------------------
@@ -199,6 +229,7 @@ class ShioajiTickStream:
             daemon=True,
         )
         self._worker.start()
+        self.state = "running"
 
     def stop(self, *, join_timeout: float = 5.0) -> None:
         """Always unsubscribe, then stop the worker and flush what is queued."""
@@ -206,43 +237,69 @@ class ShioajiTickStream:
             self._unsubscribe_all()
         finally:
             self._stopping.set()
-            worker, self._worker = self._worker, None
+            worker = self._worker
             if worker is not None:
                 worker.join(timeout=join_timeout)
+                if worker.is_alive():
+                    # Draining now would run _process on two threads at once.
+                    # Leave the queue and report FAILED instead.
+                    self.worker_stop_timeout = True
+                    self.last_error = "worker did not stop within join_timeout"
+                    self.state = "stopped"
+                    return
+                self._worker = None
             self.drain()
+            self.state = "stopped"
 
     def _unsubscribe_all(self) -> None:
         for contract in self._subscribed:
             try:
                 _unsubscribe(self._api, contract)
-            except Exception:
+            except Exception as error:
                 self.rejected["unsubscribe_failed"] += 1
+                self.last_error = f"unsubscribe: {error}"
         self._subscribed.clear()
 
     # -- consumer ----------------------------------------------------------
 
     def _run_worker(self) -> None:
-        while not self._stopping.is_set():
-            try:
-                exchange, tick = self._queue.get(timeout=0.2)
-            except Empty:
-                continue
-            self._process(exchange, tick)
+        try:
+            while not self._stopping.is_set():
+                try:
+                    exchange, tick = self._queue.get(timeout=0.2)
+                except Empty:
+                    continue
+                self._safe_process(exchange, tick)
+        except BaseException as error:
+            # A dead consumer means every later tick is lost. Never silently.
+            self.worker_failed = True
+            self.last_error = f"worker: {error}"
 
     def drain(self) -> int:
         """Process everything currently queued and return how many were handled.
 
-        ponytail: used by tests and by the final flush in stop(); do not call it
-        concurrently with a running worker.
+        Refuses to run while the worker thread is alive; two threads calling
+        `_process` would corrupt sequence, dedupe and volume state.
         """
+        worker = self._worker
+        if worker is not None and worker.is_alive():
+            raise RuntimeError("drain() cannot run while the tick worker is alive")
         processed = 0
         while True:
             try:
                 exchange, tick = self._queue.get_nowait()
             except Empty:
                 return processed
-            self._process(exchange, tick)
+            self._safe_process(exchange, tick)
             processed += 1
+
+    def _safe_process(self, exchange: Any, tick: Any) -> MarketTick | None:
+        try:
+            return self._process(exchange, tick)
+        except Exception as error:
+            self.worker_errors += 1
+            self.last_error = f"process: {error}"
+            return None
 
     def _process(self, exchange: Any, tick: Any) -> MarketTick | None:
         self.raw_count += 1
@@ -255,14 +312,19 @@ class ShioajiTickStream:
             return None
 
         if self._cache_dir is not None:
-            # A tick with no code is exactly the one worth investigating later,
-            # so it gets an audit bucket instead of being dropped silently.
-            append_raw_ticks(
-                self._cache_dir,
-                self._trading_date,
-                symbol or UNKNOWN_SYMBOL,
-                [raw_tick_payload(exchange, tick)],
-            )
+            try:
+                # A tick with no code is exactly the one worth investigating
+                # later, so it gets an audit bucket instead of being dropped.
+                append_raw_ticks(
+                    self._cache_dir,
+                    self._trading_date,
+                    symbol or UNKNOWN_SYMBOL,
+                    [raw_tick_payload(exchange, tick)],
+                )
+            except Exception as error:
+                # Audit is broken but the tick itself may still be good.
+                self.raw_write_errors += 1
+                self.last_error = f"raw_write: {error}"
 
         sequence = self._sequence.get(symbol, 0)
         market_tick, reason = normalize_shioaji_tick(exchange, tick, sequence=sequence)
@@ -278,6 +340,7 @@ class ShioajiTickStream:
 
         self._sequence[symbol] = sequence + 1
         self.accepted_count += 1
+        self._record_volume(market_tick)
         last_cumulative = self._last_cumulative.get(symbol)
         if last_cumulative is not None and market_tick.cumulative_volume < last_cumulative:
             self.out_of_order += 1
@@ -285,7 +348,12 @@ class ShioajiTickStream:
             self._last_cumulative[symbol] = market_tick.cumulative_volume
 
         if self._sink is not None:
-            self._sink(market_tick)
+            try:
+                self._sink(market_tick)
+            except Exception as error:
+                # The tick never reached the consumer: that is data loss too.
+                self.sink_errors += 1
+                self.last_error = f"sink: {error}"
         return market_tick
 
     def _remember(self, symbol: str, key: tuple[str, int]) -> bool:
@@ -301,17 +369,86 @@ class ShioajiTickStream:
             seen.pop(next(iter(seen)))
         return True
 
+    def _record_volume(self, tick: MarketTick) -> None:
+        stats = self._volume_stats.get(tick.symbol)
+        if stats is None:
+            self._volume_stats[tick.symbol] = {
+                "ticks": 1,
+                "first_cumulative_volume": tick.cumulative_volume,
+                "last_cumulative_volume": tick.cumulative_volume,
+                "first_trade_volume": tick.trade_volume,
+                "sum_trade_volume": tick.trade_volume,
+            }
+            return
+        stats["ticks"] += 1
+        stats["last_cumulative_volume"] = tick.cumulative_volume
+        stats["sum_trade_volume"] += tick.trade_volume
+
+    def volume_checks(self) -> list[dict[str, Any]]:
+        """Cross-check per-symbol trade volume against the cumulative counter.
+
+        Subscribing mid-session is normal, so the invariant is on the delta:
+        `last_cumulative - first_cumulative` must equal the trade volume of
+        every tick after the first. A mismatch means lost ticks, a duplicate
+        that slipped through, or a lot/share conversion error.
+        """
+        checks = []
+        for symbol, stats in sorted(self._volume_stats.items()):
+            cumulative_delta = stats["last_cumulative_volume"] - stats["first_cumulative_volume"]
+            trade_volume_after_first = stats["sum_trade_volume"] - stats["first_trade_volume"]
+            checks.append(
+                {
+                    "symbol": symbol,
+                    **stats,
+                    "cumulative_delta": cumulative_delta,
+                    "trade_volume_after_first": trade_volume_after_first,
+                    "consistent": cumulative_delta == trade_volume_after_first,
+                }
+            )
+        return checks
+
+    # -- health ------------------------------------------------------------
+
+    def health(self) -> str:
+        """FAILED when the consumer is gone, DEGRADED when any tick was lost."""
+        if self.worker_failed or self.worker_stop_timeout:
+            return FAILED
+        if (
+            self.dropped_queue_full
+            or self.worker_errors
+            or self.raw_write_errors
+            or self.sink_errors
+        ):
+            return DEGRADED
+        return HEALTHY
+
+    @property
+    def is_healthy(self) -> bool:
+        """Only HEALTHY market data may produce new entry signals."""
+        return self.health() == HEALTHY
+
     def summary(self) -> dict[str, Any]:
+        worker = self._worker
         return {
             "symbols": list(self._symbols),
             # Counted at subscribe time so the summary survives stop().
             "subscribed": self.subscribed_count,
+            "state": self.state,
+            "health": self.health(),
             "raw_ticks": self.raw_count,
             "market_ticks": self.accepted_count,
             "out_of_order": self.out_of_order,
             "dropped_queue_full": self.dropped_queue_full,
+            "worker_errors": self.worker_errors,
+            "raw_write_errors": self.raw_write_errors,
+            "sink_errors": self.sink_errors,
+            "worker_failed": self.worker_failed,
+            "worker_stop_timeout": self.worker_stop_timeout,
+            "worker_alive": bool(worker is not None and worker.is_alive()),
             "queue_backlog": self._queue.qsize(),
+            "last_error": self.last_error,
             "rejected": dict(self.rejected),
+            "volume_checks": self.volume_checks(),
         }
 
 
@@ -368,8 +505,14 @@ def run_gated_shioaji_tick_stream_smoke(
         # Shioaji caps concurrent connections per person_id, so subscriptions
         # must be released even when the observation window blows up.
         stream.stop()
-    report["status"] = "ok"
-    report["summary"] = stream.summary()
+
+    summary = stream.summary()
+    report["summary"] = summary
+    report["health"] = summary["health"]
+    # Fail closed: a smoke that lost ticks is not a passing smoke.
+    report["status"] = {HEALTHY: "ok", DEGRADED: "degraded"}.get(summary["health"], "failed")
+    if summary["health"] != HEALTHY:
+        report["review_reason"] = f"market_data_{summary['health'].lower()}"
     return report
 
 

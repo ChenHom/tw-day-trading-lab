@@ -3112,6 +3112,12 @@ def cmd_simulate_shioaji_tick_smoke(args: argparse.Namespace) -> None:
     output = Path(args.output) if args.output else Path("reports") / f"{args.date}-shioaji-tick-smoke.json"
     write_json(output, report)
     print(output)
+    if report.get("status") in {"degraded", "failed"}:
+        import sys
+
+        # Fail closed: a smoke that lost ticks must not read as a pass.
+        print(f"market data unhealthy: {report.get('health')}", file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_simulate_production_readiness(args: argparse.Namespace) -> None:
