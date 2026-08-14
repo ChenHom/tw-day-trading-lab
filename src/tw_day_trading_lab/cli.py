@@ -3112,6 +3112,12 @@ def cmd_simulate_shioaji_tick_smoke(args: argparse.Namespace) -> None:
     output = Path(args.output) if args.output else Path("reports") / f"{args.date}-shioaji-tick-smoke.json"
     write_json(output, report)
     print(output)
+    live = report.get("live_validation")
+    if isinstance(live, dict):
+        if live.get("passed"):
+            print("live_validation: PASSED (P1_LIVE_VALIDATED)")
+        else:
+            print(f"live_validation: not met ({', '.join(live.get('failed', []))})")
     if report.get("status") in {"degraded", "failed"}:
         import sys
 

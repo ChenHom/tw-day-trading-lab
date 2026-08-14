@@ -260,7 +260,27 @@ sum(trade_volume) - first_trade_volume
 
 不成立代表：漏 tick、duplicate 沒擋掉，或張／股換算錯誤。`summary.volume_checks[]` 逐檔輸出 `first/last_cumulative_volume`、`sum_trade_volume`、`cumulative_delta`、`trade_volume_after_first`、`consistent`。
 
-## P1 Definition of Done
+## P1 Definition of Done — 兩段驗收
+
+P1 拆成兩個獨立 gate。這樣非交易時段不會卡住開發，但也不會把「unit test 全綠」誤讀成「真實行情已驗證」。
+
+```text
+P1 code review 修正完成
+        ↓
+P1_CODE_COMPLETE          ← 已達成
+        ↓
+開始 P2（fixture / synthetic MarketTick 開發）
+        ↓
+下一個交易時段
+        ↓
+跑 P1 real-tick smoke
+        ↓
+P1_LIVE_VALIDATED         ← 未達成
+        ↓
+P2 real-stream integration test
+```
+
+### Gate A：P1_CODE_COMPLETE（已達成）
 
 ```text
 [x] MarketTick contract fixed
@@ -275,7 +295,7 @@ sum(trade_volume) - first_trade_volume
 [x] queue overflow observable
 [x] worker exception observable
 [x] worker failure marks market data unhealthy
-[x] unhealthy market data fails closed          (smoke gate;  P2 須自行檢查 is_healthy)
+[x] unhealthy market data fails closed          (smoke gate; P2 須自行檢查 is_healthy)
 [x] stop cannot drain concurrently with live worker
 [x] partial subscribe rollback works
 [x] unsubscribe guaranteed
@@ -283,50 +303,66 @@ sum(trade_volume) - first_trade_volume
 [x] ShioajiTickStream owns a clearly defined quote-session lifecycle
 [x] simulation=False rejected
 [x] market_data.py has no Shioaji SDK dependency
-[x] adversarial unit tests pass                 (44 tests)
-[ ] real simulation quote smoke receives ticks  ← 待交易時段實跑
-[ ] dropped_queue_full == 0 in smoke            ← 待交易時段實跑
-[ ] worker_errors == 0 in smoke                 ← 待交易時段實跑
-[ ] queue_backlog == 0 after stop               ← 機制有 unit test，數值待實跑
-[ ] raw tick artifact can be inspected/replayed ← 寫入有 unit test，真實 artifact 待實跑
+[x] adversarial unit tests pass                 (50 tests)
 
-→ P1 NOT CLOSED
-→ 剩 1 件事：交易時段的 real simulation quote smoke
+→ P1_CODE_COMPLETE
+→ P2 Tick -> canonical 1m 可以開始
 ```
 
-Go / No-Go 四條：
+### Gate B：P1_LIVE_VALIDATED（未達成）
+
+```text
+[ ] real simulation login + subscribe 成功
+[ ] real simulation quote smoke receives ticks
+[ ] dropped_queue_full == 0 in smoke
+[ ] worker_errors == 0 in smoke
+[ ] queue_backlog == 0 after stop
+[ ] volume sanity check consistent
+[ ] raw tick artifact can be inspected/replayed
+
+→ P1 NOT CLOSED
+```
+
+**限制：在 Gate B 通過前，不得宣告 Tick → 1m pipeline 已可用於每日 paper trading。** P2 可以寫、可以測、可以合併，但不能上線收單。
+
+### 待跑的 smoke
+
+```bash
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-tick-smoke \
+  --date <當日交易日> --symbols 2330 --duration-seconds 60 --enable-tick-stream
+```
+
+報告會自己算出有沒有達標，不需要人工核對欄位：
+
+```json
+"live_validation": {
+  "passed": true,
+  "checks": {
+    "health_healthy": true,
+    "subscribed": true,
+    "raw_ticks_received": true,
+    "market_ticks_emitted": true,
+    "no_dropped_ticks": true,
+    "no_worker_errors": true,
+    "queue_drained": true,
+    "volume_consistent": true
+  },
+  "failed": []
+}
+```
+
+`live_validation.passed == true` 的 smoke report 就是 `P1_LIVE_VALIDATED` 的證據 artifact，路徑預設 `reports/{date}-shioaji-tick-smoke.json`。
+
+注意 `status` 與 `live_validation` 是兩個不同問題：非交易時段跑，pipeline 可以完全健康（`status=ok`、`health=HEALTHY`），但一筆 tick 都沒收到，`live_validation.passed=false`。**只有 `live_validation.passed` 能關閉 P1。**
+
+之後仍需抽查 `data/raw/shioaji/ticks/{date}/2330.jsonl`，確認 `datetime` / `close` / `volume` / `total_volume` 與 callback 收到的一致。
+
+### Go / No-Go 四條
 
 1. P2 收到的 MarketTick 可以無條件信任格式與單位 — **成立**（unit test）
 2. 資料掉了或 worker 掛了，系統一定知道 — **成立**（unit test）
 3. 資料健康異常時不會繼續產生交易訊號 — **P1 範圍內成立**（smoke fail closed）；P2 必須把 `is_healthy` 接進進場判斷
-4. 真實 simulation smoke 確定收得到 tick 且無資料 loss — **未成立**
-
-### 待跑的 smoke 與通過標準
-
-```bash
-PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-tick-smoke \
-  --date <交易日> --symbols 2330 --duration-seconds 60 --enable-tick-stream
-```
-
-| 欄位 | 通過標準 |
-|---|---|
-| `status` | `ok` |
-| `health` | `HEALTHY` |
-| `summary.subscribed` | 1 |
-| `summary.raw_ticks` | > 0 |
-| `summary.market_ticks` | > 0 |
-| `summary.dropped_queue_full` | 0 |
-| `summary.worker_errors` | 0 |
-| `summary.raw_write_errors` | 0 |
-| `summary.sink_errors` | 0 |
-| `summary.queue_backlog` | 0 |
-| `summary.rejected.outside_candidate_scope` | 0 或可解釋 |
-| `summary.rejected.duplicate` | 可 > 0，但要可解釋 |
-| `summary.rejected.needs_review` | 0，或在 raw 中找得到對應 row |
-| `summary.volume_checks[].consistent` | true |
-| logout | 成功 |
-
-之後抽查 `data/raw/shioaji/ticks/{date}/2330.jsonl`，確認 `datetime` / `close` / `volume` / `total_volume` 與 callback 收到的一致。
+4. 真實 simulation smoke 確定收得到 tick 且無資料 loss — **未成立**（Gate B）
 
 ## Verification
 

@@ -17,6 +17,7 @@ from tw_day_trading_lab.market_data import (
     MarketTick,
     ShioajiTickStream,
     append_raw_ticks,
+    evaluate_live_validation,
     normalize_shioaji_tick,
     raw_tick_path,
     run_gated_shioaji_tick_stream_smoke,
@@ -652,6 +653,89 @@ class GatedTickStreamSmokeTest(unittest.TestCase):
             )
 
         self.assertEqual(api.quote.unsubscribed, ["contract-2330"])
+
+
+class LiveValidationTest(unittest.TestCase):
+    """P1_LIVE_VALIDATED is a separate bar from a healthy pipeline."""
+
+    def _summary(self, **overrides):
+        summary = {
+            "health": HEALTHY,
+            "subscribed": 1,
+            "raw_ticks": 120,
+            "market_ticks": 118,
+            "dropped_queue_full": 0,
+            "worker_errors": 0,
+            "queue_backlog": 0,
+            "volume_checks": [{"symbol": "2330", "consistent": True}],
+        }
+        summary.update(overrides)
+        return summary
+
+    def test_real_tick_run_passes(self):
+        result = evaluate_live_validation(self._summary())
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["failed"], [])
+
+    def test_healthy_run_without_ticks_is_not_live_validated(self):
+        """Outside trading hours the pipeline is fine but proves nothing."""
+        result = evaluate_live_validation(
+            self._summary(raw_ticks=0, market_ticks=0, volume_checks=[])
+        )
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(
+            result["failed"],
+            ["market_ticks_emitted", "raw_ticks_received", "volume_consistent"],
+        )
+
+    def test_dropped_ticks_block_live_validation(self):
+        result = evaluate_live_validation(
+            self._summary(health=DEGRADED, dropped_queue_full=4)
+        )
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["failed"], ["health_healthy", "no_dropped_ticks"])
+
+    def test_inconsistent_volume_blocks_live_validation(self):
+        result = evaluate_live_validation(
+            self._summary(volume_checks=[{"symbol": "2330", "consistent": False}])
+        )
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["failed"], ["volume_consistent"])
+
+    def test_gated_smoke_reports_live_validation(self):
+        api = FakeApi(symbols=("2330",))
+
+        def feed(_seconds):
+            api.quote.callback(TSE, FakeTick(volume=3, total_volume=100))
+            api.quote.callback(TSE, FakeTick(volume=5, total_volume=105))
+
+        report = run_gated_shioaji_tick_stream_smoke(
+            api=api,
+            trading_date="2026-08-14",
+            symbols=["2330"],
+            enabled=True,
+            duration_seconds=1,
+            sleep=feed,
+        )
+
+        self.assertEqual(report["status"], "ok")
+        self.assertTrue(report["live_validation"]["passed"])
+
+    def test_smoke_without_ticks_is_ok_but_not_live_validated(self):
+        report = run_gated_shioaji_tick_stream_smoke(
+            api=FakeApi(symbols=("2330",)),
+            trading_date="2026-08-14",
+            symbols=["2330"],
+            enabled=True,
+        )
+
+        self.assertEqual(report["status"], "ok")
+        self.assertFalse(report["live_validation"]["passed"])
+        self.assertIn("raw_ticks_received", report["live_validation"]["failed"])
 
 
 class TickSmokeCliTest(unittest.TestCase):

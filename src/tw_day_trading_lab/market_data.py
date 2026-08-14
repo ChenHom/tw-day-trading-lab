@@ -513,7 +513,35 @@ def run_gated_shioaji_tick_stream_smoke(
     report["status"] = {HEALTHY: "ok", DEGRADED: "degraded"}.get(summary["health"], "failed")
     if summary["health"] != HEALTHY:
         report["review_reason"] = f"market_data_{summary['health'].lower()}"
+    # A healthy run that received nothing is still not live validation.
+    report["live_validation"] = evaluate_live_validation(summary)
     return report
+
+
+def evaluate_live_validation(summary: dict[str, Any]) -> dict[str, Any]:
+    """Score a smoke summary against the P1_LIVE_VALIDATED bar.
+
+    Separate from `status`: a run outside trading hours can be perfectly
+    healthy and still receive nothing, which proves the pipeline works but
+    proves nothing about the exchange feed. Only `passed` closes P1.
+    """
+    volume_checks = summary.get("volume_checks") or []
+    checks = {
+        "health_healthy": summary.get("health") == HEALTHY,
+        "subscribed": int(summary.get("subscribed", 0)) > 0,
+        "raw_ticks_received": int(summary.get("raw_ticks", 0)) > 0,
+        "market_ticks_emitted": int(summary.get("market_ticks", 0)) > 0,
+        "no_dropped_ticks": int(summary.get("dropped_queue_full", 0)) == 0,
+        "no_worker_errors": int(summary.get("worker_errors", 0)) == 0,
+        "queue_drained": int(summary.get("queue_backlog", 0)) == 0,
+        "volume_consistent": bool(volume_checks)
+        and all(check.get("consistent") for check in volume_checks),
+    }
+    return {
+        "passed": all(checks.values()),
+        "checks": checks,
+        "failed": sorted(name for name, ok in checks.items() if not ok),
+    }
 
 
 def raw_tick_payload(exchange: Any, tick: Any) -> dict[str, Any]:
