@@ -620,6 +620,14 @@ def read_bar_events(
     return events
 
 
+def list_stored_dates(store_dir: Path, timeframe: str) -> list[str]:
+    """Return the trading dates present in the store for one timeframe."""
+    directory = Path(store_dir) / timeframe
+    if not directory.exists():
+        return []
+    return sorted(path.name for path in directory.iterdir() if path.is_dir())
+
+
 def load_latest_bars(
     store_dir: Path,
     *,

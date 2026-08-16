@@ -404,7 +404,21 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
 
 驗收：8 項 checklist 全數完成。核心是「跑一場 session → 只從磁碟讀回 → 與記憶體結果完全相同」。詳見 `docs/price-action-p4-design.md`。
 
-### PA-P5 之後
+### PA-P5: TOD-RVOL / Cumulative RVOL
+
+目前狀態：`PA-P5_CODE_COMPLETE` 已完成，`PA-P5_LIVE_VALIDATED` 未完成。
+
+- baseline 按相同 time slot 比較，取 median（mean 保留供對照），窗口 20 個交易日。
+- 缺 bar 的日子不貢獻樣本，**不當成 0**；否則 baseline 會被拉低並製造假的量能突破。
+- 樣本不足時回 `insufficient_data` 且**不回傳比值**，避免有人拿三天歷史算出的數字去交易。
+- baseline 來源改用 Shioaji `api.kbars` 盤前 backfill（`bars backfill-kbars`，預設 blocked）；FinMind 分 K 需付費 sponsor 等級，free tier 直接 400。
+
+驗收：
+
+- Gate A：7 項 checklist 全數完成。已完成。
+- Gate B：真實 backfill 跑過、kbar volume 單位以日 K 定案、每日 bar 數合理、20 日 baseline 建立完成。未完成。
+
+### PA-P6 之後
 
 未開始。依序為 persistence 與 bar revision contract（PA-P4）、TOD-RVOL / Cumulative RVOL（PA-P5）、Swing 與市場結構（PA-P6）、Breakout / Retest state machine（PA-P7）、接上 paper trading daily cycle（PA-P8）、daily performance / ablation report（PA-P9）。
 

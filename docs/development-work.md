@@ -2044,3 +2044,71 @@ git diff --check
 1. 決定 PA-P5 baseline 來源（付費 token / Shioaji kbars / 自行累積 20 日）。
 2. 交易時段跑 `simulate shioaji-tick-smoke`，關閉 PA-P1/P2/P3 三個 Gate B。
 3. 之後才進 PA-P6（Swing / 市場結構），該階段無外部 API 相依，可與 PA-P5 的資料等待並行。
+
+## 2026-08-16 PA-P5 TOD-RVOL / Cum-RVOL + Shioaji kbars backfill
+
+### 資料源決定
+
+FinMind 分 K 需付費（見上一則），使用者選定 **Shioaji `api.kbars(contract, start, end)` 盤前 backfill**。
+
+新增 `src/tw_day_trading_lab/backfill.py` 作為 composition layer。放獨立模組的原因是 `bars.py` 只能 import `market_data`，反向 import 會循環；而 backfill 兩邊都要用。
+
+邊界處理：
+
+- AGENTS.md 禁止的是「盤中反覆 polling kbars 掃全市場」。這裡是**盤前、有界、只針對候選名單**的歷史抓取，屬於不同用途，但仍加獨立 gate 且預設關閉。
+- 只登入行情（`fetch_contract=True`、`subscribe_trade=False`），拒絕 `simulation != True`，不下單不取消。
+- backfill 產出的 bar 標 `source="shioaji_kbars"`，與自行聚合的 `shioaji_tick_aggregated` 永遠可區分。
+
+### kbar 單位未查證的處置
+
+`Kbars` 是欄狀（`ts` 奈秒 / `Open` / `High` / `Low` / `Close` / `Volume` / `Amount`），SDK **沒有**標註 `Volume` 單位。
+
+不猜，改成可被定案：預設 `volume_in_lots=True`（與已查證的 tick 單位一致），並提供 `check_backfill_against_daily()`，用**已確認單位是股**的日 K 作為基準：
+
+```text
+ratio = 一日 backfill 分 K volume 總和 / 該日 TaiwanStockPrice.Trading_Volume
+ratio ≈ 1     → 正確
+ratio ≈ 1000  → 多乘，改 --volume-in-shares
+ratio ≈ 0.001 → 少乘
+```
+
+`ts` 時區換算同樣未實測，`session_complete.by_day` 會回報每日 bar 數，完整場次應為 270 根，數字不對即是時區或截斷問題。
+
+### PA-P5 核心
+
+`src/tw_day_trading_lab/rvol.py`，輸入只有 canonical `MarketBar`。
+
+兩個關鍵決策：
+
+1. **缺 bar 的日子不算 0**。PA-P2 對無成交分鐘不發 bar；若把缺席當 0，baseline 會被拉低並製造假的量能突破。該日單純不貢獻該 slot 樣本，`SlotStat.days` 記錄實際貢獻天數。
+2. **樣本不足時不回傳比值**。`sample_days < min_days` → `status=insufficient_data` 且 `tod_rvol` / `cum_rvol` 皆為 `None`。回傳一個數字就會有人拿去交易。baseline 與 `sample_days` 仍在結果裡供檢查。未知 slot 同樣走這條路，不拋例外；baseline median 為 0 時也回 `None`，不做除以零。
+
+median 優先、mean 保留供對照，符合原計畫文件。
+
+### CLI
+
+新增 `bars backfill-kbars`（預設 blocked）與 `bars rvol`。
+
+同時把 `cmd_simulate_shioaji_tick_smoke` 與新指令重複的 gated 登入流程抽成 `_gated_market_data_login()`——第二份拷貝出現時就該抽。該 helper 只在呼叫端已通過 gate 時才 import SDK。
+
+### 驗證
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 282 tests, OK
+PYTHONPATH=src python3 -m compileall -q src tests
+bars backfill-kbars --symbols 2330 ...                 # blocked / enable_kbars_backfill_required / side_effects=[]
+bars rvol --date 2026-08-17 --store-dir <empty>        # baseline_days=0 bars=0，不 crash
+```
+
+測試數：261 → 282。
+
+### Residual Risks（新增）
+
+7. **kbar volume 單位與 `ts` 時區換算皆未實測**。已備妥 `check_backfill_against_daily` 與 `session_complete` 兩個檢查，但要等真實 backfill 才能定案。
+8. **simulation 帳號能否取得 kbars 未實測**。與 PA-P1 Gate B 同一類未知。若取不到，PA-P5 的 baseline 要改回自行累積 20 個交易日的 tick。
+
+### Next-run Seed
+
+1. 交易時段跑 `simulate shioaji-tick-smoke`，關閉 PA-P1/P2/P3 三個 Gate B。
+2. 盤前跑 `bars backfill-kbars --enable-kbars-backfill`，用 `check_backfill_against_daily` 定案 volume 單位，關閉 PA-P5 Gate B。
+3. PA-P6（Swing / 市場結構）無任何外部 API 相依，可與上述資料等待並行開發。

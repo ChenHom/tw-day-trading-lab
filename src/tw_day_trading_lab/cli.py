@@ -13,13 +13,17 @@ from .finmind_ingestion import (
     ingest_finmind_requests,
     read_request_file,
 )
+from .backfill import run_gated_shioaji_kbars_backfill
 from .bars import (
     FiveMinuteBarAggregator,
     OneMinuteBarAggregator,
     append_bars,
     check_bar_volume,
     latest_bars,
+    list_stored_dates,
+    load_latest_bars,
 )
+from .rvol import build_volume_baseline, compute_rvol_series
 from .ledger import PaperLedger
 from .market_data import (
     raw_tick_path,
@@ -3109,6 +3113,139 @@ def _resolve_tick_smoke_symbols(args: argparse.Namespace) -> list[str]:
     return []
 
 
+def _gated_market_data_login(
+    args: argparse.Namespace, *, ready: bool
+) -> tuple[object | None, str, str]:
+    """Log in to Shioaji for market data only. Never touches the order chain.
+
+    Returns (api, blocked_reason, blocked_error). The SDK is imported only
+    when the caller has already cleared its gate, so a default run never
+    loads it.
+    """
+    if not ready:
+        return None, "", ""
+    try:
+        import shioaji as sj  # type: ignore
+    except Exception as error:
+        return None, "shioaji_import_failed", str(error)
+    try:
+        api = sj.Shioaji(simulation=True)
+        # Contracts are needed to resolve symbols; order callbacks are not.
+        api.login(
+            api_key=os.getenv(args.api_key_env),
+            secret_key=os.getenv(args.secret_key_env),
+            fetch_contract=True,
+            subscribe_trade=False,
+        )
+    except Exception as error:
+        return None, "shioaji_login_failed", str(error)
+    return api, "", ""
+
+
+def cmd_bars_backfill_kbars(args: argparse.Namespace) -> None:
+    """Backfill historical 1m bars for candidates behind an explicit gate."""
+    symbols = _resolve_tick_smoke_symbols(args)
+    enabled = bool(args.enable_kbars_backfill)
+    credentials_present = bool(
+        enabled and os.getenv(args.api_key_env) and os.getenv(args.secret_key_env)
+    )
+    api, blocked_reason, blocked_error = _gated_market_data_login(
+        args, ready=enabled and credentials_present and bool(symbols)
+    )
+
+    if blocked_reason:
+        report: dict[str, object] = {
+            "status": "blocked",
+            "mode": "shioaji_kbars_backfill",
+            "start_date": args.start_date,
+            "end_date": args.end_date,
+            "checks": {"gate_enabled": enabled, "credentials_present": credentials_present},
+            "side_effects": [],
+            "review_reason": blocked_reason,
+            "error": blocked_error,
+        }
+    else:
+        try:
+            report = run_gated_shioaji_kbars_backfill(
+                api=api,
+                symbols=symbols,
+                start_date=args.start_date,
+                end_date=args.end_date,
+                enabled=enabled,
+                credentials_present=credentials_present,
+                store_dir=Path(args.store_dir) if args.store_dir else None,
+                volume_in_lots=not args.volume_in_shares,
+            )
+        finally:
+            if api is not None:
+                try:
+                    api.logout()
+                except Exception:
+                    pass
+
+    output = (
+        Path(args.output)
+        if args.output
+        else Path("reports") / f"{args.end_date}-kbars-backfill.json"
+    )
+    write_json(output, report)
+    print(output)
+    print(f"status: {report.get('status')}  review_reason: {report.get('review_reason')}")
+
+
+def cmd_bars_rvol(args: argparse.Namespace) -> None:
+    """Score stored bars against a per-slot volume baseline from earlier days."""
+    store_dir = Path(args.store_dir)
+    symbols = _resolve_tick_smoke_symbols(args)
+    if not symbols:
+        raise ValueError("--symbols or --candidates-input is required")
+
+    history_dates = [
+        date for date in list_stored_dates(store_dir, args.timeframe) if date < args.date
+    ][-args.lookback_days:]
+
+    payload: dict[str, object] = {
+        "trading_date": args.date,
+        "timeframe": args.timeframe,
+        "history_dates": history_dates,
+        "lookback_days": args.lookback_days,
+        "min_days": args.min_days,
+        "symbols": {},
+    }
+    for symbol in symbols:
+        history = []
+        for date in history_dates:
+            history.extend(
+                load_latest_bars(
+                    store_dir, timeframe=args.timeframe, trading_date=date, symbols=[symbol]
+                )
+            )
+        baseline = build_volume_baseline(
+            history,
+            symbol=symbol,
+            timeframe=args.timeframe,
+            lookback_days=args.lookback_days,
+        )
+        today = load_latest_bars(
+            store_dir, timeframe=args.timeframe, trading_date=args.date, symbols=[symbol]
+        )
+        results = compute_rvol_series(today, baseline, min_days=args.min_days)
+        payload["symbols"][symbol] = {
+            "baseline_days": baseline.days,
+            "results": [result.to_dict() for result in results],
+            "insufficient": sum(1 for result in results if result.status != "ok"),
+        }
+
+    output = Path(args.output) if args.output else Path("reports") / f"{args.date}-rvol.json"
+    write_json(output, payload)
+    print(output)
+    for symbol, entry in payload["symbols"].items():
+        print(
+            f"{symbol}: baseline_days={entry['baseline_days']} "
+            f"bars={len(entry['results'])} insufficient={entry['insufficient']}"
+        )
+
+
 def cmd_simulate_shioaji_tick_smoke(args: argparse.Namespace) -> None:
     """Run the explicitly gated Shioaji candidate-scoped tick stream smoke."""
     symbols = _resolve_tick_smoke_symbols(args)
@@ -3116,28 +3253,9 @@ def cmd_simulate_shioaji_tick_smoke(args: argparse.Namespace) -> None:
     api_key = os.getenv(args.api_key_env) if enabled else None
     secret_key = os.getenv(args.secret_key_env) if enabled else None
     credentials_present = bool(api_key and secret_key)
-    api = None
-    blocked_reason = ""
-    blocked_error = ""
-
-    if enabled and credentials_present and symbols:
-        try:
-            import shioaji as sj  # type: ignore
-        except Exception as error:
-            blocked_reason, blocked_error = "shioaji_import_failed", str(error)
-        else:
-            try:
-                api = sj.Shioaji(simulation=True)
-                # Market data only: contracts are needed to subscribe, order callbacks are not.
-                api.login(
-                    api_key=api_key,
-                    secret_key=secret_key,
-                    fetch_contract=True,
-                    subscribe_trade=False,
-                )
-            except Exception as error:
-                blocked_reason, blocked_error = "shioaji_login_failed", str(error)
-                api = None
+    api, blocked_reason, blocked_error = _gated_market_data_login(
+        args, ready=enabled and credentials_present and bool(symbols)
+    )
 
     if blocked_reason:
         report: dict[str, object] = {
@@ -3360,6 +3478,30 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--lateness-seconds", type=float, default=3.0)
     build.add_argument("--output")
     build.set_defaults(func=cmd_bars_build)
+
+    backfill = bars_sub.add_parser("backfill-kbars")
+    backfill.add_argument("--start-date", required=True)
+    backfill.add_argument("--end-date", required=True)
+    backfill.add_argument("--symbols")
+    backfill.add_argument("--candidates-input")
+    backfill.add_argument("--store-dir", default="data/bars")
+    backfill.add_argument("--api-key-env", default="SHIOAJI_API_KEY")
+    backfill.add_argument("--secret-key-env", default="SHIOAJI_SECRET_KEY")
+    backfill.add_argument("--enable-kbars-backfill", action="store_true")
+    backfill.add_argument("--volume-in-shares", action="store_true")
+    backfill.add_argument("--output")
+    backfill.set_defaults(func=cmd_bars_backfill_kbars)
+
+    rvol = bars_sub.add_parser("rvol")
+    rvol.add_argument("--date", required=True)
+    rvol.add_argument("--symbols")
+    rvol.add_argument("--candidates-input")
+    rvol.add_argument("--store-dir", default="data/bars")
+    rvol.add_argument("--timeframe", default="5m")
+    rvol.add_argument("--lookback-days", type=int, default=20)
+    rvol.add_argument("--min-days", type=int, default=20)
+    rvol.add_argument("--output")
+    rvol.set_defaults(func=cmd_bars_rvol)
 
     replay = subparsers.add_parser("replay")
     replay_sub = replay.add_subparsers(required=True)
