@@ -324,3 +324,77 @@ P8 之後每個 phase close-out 不能只列「新增命令」或「新增文件
 
 - 未開 gate 時維持 `publish_status=dry_run` / `send_status=dry_run_not_sent`。
 - 開 gate 後才允許真實 GitHub artifact / Telegram operator link。
+
+## Phase E: Price Action Intraday
+
+### 編號衝突警告
+
+本文件的 P0-P11 與 `docs/price-action-intraday-plan.md` 的 P1-P9 是**兩套不同編號**。
+
+| 編號 | 本 roadmap | Price Action plan |
+|---|---|---|
+| P1 | Old Log / CSV Importer | Shioaji Tick → MarketTick |
+| P2 | TiDB Integration | Tick → 1m Aggregator |
+| P3 | FinMind Nightly Ingestion | 1m → 5m Aggregator |
+
+以下一律用 `PA-Pn` 前綴指涉 Price Action 的階段。
+
+### 兩段驗收模型
+
+Price Action 各階段都拆成兩個 gate。這樣非交易時段不會卡住開發，也不會把 unit test 全綠誤讀成真實行情已驗證。
+
+```text
+PA-Pn_CODE_COMPLETE     fixture / synthetic 測試全部通過
+PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
+```
+
+`LIVE_VALIDATED` 未達成前，不得宣告該段 pipeline 已可用於每日 paper trading。
+
+### PA-P1: Shioaji Tick → normalized MarketTick
+
+目前狀態：`PA-P1_CODE_COMPLETE` 已完成，`PA-P1_LIVE_VALIDATED` 未完成。
+
+- provider adapter 與 normalization 都在 `market_data.py`，該模組不 import Shioaji SDK。
+- provider callback 只入佇列，raw 寫入 / normalize / dedupe / sink 在 worker thread。
+- `simtrade` / 盤中零股 / 暫停交易 / 壞 volume 一律不進下游；成交量統一換算成股。
+- candidate scope 在 subscribe 端與 ingestion 端各檢查一次。
+- market data health 聚合成 `HEALTHY` / `DEGRADED` / `FAILED`；非 HEALTHY 時 smoke fail closed 並回傳非 0。
+- `simulate shioaji-tick-smoke` 預設 blocked，不 import SDK、不登入、不訂閱。
+
+驗收：
+
+- Gate A：21 項 checklist 全數完成，unit / adversarial tests 通過。已完成，見 `docs/price-action-p1-design.md`。
+- Gate B：交易時段 smoke 的 report 需 `live_validation.passed=true`。未完成。
+
+### PA-P2: MarketTick → canonical 1m MarketBar
+
+目前狀態：`PA-P2_CODE_COMPLETE` 已完成，`PA-P2_LIVE_VALIDATED` 未完成。
+
+- 半開 bucket `[09:00:00, 09:01:00)`，事件時間 watermark，多股票各自狀態。
+- late tick：窗內併入、窗外 `CORRECTED` rev+1、超窗 `dropped_late`。
+- **沒有成交的分鐘不補 synthetic bar**，以保持「真的量 0 / 沒人交易 / feed 漏資料」三者可分辨。此決定推翻 `docs/price-action-intraday-plan.md` 的原始 Missing Minute Policy。
+- `bars build-1m` 可從 PA-P1 raw tick 重建 1m bar；replay 與 live 共用同一套 aggregator。
+
+驗收：
+
+- Gate A：OHLCV / bucket / rollover / multi-symbol / late / missing / replay determinism 測試通過。已完成。
+- Gate B：真實 tick 聚合出的 1m 與盤後 provider 1m 比對 OHLC / volume / bar count / missing minute。未完成，且卡在 FinMind 分 K 單位未查證。
+
+### PA-P3: canonical 1m → canonical 5m
+
+目前狀態：`PA-P3_CODE_COMPLETE` 已完成，`PA-P3_LIVE_VALIDATED` 未完成。
+
+- 半開 bucket `[09:00, 09:05)`；5m 永遠不向 provider 取得，只接受 `timeframe="1m"` 輸入。
+- bucket 是時間區間不是「五根 1m」；缺分鐘照樣產生 5m，不補假資料、不借下一個 bucket 湊數。
+- 1m correction 會 replace 該分鐘並重算整根 5m，不做增量累加。
+
+驗收：
+
+- Gate A：bucket boundary / OHLCV / 缺分鐘 / correction / deterministic replay 五項測試通過。已完成。
+- Gate B：與盤後 provider 5m 比對。未完成。
+
+### PA-P4 之後
+
+未開始。依序為 persistence 與 bar revision contract（PA-P4）、TOD-RVOL / Cumulative RVOL（PA-P5）、Swing 與市場結構（PA-P6）、Breakout / Retest state machine（PA-P7）、接上 paper trading daily cycle（PA-P8）、daily performance / ablation report（PA-P9）。
+
+PA-P5 需要每檔候選股 20-30 個交易日的歷史 1m，補資料前置時間要提早排；目前 `data/raw/finmind/` 沒有任何 `TaiwanStockPriceMinute` 資料。

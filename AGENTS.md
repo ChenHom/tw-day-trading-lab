@@ -48,18 +48,30 @@ If a task appears to require live execution, stop and design the gate/SOP first.
 - Trading Day Autonomous Cycle v1 steps 1-8 are complete as dry-run artifacts: `simulate trading-day-cycle` emits run state, watch events, order intents, position state, 15:00 report, 17:30 next-candidate handoff, and end-to-end smoke. Trading-day status is based only on API/raw-cache data availability. Do not add a separate holiday calendar unless explicitly requested.
 - Simulate online-test preparation is in progress: `simulate trading-day-cycle` can read candidate-scoped intraday bars from raw cache when no fixture is supplied, and `simulate trading-day-cycle-smoke` can run multi-day stability checks. Keep Shioaji side effects, GitHub publish, and Telegram send disabled unless a later task explicitly opens those gates.
 - `.pfx` / `.p12` files are ignored, and `Sinopac.pfx` has been removed from reachable Git history.
-- Price Action Intraday P1 acceptance is split into two gates in `docs/price-action-p1-design.md`. Gate A `P1_CODE_COMPLETE` is reached: `market_data.py` provides `MarketTick`, `normalize_shioaji_tick`, `ShioajiTickStream`, the `data/raw/shioaji/ticks/` raw store, market-data health, and the gated `simulate shioaji-tick-smoke`. Gate B `P1_LIVE_VALIDATED` is NOT reached: it needs one real simulation quote smoke during trading hours whose report shows `live_validation.passed=true`.
-- Price Action Intraday P2 reached Gate A `P2_CODE_COMPLETE`: `bars.py` provides `MarketBar`, `OneMinuteBarAggregator`, `aggregate_ticks`, `latest_bars`, `check_bar_volume`, plus `market_data.replay_raw_ticks` and the `bars build-1m` CLI. Gate B `P2_LIVE_VALIDATED` is NOT reached: it needs a real tick session aggregated and compared against post-market provider 1m data. See `docs/price-action-p2-design.md`.
+- Price Action Intraday PA-P1 acceptance is split into two gates in `docs/price-action-p1-design.md`. Gate A `PA-P1_CODE_COMPLETE` is reached: `market_data.py` provides `MarketTick`, `normalize_shioaji_tick`, `ShioajiTickStream`, the `data/raw/shioaji/ticks/` raw store, market-data health, and the gated `simulate shioaji-tick-smoke`. Gate B `PA-P1_LIVE_VALIDATED` is NOT reached: it needs one real simulation quote smoke during trading hours whose report shows `live_validation.passed=true`.
+- Price Action Intraday PA-P2 reached Gate A `PA-P2_CODE_COMPLETE`: `bars.py` provides `MarketBar`, `OneMinuteBarAggregator`, `aggregate_ticks`, `latest_bars`, `check_bar_volume`, plus `market_data.replay_raw_ticks` and the `bars build-1m` CLI. Gate B `PA-P2_LIVE_VALIDATED` is NOT reached: it needs a real tick session aggregated and compared against post-market provider 1m data. See `docs/price-action-p2-design.md`.
 - Canonical 1m has NO synthetic bars: a minute with no trades produces no `MarketBar`. This deliberately overrides the Missing Minute Policy in `docs/price-action-intraday-plan.md`, so "real zero volume", "nobody traded" and "the feed dropped data" stay distinguishable. Do not add `is_synthetic` back at the canonical layer.
-- Price Action Intraday P3 reached Gate A `P3_CODE_COMPLETE`: `bars.FiveMinuteBarAggregator` / `aggregate_1m_to_5m` build canonical 5m from canonical 1m. Gate B `P3_LIVE_VALIDATED` is NOT reached. See `docs/price-action-p3-design.md`.
+- Price Action Intraday PA-P3 reached Gate A `PA-P3_CODE_COMPLETE`: `bars.FiveMinuteBarAggregator` / `aggregate_1m_to_5m` build canonical 5m from canonical 1m. Gate B `PA-P3_LIVE_VALIDATED` is NOT reached. See `docs/price-action-p3-design.md`.
 - 5m is never taken from a provider and never from another 5m: `FiveMinuteBarAggregator.on_bar` accepts only `timeframe == "1m"`. A 5m bucket is a time range, not five bars, and a corrected 1m replaces its minute and forces a full bucket recompute - it is never added to the previous revision.
 - `bars.py` must stay provider-agnostic: its only project import is `MarketTick`. Both aggregators advance on event time only, never the wall clock, so replay and live produce identical bars.
-- Until both P1 and P2 Gate B pass, do not claim the tick to 1m pipeline is usable for daily paper trading.
+- Price Action phase numbers collide with this repo's P0-P11: `docs/price-action-intraday-plan.md` P1 is the Shioaji tick adapter, not the old-log importer. Always write `PA-Pn` for Price Action phases.
+- Until every PA Gate B passes, do not claim the tick to 1m to 5m pipeline is usable for daily paper trading.
 - `market_data.py` must stay free of Shioaji SDK imports, and any consumer of `ShioajiTickStream` must refuse to produce new entry signals unless `stream.is_healthy` is true.
 
 ## Next Development Priority
 
-The next coding phase is `Trading Day Autonomous Cycle v1`.
+Two tracks are open. Do not confuse them.
+
+**Track 1 - Price Action Intraday (active).** PA-P1 / PA-P2 / PA-P3 all reached Gate A. The next action is not more code: it is one real simulation quote smoke during trading hours, which closes three Gate Bs at once.
+
+1. `simulate shioaji-tick-smoke --symbols 2330 --duration-seconds 60 --enable-tick-stream`, then check `live_validation.passed`.
+2. Verify the FinMind `TaiwanStockPriceMinute` volume unit before any 1m comparison; it is still unverified and there is no minute cache on disk at all.
+3. Compare `bars build-1m` output against post-market provider 1m, then the 5m.
+4. Only then start PA-P4 (persistence / bar revision store) or PA-P5 (TOD-RVOL).
+
+PA-P5 needs 20-30 trading days of historical 1m per candidate. Schedule that backfill early.
+
+**Track 2 - Trading Day Autonomous Cycle v1 (paused, still valid).**
 
 Do not go back to P8 as if it were unimplemented. P8-P11 already exist. The daily operating chain now has a one-command runner and bundle audit.
 
@@ -90,6 +102,10 @@ Read these before changing behavior:
 - `docs/data-contracts.md` - data contracts for candidates, replay, simulation, readiness, ops manifest, alerts, and regression cases.
 - `docs/trading-day-autonomous-cycle.md` - corrected objective, schedule, architecture gap, and next implementation seed.
 - `docs/rebuild-baseline.md` - rebuild baseline from the old project.
+- `docs/price-action-intraday-plan.md` - Price Action strategy plan. Its P1-P9 numbering is NOT this repo's P0-P11.
+- `docs/price-action-p1-design.md` - PA-P1 tick adapter design, two-gate acceptance, and the pending live smoke.
+- `docs/price-action-p2-design.md` - PA-P2 1m aggregation, including why canonical bars are never synthesized.
+- `docs/price-action-p3-design.md` - PA-P3 5m aggregation and the 1m correction rule.
 
 When phase status changes, update both `docs/development-work.md` and `docs/mvp-roadmap.md`.
 

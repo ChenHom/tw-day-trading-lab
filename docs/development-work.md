@@ -1820,3 +1820,154 @@ Next-run seed：
 2. 另開 explicit gate 接 Shioaji simulation side effects；未開 gate 時必須保持 disabled。
 3. 另開 explicit gate 接 GitHub publish / Telegram operator link send；未開 gate 時必須保持 dry-run only。
 4. 正式 live order 繼續 blocked；smoke OK 不得解讀成策略 edge。
+
+## 2026-08-14 ~ 2026-08-16 Price Action Intraday PA-P1 / PA-P2 / PA-P3
+
+### 命名衝突警告
+
+`docs/price-action-intraday-plan.md` 的 P1-P9 與本 roadmap 的 P0-P11 是**兩套完全不同的編號**。
+
+| 編號 | 本 roadmap | Price Action plan |
+|---|---|---|
+| P1 | Old Log / CSV Importer | Shioaji Tick → MarketTick |
+| P2 | TiDB Integration | Tick → 1m Aggregator |
+| P3 | FinMind Nightly Ingestion | 1m → 5m Aggregator |
+
+文件與 commit 一律用 `PA-P1` / `Price Action Intraday P1` 這種前綴指涉後者，避免誤讀。
+
+### PA-P1: Shioaji Tick → normalized MarketTick
+
+新增 `src/tw_day_trading_lab/market_data.py`、`tests/test_market_data.py`，CLI 新增 gated `simulate shioaji-tick-smoke`。
+
+設計文件：`docs/price-action-p1-design.md`。
+
+四個在 contract 層定案的決策：
+
+- **D1 sequence 自建**。Shioaji `TickSTKv1` 沒有 sequence 欄位（已對 SDK 1.3.2 原始碼查證）。改由 stream 指派 per-`(date, symbol)` 遞增計數器。重啟歸零，replay 的真正排序 / 去重鍵是 `(timestamp, cumulative_volume)`。
+- **D2 `simtrade` 必須擋掉**。試撮 tick 從 08:30 開始流，不濾會讓 1m aggregator 生出 08:30-09:00 幽靈 K 棒且 `open` 錯誤。
+- **D3 `intraday_odd` 必須擋掉**。SDK docstring 明載整股 `volume` 單位是 K shares（張），盤中零股是 share（股），混入會差 1000 倍。
+- **D4 canonical volume 單位 = 股**。整股 tick 乘 1000。**FinMind `TaiwanStockPriceMinute` 的單位仍未查證**，見 Residual Risks。
+
+Code review 第一輪修正（六項資料正確性 / 串流問題）：
+
+1. provider callback 內同步寫 JSONL → 改為只 `put_nowait` 進 bounded queue，raw 寫入 / normalize / dedupe / sink 全移到 worker thread。卡住 quote callback 會讓整條 tick feed 延遲，所有 volume 衍生特徵靜默失真。
+2. `volume` 缺失或無法解析被靜默轉成 0 → 納入 required fields，缺失 / 無法解析 / 負值一律 `needs_review`。`volume=0` 仍是合法值。
+3. candidate scope 只在 subscribe 端成立 → ingestion 端再檢查一次。同一 api 物件的 quote callback 是共用的，subscribe 範圍不等於 ingestion 範圍。
+4. duplicate tick 會重複進 sink 灌大成交量 → 以 `(symbol, timestamp, cumulative_volume)` 去重。
+5. `code` 缺失的 tick 不寫 raw → 改寫入 `_unknown.jsonl`，那正是最需要事後追查的一種。
+6. 例外時可能沒 unsubscribe → `start()` partial rollback、`stop()` 先 unsubscribe、gate `try/finally`、CLI `finally` logout。Shioaji 對同一 `person_id` 有連線數上限。
+
+Code review 第二輪修正（market data health）：
+
+原本 `_run_worker` 直接呼叫 `_process` 無 try/except，worker 一掛就靜默死亡，之後每筆 tick 全部消失且無跡可循。現在每種遺失路徑都有獨立 counter，聚合成 `HEALTHY` / `DEGRADED` / `FAILED`：
+
+| 遺失路徑 | counter | health |
+|---|---|---|
+| queue 滿 | `dropped_queue_full` | DEGRADED |
+| 單筆處理例外 | `worker_errors`（worker 存活） | DEGRADED |
+| raw 寫入失敗 | `raw_write_errors`（tick 仍送下游） | DEGRADED |
+| sink raise | `sink_errors` | DEGRADED |
+| worker loop 死亡 | `worker_failed` | FAILED |
+| worker join 逾時 | `worker_stop_timeout` | FAILED |
+
+並修正 concurrency contract：`stop()` 若 join 逾時就**不 drain**，直接標 FAILED；`drain()` 在 worker 存活時 raise。原本「join timeout 後主執行緒照樣 drain」會讓兩條 thread 同時跑 `_process`，破壞 sequence / dedupe / volume 狀態。
+
+### PA-P2: MarketTick → canonical 1m MarketBar
+
+新增 `src/tw_day_trading_lab/bars.py`、`tests/test_bars.py`，CLI 新增 `bars build-1m`。
+
+設計文件：`docs/price-action-p2-design.md`。
+
+**決策反轉：Missing Minute Policy 不補 synthetic bar。**
+
+`docs/price-action-intraday-plan.md` 原本要求缺分鐘用 previous close 補空棒並標 `is_synthetic=true`。實作時改為不補，原因是這三件事必須保持可分辨：
+
+| 事實 | 表現 |
+|---|---|
+| 真的成交量 0（有成交，量為 0） | 有 bar，`volume=0`、`trade_count>0` |
+| 根本沒有交易 | 沒有 bar，`no_trade_minutes` 計數 |
+| feed 漏資料 | `market_data` health 轉 DEGRADED / FAILED |
+
+補空棒會把前兩者混成同一種 bar，第三者則被偽裝成「市場很安靜」。要不要補空棒交給下游 normalization layer 依用途決定。`MarketBar` 因此沒有 `is_synthetic` 欄位。原始計畫文件已標註此修正並保留原文對照。
+
+其他關鍵決策：
+
+- **事件時間，不讀系統時鐘**。watermark 只由 tick timestamp 推進，這是「live 與 replay 共用同一套 aggregator」的必要條件。需要在無成交時收 bar 的呼叫端用 `flush(now=...)` 自己給時鐘。
+- **late tick window 導致同一 symbol 會有多個 pending bar**（09:00 等遲到、09:01 進行中），因此內部不是單一 `current_bar` 而是 `pending[symbol][minute]`。窗內遲到直接併入不產生 correction，窗外才 `CORRECTED rev=2`。
+- `MarketBar` 是 frozen dataclass，correction 產生新物件，`bar_revision_used` 天然成立，不需額外機制。
+- open / close 依**事件時間**決定，不依抵達順序，否則遲到 tick 會僅因為最後抵達就變成 close。
+
+### PA-P3: canonical 1m → canonical 5m
+
+同一個 `bars.py` 新增 `FiveMinuteBarAggregator`、`aggregate_1m_to_5m`；新增 `tests/test_bars_5m.py`。
+
+設計文件：`docs/price-action-p3-design.md`。
+
+三個必須成立的性質：
+
+1. **bucket 是時間區間，不是「五根 1m」**。PA-P2 對無成交分鐘不發 bar，所以一根 5m 可能只由 4 根或 1 根組成。不補假資料、不因不足五根就不產生、不借下一個 bucket 湊數。
+2. **1m correction 是 replace 不是 accumulate**。component 存的是 `minute → 最新 revision 的 1m bar`，每次變更重算整根，結構上不可能出現 `1000 + 1500 = 2500`。這是唯一會讓輸出「不再 canonical」的環節。
+3. **已發出的 revision 不可變**。
+
+順手修的既有 bug：`latest_bars()` 原本 key 是 `(symbol, start_at)`，1m 與 5m 的同一時間點會互相覆蓋，已改為含 `timeframe`。PA-P2 當時只有一種 timeframe 所以沒暴露。
+
+刻意不做（不影響 PA-P3 成立）：`component_bar_count`、`missing_minutes` 欄位、`bars build-5m` CLI、5m 專屬 metrics。
+
+### 兩段驗收模型
+
+三個 phase 都拆成兩個 gate，避免非交易時段卡住開發，也避免把「unit test 全綠」誤讀成「真實行情已驗證」：
+
+```text
+PA-P1_CODE_COMPLETE ✅    PA-P1_LIVE_VALIDATED ❌
+PA-P2_CODE_COMPLETE ✅    PA-P2_LIVE_VALIDATED ❌
+PA-P3_CODE_COMPLETE ✅    PA-P3_LIVE_VALIDATED ❌
+```
+
+`simulate shioaji-tick-smoke` 的 report 內含 `live_validation` 區塊，自行計算是否達到 live 標準，不需人工核對欄位。**`status` 與 `live_validation` 是兩個不同問題**：非交易時段跑，pipeline 可以完全健康（`status=ok`、`health=HEALTHY`）但一筆 tick 都沒收到，此時 `live_validation.passed=false`。只有 `passed=true` 能關閉 PA-P1。
+
+### 可調參數（刻意留下的上限，皆有 `ponytail:` 註解）
+
+| 常數 | 預設 | 上限說明 |
+|---|---|---|
+| `TICK_QUEUE_MAXSIZE` | 100000 | 滿了丟棄並計入 `dropped_queue_full` |
+| `DEDUPE_WINDOW` | 512 | 有界近期窗口而非整場 set；整場 set 語意更純但 50 檔 × 20k ticks 會長到數百 MB |
+| `DEFAULT_LATENESS_SECONDS` | 3 | 1m bar finalize 前的等待窗 |
+| `CORRECTION_WINDOW_MINUTES` | 10 | 1m 可被 correct 的保留期 |
+| `DEFAULT_5M_CORRECTION_WINDOW_MINUTES` | 30 | 5m bucket 可被 correct 的保留期 |
+
+### 驗證
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 248 tests, OK
+PYTHONPATH=src python3 -m compileall -q src tests
+git diff --check
+```
+
+測試數變化：154 → 175（PA-P1）→ 187 → 198 → 204（review 修正 + health + live gate）→ 228（PA-P2）→ 248（PA-P3）。
+
+邊界檢查：
+
+```bash
+grep 'import shioaji' src/tw_day_trading_lab/market_data.py   # 無
+grep '^from \|^import ' src/tw_day_trading_lab/bars.py        # stdlib + MarketTick 而已
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-tick-smoke \
+  --date 2026-08-14 --symbols 2330,2317                       # blocked / side_effects=[] / exit 0
+```
+
+### Residual Risks
+
+1. **三個 LIVE_VALIDATED 全部未達成**，都等同一次交易時段實跑。unit test 全綠不等於真實行情已驗證。
+2. **D4 未查證**：FinMind `TaiwanStockPriceMinute` 的 volume 單位（張或股）沒驗過，本機 `data/raw/finmind/` 連一天分 K 都沒有。PA-P2 Gate B 要拿它當比對基準，比對前必須先解決，否則會誤判成 ×1000 錯誤。驗法：抓一天分 K，把當日總量對 `TaiwanStockPrice.Trading_Volume`。
+3. **同一問題也影響既有 trading-day cycle**：`--require-intraday-bars` 目前對任何日期都會 `blocked`，`fixtures/` 目錄不存在（`README.md` 有引用）。
+4. **SDK 版本相容性只有 fake 覆蓋**：本機是 shioaji 1.3.2，`sj.Shioaji` 沒有 top-level `subscribe` / `set_on_tick_stk_v1_callback`（實測），只有 `api.quote.*`。實作同時支援兩種形狀且各有測試，但真實 API compatibility 只能由實跑確認。
+5. **Shioaji simulation 帳號能否收到即時 tick**：review 引用官方 Simulation Mode 文件指出 `quote.subscribe` / `ticks` / `kbars` / `snapshots` 可用（本專案未自行查證）。待實跑確認本帳號 + 1.3.2 + 本實作確實收得到。
+6. `sequence` 重啟歸零，跨 process 的 replay 排序仍須靠 `(timestamp, cumulative_volume)`。
+
+### Next-run Seed
+
+1. 交易時段跑 `simulate shioaji-tick-smoke --symbols 2330 --duration-seconds 60 --enable-tick-stream`，檢查 `live_validation.passed`。通過即 `PA-P1_LIVE_VALIDATED`。
+2. 抽查 `data/raw/shioaji/ticks/{date}/2330.jsonl`，確認 `datetime` / `close` / `volume` / `total_volume` 與 callback 收到的一致。
+3. 先解決 Residual Risk 2（FinMind 分 K 單位），再跑 `bars build-1m` 並與 `TaiwanStockPriceMinute` 比對 OHLC / volume / bar count / missing minute，通過即 `PA-P2_LIVE_VALIDATED`。
+4. 5m 比對同上，通過即 `PA-P3_LIVE_VALIDATED`。
+5. 三個 Gate B 全通過前，不得宣告 Tick → 1m → 5m pipeline 已可用於每日 paper trading。
+6. 之後可進 PA-P4（persistence / bar revision store）或 PA-P5（TOD-RVOL）。PA-P5 需要 20-30 個交易日的歷史分 K，補資料前置時間要提早排。
