@@ -18,7 +18,7 @@ Scope and boundary:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -48,11 +48,12 @@ def normalize_shioaji_kbars(
     `Kbars` is column-oriented (`ts`, `Open`, `High`, `Low`, `Close`, `Volume`),
     with `ts` in nanoseconds.
 
-    ponytail: `volume_in_lots` defaults to True to match the tick feed, whose
-    lot unit is documented in the SDK. The kbar unit is NOT documented, so
-    `check_backfill_against_daily` exists to settle it against a daily bar
-    whose share unit is already confirmed. Flip this flag if that check says
-    the volume is already in shares.
+    `volume_in_lots` defaults to True. The SDK does not document the unit, but
+    the official 2330 example is arithmetically decisive: Volume 2565 at a
+    close near 2230 gives an Amount near 5.7 billion only if 2565 counts lots
+    (2565 x 1000 x 2230). Read as shares it would be 5.7 million, off by
+    1000x. `check_backfill_against_daily` still settles it empirically against
+    a daily bar whose share unit is confirmed.
     """
     stamps = list(getattr(kbars, "ts", []) or [])
     opens = list(getattr(kbars, "Open", []) or [])
@@ -215,7 +216,16 @@ def _session_completeness(bars: Sequence[MarketBar]) -> dict[str, Any]:
 
 
 def _from_nanoseconds(value: Any) -> datetime | None:
+    """Decode a Shioaji kbar `ts` into exchange local wall-clock time.
+
+    `ts` encodes Taiwan local time as if it were a UTC epoch: the official
+    example `1779094860000000000` is 2026-05-18 09:01 local, which is what
+    UTC decoding yields. Decoding it with the machine's local timezone would
+    shift every bar by the UTC offset (09:01 becomes 17:01 on a UTC+8 host)
+    and would give different answers on differently configured machines.
+    """
     try:
-        return datetime.fromtimestamp(int(value) / 1_000_000_000)
+        moment = datetime.fromtimestamp(int(value) / 1_000_000_000, tz=timezone.utc)
     except (TypeError, ValueError, OSError, OverflowError):
         return None
+    return moment.replace(tzinfo=None)

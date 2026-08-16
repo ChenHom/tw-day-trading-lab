@@ -9,8 +9,9 @@ of fooling yourself:
 - **Stop is checked before target inside the same bar.** A 5m bar that spans
   both is ambiguous; assuming the good outcome would inflate expectancy on
   exactly the volatile bars that matter.
-- **One trade per setup_id, ever.** The ledger key is never released, so a
-  replay or a restart cannot re-enter the same setup.
+- **One trade per setup_id, ever.** The in-memory ledger key is never
+  released, and `traded_setups_path` persists the ids so a crash mid-day
+  cannot re-enter a setup after a restart.
 - **No new entry while market data is unhealthy.** PA-P1 reports the health;
   a signal computed from a feed that dropped ticks is not a signal.
 - **Every position is closed before the day ends.** Force exit at the
@@ -19,7 +20,9 @@ of fooling yourself:
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Sequence
 
 from .bars import MarketBar
@@ -85,6 +88,8 @@ class _DayState:
     events: list[SetupEvent] = field(default_factory=list)
     skipped: list[dict[str, Any]] = field(default_factory=list)
     entries: int = 0
+    traded_setups: set[str] = field(default_factory=set)
+    traded_setups_path: Path | None = None
 
 
 def run_paper_trading_day(
@@ -98,11 +103,13 @@ def run_paper_trading_day(
     no_entry_after: str = DEFAULT_NO_ENTRY_AFTER,
     force_exit_at: str = DEFAULT_FORCE_EXIT_AT,
     engine: BreakoutRetestEngine | None = None,
+    traded_setups_path: Path | None = None,
 ) -> dict[str, Any]:
     """Replay one trading day and return trades plus an audit of what was skipped."""
     engine = engine or BreakoutRetestEngine()
     lookup = rvol_by_key or {}
-    state = _DayState()
+    state = _DayState(traded_setups=load_traded_setups(traded_setups_path))
+    state.traded_setups_path = traded_setups_path
 
     ordered = sorted(bars, key=lambda bar: (bar.start_at, bar.symbol))
     for bar in ordered:
@@ -130,6 +137,29 @@ def run_paper_trading_day(
 
     _close_remaining(state)
     return _report(trading_date, state, market_data_healthy)
+
+
+def load_traded_setups(path: Path | None) -> set[str]:
+    """Load setup ids already traded today, so a restart cannot re-enter them."""
+    if path is None or not Path(path).exists():
+        return set()
+    ids = set()
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            row = json.loads(line)
+            if isinstance(row, dict) and row.get("setup_id"):
+                ids.add(str(row["setup_id"]))
+    return ids
+
+
+def record_traded_setup(path: Path | None, setup_id: str) -> None:
+    """Append a traded setup id before the position is opened in memory."""
+    if path is None:
+        return
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"setup_id": setup_id}, sort_keys=True) + "\n")
 
 
 def _manage_position(
@@ -181,6 +211,9 @@ def _try_enter(
         return skip("position_already_open")
     if event.entry_price is None or event.stop_price is None or event.target_price is None:
         return skip("incomplete_signal")
+    if event.setup_id in state.traded_setups:
+        # Survives a restart: the id is on disk, not just in this process.
+        return skip("already_traded")
 
     intent = OrderIntent(
         trading_date=trading_date,
@@ -196,6 +229,8 @@ def _try_enter(
         return skip("duplicate_setup")
 
     state.entries += 1
+    state.traded_setups.add(event.setup_id)
+    record_traded_setup(state.traded_setups_path, event.setup_id)
     state.positions[event.symbol] = _OpenPosition(
         setup_id=event.setup_id,
         symbol=event.symbol,

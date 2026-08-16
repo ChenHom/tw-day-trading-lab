@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 from tw_day_trading_lab.bars import STATUS_CLOSED, MarketBar
 from tw_day_trading_lab.paper import (
@@ -6,6 +8,7 @@ from tw_day_trading_lab.paper import (
     EXIT_PRE_CLOSE,
     EXIT_STOP,
     EXIT_TARGET,
+    load_traded_setups,
     run_paper_trading_day,
 )
 from tw_day_trading_lab.rvol import RvolResult
@@ -196,6 +199,74 @@ class RetestTriggerTest(unittest.TestCase):
         self.assertEqual(runs[1], runs[2])
 
 
+class CorrectedBarTest(unittest.TestCase):
+    """PA-P3 can re-emit a bar at a higher revision; PA-P7 must not duplicate it."""
+
+    def _corrected(self, source, **overrides):
+        return MarketBar(
+            **{**source.to_dict(), "revision": 2, "status": "CORRECTED", **overrides}
+        )
+
+    def test_a_corrected_bar_replaces_instead_of_duplicating(self):
+        bars = build([])
+        engine = BreakoutRetestEngine()
+        for item in bars:
+            engine.on_bar(item)
+
+        engine.on_bar(self._corrected(bars[2], high=140))
+
+        self.assertEqual(engine.corrections_applied, 1)
+        stored = engine._symbols["2330"].bars
+        self.assertEqual(len(stored), len(bars))
+        self.assertEqual([b.start_at for b in stored], sorted(b.start_at for b in bars))
+        self.assertEqual(stored[2].high, 140)
+
+    def test_a_correction_does_not_advance_the_state_machine(self):
+        bars = build([])
+        engine = BreakoutRetestEngine()
+        for item in bars:
+            engine.on_bar(item)
+
+        event = engine.on_bar(self._corrected(bars[2], high=140))
+
+        self.assertIsNone(event)
+        self.assertEqual(engine.state_of("2330"), "WAIT_BREAKOUT")
+
+    def test_a_correction_during_an_open_setup_invalidates_it(self):
+        bars = build([(115, 108, 114)])
+        engine, events = feed(bars, {5: rvol(2.0)})
+        self.assertEqual(engine.state_of("2330"), WAIT_RETEST)
+
+        event = engine.on_bar(self._corrected(bars[2], high=140))
+
+        self.assertEqual(event.state, INVALIDATED)
+        self.assertEqual(event.reason, "corrected_bar_in_setup")
+        self.assertEqual(engine.state_of("2330"), "WAIT_BREAKOUT")
+
+    def test_a_stale_revision_is_ignored(self):
+        bars = build([])
+        engine = BreakoutRetestEngine()
+        for item in bars:
+            engine.on_bar(item)
+        engine.on_bar(self._corrected(bars[2], high=140))
+
+        engine.on_bar(bars[2])
+
+        self.assertEqual(engine.stale_bars, 1)
+        self.assertEqual(engine._symbols["2330"].bars[2].high, 140)
+
+    def test_a_repeated_identical_bar_is_not_a_correction(self):
+        bars = build([])
+        engine = BreakoutRetestEngine()
+        for item in bars:
+            engine.on_bar(item)
+
+        engine.on_bar(bars[2])
+
+        self.assertEqual(engine.corrections_applied, 0)
+        self.assertEqual(len(engine._symbols["2330"].bars), len(bars))
+
+
 def winning_day(symbol="2330"):
     """Breakout, retest, trigger, then the 2R target is reached."""
     return build([(115, 108, 114), (114, 110, 111), (118, 111, 117), (132, 116, 131)], symbol)
@@ -327,6 +398,50 @@ class PaperTradingTest(unittest.TestCase):
 
         self.assertEqual(runs[0], runs[1])
         self.assertEqual(runs[1], runs[2])
+
+    def test_a_restart_cannot_re_enter_a_setup_already_traded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "traded.jsonl"
+
+            first = run_paper_trading_day(
+                trading_date=DATE,
+                bars=winning_day(),
+                rvol_by_key=self._rvol_map(),
+                traded_setups_path=path,
+            )
+            # Same day replayed after a crash: the ids are on disk.
+            second = run_paper_trading_day(
+                trading_date=DATE,
+                bars=winning_day(),
+                rvol_by_key=self._rvol_map(),
+                traded_setups_path=path,
+            )
+
+        self.assertEqual(first["summary"]["trades"], 1)
+        self.assertEqual(second["summary"]["trades"], 0)
+        self.assertEqual(second["skipped"][0]["reason"], "already_traded")
+
+    def test_traded_setup_ids_are_persisted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "nested" / "traded.jsonl"
+
+            report = run_paper_trading_day(
+                trading_date=DATE,
+                bars=winning_day(),
+                rvol_by_key=self._rvol_map(),
+                traded_setups_path=path,
+            )
+            stored = load_traded_setups(path)
+
+        self.assertEqual(stored, {report["trades"][0]["setup_id"]})
+
+    def test_without_a_path_nothing_is_written(self):
+        report = run_paper_trading_day(
+            trading_date=DATE, bars=winning_day(), rvol_by_key=self._rvol_map()
+        )
+
+        self.assertEqual(report["summary"]["trades"], 1)
+        self.assertEqual(load_traded_setups(None), set())
 
     def test_a_day_with_no_setup_produces_no_trade_and_no_crash(self):
         report = run_paper_trading_day(trading_date=DATE, bars=build([]), rvol_by_key={})

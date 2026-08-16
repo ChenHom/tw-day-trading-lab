@@ -3278,6 +3278,7 @@ def cmd_paper_run_day(args: argparse.Namespace) -> None:
         max_new_entries=args.max_new_entries,
         no_entry_after=args.no_entry_after,
         force_exit_at=args.force_exit_at,
+        traded_setups_path=Path(args.traded_setups_path) if args.traded_setups_path else None,
     )
     report["baseline_days"] = baselines
     report["history_dates"] = history_dates
@@ -3563,6 +3564,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_day.add_argument("--no-entry-after", default="13:20")
     run_day.add_argument("--force-exit-at", default="13:25")
     run_day.add_argument("--market-data-unhealthy", action="store_true")
+    run_day.add_argument("--traded-setups-path")
     run_day.add_argument("--output")
     run_day.set_defaults(func=cmd_paper_run_day)
 

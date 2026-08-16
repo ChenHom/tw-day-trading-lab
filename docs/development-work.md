@@ -2174,3 +2174,76 @@ paper run-day --store-dir <不存在>                      # trades: 0 entries: 
 2. `bars backfill-kbars` + `check_backfill_against_daily` 定案 kbar volume 單位 → 關 PA-P5 Gate B。
 3. 上述通過後跑 `paper run-day`，PA-P6/P7/P8 的 Gate B 才有意義。
 4. PA-P9：接 `cost.py` 算 net R，做 expectancy 與 ablation 報表。
+
+## 2026-08-16 PA 修正輪：timestamp / health / correction / restart
+
+使用者 review 指出兩件事：Kbars `Volume` 應為「張」（我原本標成未查證，方向其實是對的），而真正危險的是 timestamp。逐項查證後全部成立。
+
+### ① Kbars timestamp — 已存在的實際 bug（最高優先）
+
+實測：
+
+```text
+ts = 1779094860000000000（官方 2330 範例，顯示 2026-05-18 09:01）
+
+datetime.fromtimestamp(sec)          → 2026-05-18 17:01   ← 原本的實作
+datetime.fromtimestamp(sec, tz=utc)  → 2026-05-18 09:01   ← 正確
+pandas.to_datetime(ts)               → 2026-05-18 09:01   ← Shioaji 範例用這個
+```
+
+Shioaji 把**交易所本地時間當成 naive UTC epoch** 編碼。原本的實作在 UTC+8 機器上讓每根 backfill bar 偏移 8 小時，PA-P5 所有 time slot 會全錯；更糟的是**結果隨機器時區而異**。已改為 UTC 解碼後取 naive 值。
+
+值得記錄的是：原本的測試 fixture 也用 `moment.timestamp()`（本地時區）編碼 ts，兩邊錯法一致所以測試全綠。fixture 已改成與 Shioaji 相同的編碼，並新增一個直接用官方數值 `1779094860000000000` 的測試。
+
+### Kbars Volume 單位 — 確認是張，不改
+
+官方 2330 範例算術上是決定性的：
+
+```text
+當成張：2565 × 1000 × 2230 ≈ 5,719,950,000  ≈ 官方 Amount 5,708,965,000（差 0.19%）
+當成股：2565 × 2230        ≈ 5,719,950      差 1000 倍
+```
+
+維持 `volume_in_lots=True`。`check_backfill_against_daily` 保留作為實證定案手段。
+
+### ② P1 health 納入 cumulative volume invariant
+
+原本 `volume_checks.consistent` 只在 summary 計算，`health()` 沒用它。因此可能：漏 tick → invariant 已異常 → health 仍 `HEALTHY` → P8 照樣進場。
+
+改成逐筆檢查：接受的 tick 若 `cumulative_volume - 前一筆 != trade_volume`（且非 out-of-order），計入 `volume_gaps`，health 轉 `DEGRADED`。tick 本身仍照常送下游，只有 health 改變。
+
+`volume_gaps` 也是獨立可見的 counter，因此若真實 feed 上它系統性地接近 `raw_ticks`，代表這個不變式假設本身有問題，而不是 feed 壞掉——第一次 live smoke 要看這個數字。
+
+### ③ P7 corrected bar
+
+原本 `state.bars.append(bar)` 無條件追加。PA-P3 會重發 `09:30 rev2`，於是歷史裡會出現兩根同一時間的 bar，直接污染 swing 偵測與 breakout level。
+
+改成 `_store_bar()` 依 `start_at` replace：
+
+- revision 較低或完全相同 → `stale_bars`，忽略。
+- revision 較高 → 原地替換，`corrections_applied` +1。
+
+規則依使用者建議保持簡單：**correction 不推進狀態機**（它不是新的時間步）。若當下有進行中的 setup（非 `WAIT_BREAKOUT`），直接 `INVALIDATED` / `corrected_bar_in_setup`，不嘗試從被改動的歷史重建 setup。已發出 SIGNAL 的過去決策不回頭改。
+
+### ④ P8 restart persistence
+
+`PaperLedger` 只在記憶體，crash 後重啟會遺失已進場的 setup。新增 `traded_setups_path`：進場前先把 `setup_id` append 到 JSONL，啟動時載入。重跑同一天會全部 `already_traded` 而不重複成交。
+
+### 驗證
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 333 tests, OK
+PYTHONPATH=src python3 -m compileall -q src tests
+```
+
+測試數：321 → 333。新增涵蓋：官方 ts 數值解碼、cumulative 跳號 → DEGRADED、cumulative 相符 → HEALTHY、correction replace 不重複、correction 不推進狀態機、correction 中斷進行中 setup、stale revision 忽略、重覆同一根不算 correction、restart 不重複成交、setup id 落地。
+
+### 剩餘順序
+
+```text
+⑤ Kbars volume 實跑交叉驗證（盤前 backfill 後跑 check_backfill_against_daily）
+⑥ Gate B 真實交易時段
+⑦ PA-P9 expectancy / 成本 / 滑價
+```
+
+①～④ 已在非交易日修完。

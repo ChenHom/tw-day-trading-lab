@@ -411,6 +411,38 @@ class MarketDataHealthTest(unittest.TestCase):
         self.assertEqual(stream.summary()["dropped_queue_full"], 2)
         self.assertEqual(stream.health(), DEGRADED)
 
+    def test_a_jump_in_cumulative_volume_degrades_health(self):
+        """The exchange counter moved more than our ticks did: we lost some."""
+        emitted = []
+        stream = build_stream(sink=emitted.append)
+
+        stream.handle_tick(TSE, FakeTick(volume=3, total_volume=100))
+        # Next tick reports 5 lots but the counter jumped by 20.
+        stream.handle_tick(
+            TSE,
+            FakeTick(volume=5, total_volume=120, datetime=dt.datetime(2026, 8, 14, 9, 2)),
+        )
+        stream.drain()
+
+        self.assertEqual(stream.volume_gaps, 1)
+        self.assertEqual(stream.health(), DEGRADED)
+        self.assertEqual(stream.summary()["volume_gaps"], 1)
+        # The ticks themselves are still delivered; only health changes.
+        self.assertEqual(len(emitted), 2)
+
+    def test_a_matching_cumulative_counter_stays_healthy(self):
+        stream = build_stream()
+
+        stream.handle_tick(TSE, FakeTick(volume=3, total_volume=100))
+        stream.handle_tick(
+            TSE,
+            FakeTick(volume=5, total_volume=105, datetime=dt.datetime(2026, 8, 14, 9, 2)),
+        )
+        stream.drain()
+
+        self.assertEqual(stream.volume_gaps, 0)
+        self.assertEqual(stream.health(), HEALTHY)
+
     def test_raising_sink_is_counted_and_degrades_health(self):
         def explode(_tick):
             raise RuntimeError("consumer down")
@@ -667,6 +699,7 @@ class LiveValidationTest(unittest.TestCase):
             "raw_ticks": 120,
             "market_ticks": 118,
             "dropped_queue_full": 0,
+            "volume_gaps": 0,
             "worker_errors": 0,
             "queue_backlog": 0,
             "volume_checks": [{"symbol": "2330", "consistent": True}],
@@ -691,6 +724,12 @@ class LiveValidationTest(unittest.TestCase):
             result["failed"],
             ["market_ticks_emitted", "raw_ticks_received", "volume_consistent"],
         )
+
+    def test_volume_gaps_block_live_validation(self):
+        result = evaluate_live_validation(self._summary(health=DEGRADED, volume_gaps=2))
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["failed"], ["health_healthy", "no_volume_gaps"])
 
     def test_dropped_ticks_block_live_validation(self):
         result = evaluate_live_validation(

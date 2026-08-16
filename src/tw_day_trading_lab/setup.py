@@ -108,12 +108,25 @@ class BreakoutRetestEngine:
         self._target_r = target_r
         self._timeframe = timeframe
         self._symbols: dict[str, _SymbolSetup] = {}
+        self.corrections_applied = 0
+        self.stale_bars = 0
 
     def on_bar(self, bar: MarketBar, rvol: RvolResult | None = None) -> SetupEvent | None:
         if bar.timeframe != self._timeframe:
             return None
         state = self._symbols.setdefault(bar.symbol, _SymbolSetup())
-        state.bars.append(bar)
+        outcome = self._store_bar(state, bar)
+        if outcome == "stale":
+            return None
+        if outcome == "corrected":
+            # A correction is not a new time step, so the state machine does
+            # not advance on it. History is updated so later swings use the
+            # corrected data; an in-flight setup is dropped rather than
+            # rebuilt from mutated history. A setup that already emitted a
+            # SIGNAL is untouched: past decisions are not revisited.
+            if state.state != WAIT_BREAKOUT:
+                return self._invalidate(state, bar, "corrected_bar_in_setup")
+            return None
 
         if state.state == WAIT_BREAKOUT:
             return self._check_breakout(state, bar, rvol)
@@ -122,6 +135,27 @@ class BreakoutRetestEngine:
         if state.state == WAIT_TRIGGER:
             return self._check_trigger(state, bar)
         return None
+
+    def _store_bar(self, state: _SymbolSetup, bar: MarketBar) -> str:
+        """Insert or replace a bar by start_at. Returns new / corrected / stale.
+
+        Live bars can be re-emitted at a higher revision, so appending blindly
+        would leave two bars at the same timestamp and quietly corrupt swing
+        detection.
+        """
+        for index, existing in enumerate(state.bars):
+            if existing.start_at != bar.start_at:
+                continue
+            if bar.revision < existing.revision:
+                self.stale_bars += 1
+                return "stale"
+            if bar.revision == existing.revision and bar.to_dict() == existing.to_dict():
+                return "stale"
+            state.bars[index] = bar
+            self.corrections_applied += 1
+            return "corrected"
+        state.bars.append(bar)
+        return "new"
 
     def state_of(self, symbol: str) -> str:
         state = self._symbols.get(symbol)

@@ -37,11 +37,31 @@ AGENTS.md 禁止的是「盤中反覆 polling kbars 掃全市場」。這裡做�
 
 backfill 產出的 bar 標 `source="shioaji_kbars"`，與自行聚合的 `shioaji_tick_aggregated` 永遠可區分。
 
-## kbar volume 單位未查證
+## kbar timestamp — 已修正的實際 bug
 
-Shioaji `Kbars` 是欄狀物件（`ts` 奈秒 / `Open` / `High` / `Low` / `Close` / `Volume` / `Amount`），SDK **沒有**標註 `Volume` 的單位。
+Shioaji 的 `ts` 把**交易所本地時間當成 naive UTC epoch** 編碼。官方 2330 範例 `ts = 1779094860000000000` 顯示為 `2026-05-18 09:01`：
 
-處置：預設 `volume_in_lots=True`（與已查證的 tick 單位一致，乘 1000 轉股），並提供 `check_backfill_against_daily()` 用已確認單位的日 K 定案：
+```text
+datetime.fromtimestamp(sec)             → 17:01   ← 錯，且隨機器時區而異
+datetime.fromtimestamp(sec, tz=utc)     → 09:01   ← 正確
+pandas.to_datetime(ts)                  → 09:01   ← Shioaji 自己的範例用這個
+```
+
+初版用了本地時區版本，在 UTC+8 的機器上會讓每一根 backfill bar 整體偏移 8 小時，**PA-P5 的所有 time slot 會全錯**，而且換一台時區不同的機器結果還會不一樣。已改為 UTC 解碼後取 naive 值，並用官方實際數值寫了測試。
+
+原本的測試 fixture 也用本地時區編碼 `ts`，正是這個編碼錯誤讓 bug 沒被抓到；fixture 已改成與 Shioaji 相同的編碼方式。
+
+## kbar volume 單位
+
+SDK 沒有標註，但官方 2330 範例在算術上是決定性的：
+
+```text
+Volume 2565 @ close 2230
+當成張：2565 × 1000 × 2230 ≈ 5,719,950,000   ≈ 官方 Amount 5,708,965,000（差 0.19%）
+當成股：2565 × 2230        ≈ 5,719,950       差 1000 倍
+```
+
+因此 `volume_in_lots=True`（乘 1000 轉股）是對的，與已查證的 tick 單位一致。仍保留 `check_backfill_against_daily()` 用已確認單位的日 K 做實證定案：
 
 ```text
 ratio = 一日 backfill 分 K volume 總和 / 該日 TaiwanStockPrice.Trading_Volume
@@ -53,7 +73,7 @@ ratio ≈ 0.001  → 少乘了
 
 盤中 backfill 不含收盤集合競價，所以不要求完全相等；這個檢查抓的是**數量級**錯誤。
 
-`ts` 的時區換算（`datetime.fromtimestamp`，跟隨系統時區）同樣未實測。`session_complete.by_day` 會回報每日 bar 數，完整場次應為 270 根（09:00–13:30），數字明顯不對就是時區或截斷問題。
+`session_complete.by_day` 會回報每日 bar 數，完整場次應為 270 根（09:00–13:30），數字明顯不對就是截斷問題。
 
 ## Baseline 規則
 

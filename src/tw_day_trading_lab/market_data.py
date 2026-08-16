@@ -11,8 +11,9 @@ Two contracts matter to everything downstream:
    straight into a bar without re-checking the provider.
 2. Tick loss is never silent. The provider callback only enqueues, and every
    way the pipeline can lose data - a full queue, a dead worker, a failed raw
-   write, a raising sink - increments a counter that feeds `health()`. A
-   consumer must refuse to open new positions unless health is HEALTHY.
+   write, a raising sink, or a jump in the exchange's own cumulative counter -
+   increments a counter that feeds `health()`. A consumer must refuse to open
+   new positions unless health is HEALTHY.
 
 Tick -> 1m bar aggregation is P2 and deliberately not implemented.
 """
@@ -227,6 +228,7 @@ class ShioajiTickStream:
         self.subscribed_count = 0
         self.out_of_order = 0
         self.dropped_queue_full = 0
+        self.volume_gaps = 0
         self.worker_errors = 0
         self.raw_write_errors = 0
         self.sink_errors = 0
@@ -388,6 +390,15 @@ class ShioajiTickStream:
         if last_cumulative is not None and market_tick.cumulative_volume < last_cumulative:
             self.out_of_order += 1
         else:
+            if (
+                last_cumulative is not None
+                and market_tick.cumulative_volume - last_cumulative
+                != market_tick.trade_volume
+            ):
+                # The exchange counter moved by more than this tick reported,
+                # so ticks went missing between the two. Detecting the loss is
+                # the whole point of carrying cumulative_volume around.
+                self.volume_gaps += 1
             self._last_cumulative[symbol] = market_tick.cumulative_volume
 
         if self._sink is not None:
@@ -458,6 +469,7 @@ class ShioajiTickStream:
             return FAILED
         if (
             self.dropped_queue_full
+            or self.volume_gaps
             or self.worker_errors
             or self.raw_write_errors
             or self.sink_errors
@@ -482,6 +494,7 @@ class ShioajiTickStream:
             "market_ticks": self.accepted_count,
             "out_of_order": self.out_of_order,
             "dropped_queue_full": self.dropped_queue_full,
+            "volume_gaps": self.volume_gaps,
             "worker_errors": self.worker_errors,
             "raw_write_errors": self.raw_write_errors,
             "sink_errors": self.sink_errors,
@@ -575,6 +588,7 @@ def evaluate_live_validation(summary: dict[str, Any]) -> dict[str, Any]:
         "raw_ticks_received": int(summary.get("raw_ticks", 0)) > 0,
         "market_ticks_emitted": int(summary.get("market_ticks", 0)) > 0,
         "no_dropped_ticks": int(summary.get("dropped_queue_full", 0)) == 0,
+        "no_volume_gaps": int(summary.get("volume_gaps", 0)) == 0,
         "no_worker_errors": int(summary.get("worker_errors", 0)) == 0,
         "queue_drained": int(summary.get("queue_backlog", 0)) == 0,
         "volume_consistent": bool(volume_checks)
