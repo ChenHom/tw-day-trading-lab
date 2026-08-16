@@ -9,7 +9,8 @@ from pathlib import Path
 from queue import Empty
 from types import SimpleNamespace
 
-from tw_day_trading_lab.cli import cmd_bars_build_1m, cmd_simulate_shioaji_tick_smoke
+from tw_day_trading_lab.cli import cmd_bars_build, cmd_simulate_shioaji_tick_smoke
+from tw_day_trading_lab.bars import load_latest_bars
 from tw_day_trading_lab.market_data import (
     DEGRADED,
     FAILED,
@@ -764,7 +765,7 @@ class RawTickReplayTest(unittest.TestCase):
 
 
 class BarsBuildCliTest(unittest.TestCase):
-    def test_build_1m_rebuilds_canonical_bars_from_raw_ticks(self):
+    def test_build_rebuilds_and_stores_canonical_bars_from_raw_ticks(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache_dir = Path(tmp) / "raw"
             stream = build_stream(cache_dir=cache_dir)
@@ -785,26 +786,36 @@ class BarsBuildCliTest(unittest.TestCase):
             stream.drain()
 
             output = Path(tmp) / "bars.json"
-            cmd_bars_build_1m(
+            store_dir = Path(tmp) / "bars"
+            cmd_bars_build(
                 Namespace(
                     date="2026-08-14",
                     symbols="2330",
                     candidates_input=None,
                     cache_dir=str(cache_dir),
+                    store_dir=str(store_dir),
                     lateness_seconds=3.0,
                     output=str(output),
                 )
             )
             payload = json.loads(output.read_text(encoding="utf-8"))
+            stored_1m = load_latest_bars(store_dir, timeframe="1m", trading_date="2026-08-14")
+            stored_5m = load_latest_bars(store_dir, timeframe="5m", trading_date="2026-08-14")
 
-        self.assertEqual(len(payload["bars"]), 2)
+        self.assertEqual(len(payload["bars_1m"]), 2)
         self.assertTrue(payload["volume_check"]["consistent"])
-        self.assertEqual(payload["bars"][0]["start_at"], "2026-08-14T09:00:00")
-        self.assertEqual(payload["bars"][0]["open"], 100.0)
-        self.assertEqual(payload["bars"][0]["close"], 101.0)
-        self.assertEqual(payload["bars"][0]["volume"], 5000)
-        self.assertEqual(payload["bars"][1]["start_at"], "2026-08-14T09:01:00")
-        self.assertEqual(payload["bars"][1]["volume"], 1000)
+        self.assertEqual(payload["bars_1m"][0]["start_at"], "2026-08-14T09:00:00")
+        self.assertEqual(payload["bars_1m"][0]["open"], 100.0)
+        self.assertEqual(payload["bars_1m"][0]["close"], 101.0)
+        self.assertEqual(payload["bars_1m"][0]["volume"], 5000)
+        self.assertEqual(payload["bars_1m"][1]["start_at"], "2026-08-14T09:01:00")
+        self.assertEqual(payload["bars_1m"][1]["volume"], 1000)
+        # 09:00 and 09:01 both fall inside the 09:00 five-minute bucket.
+        self.assertEqual(len(payload["bars_5m"]), 1)
+        self.assertEqual(payload["bars_5m"][0]["volume"], 6000)
+        # The same bars are recoverable from the store after a restart.
+        self.assertEqual([b.to_dict() for b in stored_1m], payload["bars_1m"])
+        self.assertEqual([b.to_dict() for b in stored_5m], payload["bars_5m"])
 
 
 class TickSmokeCliTest(unittest.TestCase):

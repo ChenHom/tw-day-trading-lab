@@ -1971,3 +1971,76 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-tick-smoke \
 4. 5m 比對同上，通過即 `PA-P3_LIVE_VALIDATED`。
 5. 三個 Gate B 全通過前，不得宣告 Tick → 1m → 5m pipeline 已可用於每日 paper trading。
 6. 之後可進 PA-P4（persistence / bar revision store）或 PA-P5（TOD-RVOL）。PA-P5 需要 20-30 個交易日的歷史分 K，補資料前置時間要提早排。
+
+## 2026-08-16 PA-P4 Bar Persistence + 三方 API 欄位查證
+
+### 三方 API 欄位查證結果
+
+問題：PA-P1~P7 是否需要從三方 API 拿新欄位？若需要，能不能拿得到、欄位是否存在？
+
+逐階段盤點：
+
+| Phase | 需要新的三方欄位？ | 說明 |
+|---|---|---|
+| PA-P1 | 否 | `TickSTKv1` 欄位已對已安裝 SDK 1.3.2 原始碼查證 |
+| PA-P2 | 否 | 輸入只有 `MarketTick` |
+| PA-P3 | 否 | 輸入只有 canonical 1m |
+| PA-P4 | 否 | 純本地持久化 |
+| **PA-P5** | **是** | 需要 20 日「同一時段」歷史分 K 成交量作為 baseline |
+| PA-P6 | 否 | 輸入只有 canonical 5m |
+| PA-P7 | 否 | 輸入為 5m + RVOL + structure |
+
+也就是**只有 PA-P5 需要新的三方資料源**。
+
+實測（2026-08-16，直接打 `https://api.finmindtrade.com/api/v4/data`）：
+
+```text
+TaiwanStockPrice  (start_date/end_date)  -> HTTP 200  rows=2   msg=success
+TaiwanStockKBar   (start_date)           -> HTTP 400  msg=Your level is free. Please update your user level.
+TaiwanStockKBar   (date)                 -> HTTP 400  msg=Your level is free. Please update your user level.
+```
+
+結論：
+
+1. **FinMind 分 K（`TaiwanStockKBar`）需要付費 sponsor 等級**，free tier 直接 400。本機無 `FINMIND_TOKEN`、無 `.env`，因此目前等同 free tier。若使用者持有 sponsor token，需用該 token 重測才能確認。
+2. 日 K `TaiwanStockPrice` 匿名可用，欄位為 `date / stock_id / Trading_Volume / Trading_money / open / max / min / close / spread / Trading_turnover`。
+3. **D4 的日 K 部分已可結案**：2330 於 2026-08-13 `Trading_money / Trading_Volume = 63854331391 / 26233385 = 2434`，落在當日 2425-2445 區間，故 `Trading_Volume` 單位確為**股**。分 K 的單位仍未知（拿不到資料）。
+4. `taiwan_stock_kbar` SDK 簽章為 `(stock_id, stock_id_list, date, timeout, use_async)`，只吃單一 `date`，不吃 `start_date`/`end_date`。既有 adapter 已正確特例處理，非 bug。
+5. SDK docstring 宣告分 K 欄位為 `date / minute / stock_id / open / high / low / close / volume`——注意是 `high`/`low`，與日 K 的 `max`/`min` 不同。取得資料後 `_normalize_intraday_bar` 需確認能吃這個 shape。
+
+替代方案（未決定，需使用者選擇）：
+
+- 付費 FinMind sponsor token。
+- **Shioaji `api.kbars(contract, start, end)`**：簽章已查證存在且支援日期區間。既有登入路徑可重用。AGENTS.md 禁止的是「盤中反覆 polling kbars 掃全市場」，盤前對候選名單做歷史 backfill 是不同用途，但仍需明確 gate。
+- 自行累積：PA-P1 已在寫 raw tick，連續跑 20 個交易日即可自建 baseline。零外部相依，但需要 20 個交易日的前置時間。
+
+**在 baseline 來源決定前不要開始 PA-P5。**
+
+連帶影響：既有 trading-day cycle 的 `--require-intraday-bars` 讀 `data/raw/finmind/TaiwanStockPriceMinute/`，在 free tier 下永遠無法被填入，該旗標目前對任何日期都會 `blocked`。
+
+### PA-P4 實作
+
+新增 `bars.py` 的 append-only event store 與 `tests/test_bar_store.py`（13 tests）。設計文件 `docs/price-action-p4-design.md`。
+
+- layout `data/bars/{timeframe}/{date}/{symbol}.jsonl`；timeframe 是目錄層級，1m / 5m 結構上不可能 key collision，不依賴 key 設計正確。
+- correction 是新增一行而非覆寫。記憶體靠 frozen dataclass、磁碟靠 append-only，兩層都保證「已被策略使用的 revision 不被靜默改寫」。
+- 沒有做 event 去重：重跑同一場 session 事件數會翻倍，但 `latest_bars()` 以 `(symbol, timeframe, start_at)` 收斂取最大 revision，latest view 不變。有測試守住。
+- 刻意不做 TiDB `market_bars` table。bar 是 append-only event，JSONL 就夠；一天約 270 根 1m，掃描成本可忽略。加 table 需要 migration + repository + adapter 測試，換到的只是查詢語法。
+
+CLI 變更：`bars build-1m` 改名為 `bars build`，同時產生並保存 1m 與 5m，新增 `--store-dir`（預設 `data/bars`）。輸出檔名由 `{date}-1m-bars.json` 改為 `{date}-bars.json`，payload 由 `bars` 改為 `bars_1m` / `bars_5m`。相關文件已同步更新。
+
+### 驗證
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 261 tests, OK
+PYTHONPATH=src python3 -m compileall -q src tests
+git diff --check
+```
+
+測試數：248 → 261。
+
+### Next-run Seed
+
+1. 決定 PA-P5 baseline 來源（付費 token / Shioaji kbars / 自行累積 20 日）。
+2. 交易時段跑 `simulate shioaji-tick-smoke`，關閉 PA-P1/P2/P3 三個 Gate B。
+3. 之後才進 PA-P6（Swing / 市場結構），該階段無外部 API 相依，可與 PA-P5 的資料等待並行。

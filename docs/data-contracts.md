@@ -792,11 +792,11 @@ Aggregator counters（`stats()`）：`ticks` / `bars_closed` / `bars_corrected` 
 Replay：`market_data.replay_raw_ticks` 從 `data/raw/shioaji/ticks/{date}/{symbol}.jsonl` 重建 MarketTick，套用與 live stream 相同的過濾、sequence 與 dedupe 規則。CLI：
 
 ```bash
-PYTHONPATH=src python3 -m tw_day_trading_lab.cli bars build-1m \
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli bars build \
   --date 2026-08-17 --symbols 2330 --cache-dir data/raw
 ```
 
-輸出 `reports/{date}-1m-bars.json`：`sources` / `aggregator` / `volume_check` / `bars`。
+輸出 `reports/{date}-bars.json`：`sources` / `aggregator` / `volume_check` / `bars`。
 
 ### 5m Bar（P3）
 

@@ -22,9 +22,11 @@ Two decisions worth stating up front:
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Iterable, Sequence
+from pathlib import Path
+from typing import Any, Iterable, Mapping, Sequence
 
 from .market_data import MarketTick
 
@@ -64,6 +66,25 @@ class MarketBar:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "MarketBar":
+        return cls(
+            symbol=str(data["symbol"]),
+            timeframe=str(data["timeframe"]),
+            start_at=str(data["start_at"]),
+            end_at=str(data["end_at"]),
+            open=float(data["open"]),
+            high=float(data["high"]),
+            low=float(data["low"]),
+            close=float(data["close"]),
+            volume=int(data["volume"]),
+            trade_count=int(data["trade_count"]),
+            status=str(data["status"]),
+            revision=int(data["revision"]),
+            source=str(data["source"]),
+            sequence_gap=bool(data.get("sequence_gap", False)),
+        )
 
 
 @dataclass
@@ -548,6 +569,104 @@ def check_bar_volume(bars: Iterable[MarketBar], ticks: Sequence[MarketTick]) -> 
         "tick_count": len(ticks),
         "consistent": bar_volume == tick_volume,
     }
+
+
+def bar_store_path(store_dir: Path, timeframe: str, trading_date: str, symbol: str) -> Path:
+    """Return the append-only event log path for one symbol, day and timeframe.
+
+    Timeframe is a directory level, so a 1m and a 5m bar starting at the same
+    instant can never collide on a key.
+    """
+    return Path(store_dir) / timeframe / trading_date / f"{symbol}.jsonl"
+
+
+def append_bars(store_dir: Path, bars: Iterable[MarketBar]) -> list[Path]:
+    """Append bars to the event store, keeping every revision.
+
+    The store is append-only: a correction is a new line, not an overwrite, so
+    the revision a strategy acted on stays recoverable after a restart.
+    """
+    grouped: dict[tuple[str, str, str], list[MarketBar]] = {}
+    for bar in bars:
+        key = (bar.timeframe, bar.start_at[:10], bar.symbol)
+        grouped.setdefault(key, []).append(bar)
+
+    written = []
+    for (timeframe, trading_date, symbol), group in sorted(grouped.items()):
+        path = bar_store_path(store_dir, timeframe, trading_date, symbol)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            for bar in group:
+                handle.write(json.dumps(bar.to_dict(), ensure_ascii=False, sort_keys=True) + "\n")
+        written.append(path)
+    return written
+
+
+def read_bar_events(
+    store_dir: Path,
+    *,
+    timeframe: str,
+    trading_date: str,
+    symbol: str,
+) -> list[MarketBar]:
+    """Read one symbol's stored bar events in append order, revisions included."""
+    path = bar_store_path(store_dir, timeframe, trading_date, symbol)
+    if not path.exists():
+        return []
+    events = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            events.append(MarketBar.from_dict(json.loads(line)))
+    return events
+
+
+def load_latest_bars(
+    store_dir: Path,
+    *,
+    timeframe: str,
+    trading_date: str,
+    symbols: Sequence[str] | None = None,
+    start_at: str | None = None,
+    end_at: str | None = None,
+) -> list[MarketBar]:
+    """Load the latest revision of every stored bar, optionally time-sliced.
+
+    `start_at` is inclusive and `end_at` exclusive, matching bucket semantics.
+    """
+    if symbols is None:
+        directory = Path(store_dir) / timeframe / trading_date
+        symbols = sorted(path.stem for path in directory.glob("*.jsonl")) if directory.exists() else []
+
+    events: list[MarketBar] = []
+    for symbol in symbols:
+        events.extend(
+            read_bar_events(store_dir, timeframe=timeframe, trading_date=trading_date, symbol=symbol)
+        )
+    bars = latest_bars(events)
+    if start_at is not None:
+        bars = [bar for bar in bars if bar.start_at >= start_at]
+    if end_at is not None:
+        bars = [bar for bar in bars if bar.start_at < end_at]
+    return bars
+
+
+def load_bar_revision(
+    store_dir: Path,
+    *,
+    timeframe: str,
+    trading_date: str,
+    symbol: str,
+    start_at: str,
+) -> MarketBar | None:
+    """Return the latest stored revision of one specific bar."""
+    events = [
+        bar
+        for bar in read_bar_events(
+            store_dir, timeframe=timeframe, trading_date=trading_date, symbol=symbol
+        )
+        if bar.start_at == start_at
+    ]
+    return latest_bars(events)[0] if events else None
 
 
 def _parse_timestamp(text: str) -> datetime | None:

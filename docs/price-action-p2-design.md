@@ -107,11 +107,11 @@ bar.volume += tick.trade_volume
 `market_data.replay_raw_ticks(path)` 從 P1 寫下的 `data/raw/shioaji/ticks/{date}/{symbol}.jsonl` 重建 `MarketTick`，套用**與 live stream 完全相同**的過濾、per-symbol sequence 規則與 dedupe key，因此重播一場 session 會得到與當時一模一樣的 MarketTick 序列。
 
 ```bash
-PYTHONPATH=src python3 -m tw_day_trading_lab.cli bars build-1m \
+PYTHONPATH=src python3 -m tw_day_trading_lab.cli bars build \
   --date 2026-08-17 --symbols 2330 --cache-dir data/raw
 ```
 
-輸出 `reports/{date}-1m-bars.json`，含 `sources` / `aggregator` stats / `volume_check` / `bars`。
+輸出 `reports/{date}-bars.json`，含 `sources` / `aggregator` stats / `volume_check` / `bars`。
 
 `latest_bars()` 把 emission log 收斂成每根 bar 的最新 revision；任何要加總 bar 的地方都必須先過這一層，否則被 correct 過的分鐘會被算兩次。
 

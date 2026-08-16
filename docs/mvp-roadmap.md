@@ -373,7 +373,7 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
 - 半開 bucket `[09:00:00, 09:01:00)`，事件時間 watermark，多股票各自狀態。
 - late tick：窗內併入、窗外 `CORRECTED` rev+1、超窗 `dropped_late`。
 - **沒有成交的分鐘不補 synthetic bar**，以保持「真的量 0 / 沒人交易 / feed 漏資料」三者可分辨。此決定推翻 `docs/price-action-intraday-plan.md` 的原始 Missing Minute Policy。
-- `bars build-1m` 可從 PA-P1 raw tick 重建 1m bar；replay 與 live 共用同一套 aggregator。
+- `bars build` 可從 PA-P1 raw tick 重建 1m bar；replay 與 live 共用同一套 aggregator。
 
 驗收：
 
@@ -393,7 +393,18 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
 - Gate A：bucket boundary / OHLCV / 缺分鐘 / correction / deterministic replay 五項測試通過。已完成。
 - Gate B：與盤後 provider 5m 比對。未完成。
 
-### PA-P4 之後
+### PA-P4: Bar Persistence / Replay
+
+目前狀態：`PA-P4_CODE_COMPLETE` 已完成。無 Gate B。
+
+- append-only JSONL event store：`data/bars/{timeframe}/{date}/{symbol}.jsonl`。
+- timeframe 是目錄層級，1m 與 5m 結構上不可能 key collision。
+- correction 是新增一行而非覆寫；策略當時看到的 revision 永遠可取回。
+- `bars build --store-dir` 會把完整 emission log（含 correction）寫入 store。
+
+驗收：8 項 checklist 全數完成。核心是「跑一場 session → 只從磁碟讀回 → 與記憶體結果完全相同」。詳見 `docs/price-action-p4-design.md`。
+
+### PA-P5 之後
 
 未開始。依序為 persistence 與 bar revision contract（PA-P4）、TOD-RVOL / Cumulative RVOL（PA-P5）、Swing 與市場結構（PA-P6）、Breakout / Retest state machine（PA-P7）、接上 paper trading daily cycle（PA-P8）、daily performance / ablation report（PA-P9）。
 

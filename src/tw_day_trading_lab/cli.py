@@ -14,7 +14,9 @@ from .finmind_ingestion import (
     read_request_file,
 )
 from .bars import (
+    FiveMinuteBarAggregator,
     OneMinuteBarAggregator,
+    append_bars,
     check_bar_volume,
     latest_bars,
 )
@@ -3042,8 +3044,8 @@ def cmd_simulate_shioaji_smoke(args: argparse.Namespace) -> None:
     print(output)
 
 
-def cmd_bars_build_1m(args: argparse.Namespace) -> None:
-    """Rebuild canonical 1m bars from the stored raw Shioaji tick artifacts."""
+def cmd_bars_build(args: argparse.Namespace) -> None:
+    """Rebuild canonical 1m and 5m bars from the stored raw Shioaji ticks."""
     cache_dir = Path(args.cache_dir)
     symbols = _resolve_tick_smoke_symbols(args)
     if not symbols:
@@ -3059,25 +3061,43 @@ def cmd_bars_build_1m(args: argparse.Namespace) -> None:
     # Bars are built on event time, so a multi-symbol replay must be merged.
     ticks.sort(key=lambda item: (item.timestamp, item.symbol, item.sequence))
 
-    aggregator = OneMinuteBarAggregator(lateness_seconds=args.lateness_seconds)
-    emitted = []
+    minute_aggregator = OneMinuteBarAggregator(lateness_seconds=args.lateness_seconds)
+    emitted_1m = []
     for tick in ticks:
-        emitted.extend(aggregator.on_tick(tick))
-    emitted.extend(aggregator.close_all())
-    bars = latest_bars(emitted)
+        emitted_1m.extend(minute_aggregator.on_tick(tick))
+    emitted_1m.extend(minute_aggregator.close_all())
+
+    five_aggregator = FiveMinuteBarAggregator()
+    emitted_5m = []
+    for bar in emitted_1m:
+        emitted_5m.extend(five_aggregator.on_bar(bar))
+    emitted_5m.extend(five_aggregator.close_all())
+
+    bars_1m = latest_bars(emitted_1m)
+    bars_5m = latest_bars(emitted_5m)
+
+    stored = []
+    if args.store_dir:
+        # Append every emission, corrections included, not just the latest view.
+        stored = [str(path) for path in append_bars(Path(args.store_dir), emitted_1m + emitted_5m)]
 
     payload = {
         "trading_date": args.date,
-        "timeframe": "1m",
         "sources": sources,
-        "aggregator": aggregator.stats(),
-        "volume_check": check_bar_volume(bars, ticks),
-        "bars": [bar.to_dict() for bar in bars],
+        "aggregator_1m": minute_aggregator.stats(),
+        "aggregator_5m": five_aggregator.stats(),
+        "volume_check": check_bar_volume(bars_1m, ticks),
+        "stored": stored,
+        "bars_1m": [bar.to_dict() for bar in bars_1m],
+        "bars_5m": [bar.to_dict() for bar in bars_5m],
     }
-    output = Path(args.output) if args.output else Path("reports") / f"{args.date}-1m-bars.json"
+    output = Path(args.output) if args.output else Path("reports") / f"{args.date}-bars.json"
     write_json(output, payload)
     print(output)
-    print(f"bars: {len(bars)}  ticks: {len(ticks)}  volume_consistent: {payload['volume_check']['consistent']}")
+    print(
+        f"ticks: {len(ticks)}  1m: {len(bars_1m)}  5m: {len(bars_5m)}  "
+        f"volume_consistent: {payload['volume_check']['consistent']}"
+    )
 
 
 def _resolve_tick_smoke_symbols(args: argparse.Namespace) -> list[str]:
@@ -3331,14 +3351,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     bars = subparsers.add_parser("bars")
     bars_sub = bars.add_subparsers(required=True)
-    build_1m = bars_sub.add_parser("build-1m")
-    build_1m.add_argument("--date", required=True)
-    build_1m.add_argument("--symbols")
-    build_1m.add_argument("--candidates-input")
-    build_1m.add_argument("--cache-dir", default="data/raw")
-    build_1m.add_argument("--lateness-seconds", type=float, default=3.0)
-    build_1m.add_argument("--output")
-    build_1m.set_defaults(func=cmd_bars_build_1m)
+    build = bars_sub.add_parser("build")
+    build.add_argument("--date", required=True)
+    build.add_argument("--symbols")
+    build.add_argument("--candidates-input")
+    build.add_argument("--cache-dir", default="data/raw")
+    build.add_argument("--store-dir", default="data/bars")
+    build.add_argument("--lateness-seconds", type=float, default=3.0)
+    build.add_argument("--output")
+    build.set_defaults(func=cmd_bars_build)
 
     replay = subparsers.add_parser("replay")
     replay_sub = replay.add_subparsers(required=True)
