@@ -2112,3 +2112,65 @@ bars rvol --date 2026-08-17 --store-dir <empty>        # baseline_days=0 bars=0�
 1. 交易時段跑 `simulate shioaji-tick-smoke`，關閉 PA-P1/P2/P3 三個 Gate B。
 2. 盤前跑 `bars backfill-kbars --enable-kbars-backfill`，用 `check_backfill_against_daily` 定案 volume 單位，關閉 PA-P5 Gate B。
 3. PA-P6（Swing / 市場結構）無任何外部 API 相依，可與上述資料等待並行開發。
+
+## 2026-08-16 PA-P6 / PA-P7 / PA-P8
+
+三個階段一起交付，設計文件 `docs/price-action-p6-p8-design.md`。模組相依單向且皆不碰 Shioaji：`bars ← structure ← setup ← paper`，`rvol` 供 `setup` 使用。
+
+### PA-P6 structure.py
+
+- swing 需**兩側各 N 根**確認，因此最新 N 根不會是 swing。當下那根就宣告是 swing 會讓結構隨雜訊翻轉，且 live 與 replay 不一致。
+- 嚴格不等：相等的鄰居不算 swing，結果不依賴 tie-break。
+- 「missing bar 不會被當成價格 0」在此是結構性成立：輸入是 `MarketBar` 物件，鄰居是清單上的鄰居 bar 而非時鐘上的鄰近 bucket，沒有任何地方會產生 0。
+- swing 不足 2 個回 `UNKNOWN` 而不是猜一個趨勢。
+- `compute_structure` 是純函式，餵修正後的 bar 就重算，不需額外機制。
+
+寫測試時三個分類 fixture 一開始全掛（回 UNKNOWN），檢查後是我手刻的 zigzag 第二個 swing low 沒形成，不是程式錯。重算成 14 根、swing low 在 index 2/8、swing high 在 5/11 的序列後通過。
+
+### PA-P7 setup.py
+
+狀態機 `WAIT_BREAKOUT → WAIT_RETEST → WAIT_TRIGGER → SIGNAL`，不做 scoring。
+
+兩個關鍵決定：
+
+1. **RVOL 缺失或 `insufficient_data` 一律不 breakout。** 「資料不知道」不等於「通過 volume gate」。三種情況（`rvol is None`、`status != ok`、`tod_rvol is None`）都直接不成立。
+2. **同一個 breakout level 每個 symbol 只用一次。** 進場後價格仍在該 swing high 之上，不擋的話下一根會用同一 level 再 breakout。
+
+`setup_id = {date}:{symbol}:{breakout_bar_start_at}:brk`，完全由輸入決定，replay 得到相同 id。entry / stop / target 在 signal 當下全部確定。
+
+### PA-P8 paper.py
+
+四條不可妥協的規則，每條都對應一種自我欺騙：
+
+1. **同一根 bar 內先判 stop 再判 target。** 一根 5m 同時涵蓋兩個價位時模稜兩可；假設好結果會在最該保守的高波動 bar 上灌水 expectancy。
+2. **一個 `setup_id` 永遠只成交一次。** 沿用既有 `PaperLedger`，且**不呼叫 `close_intent`**，key 保留一整天，replay 與 restart 都不可能重進同一 setup。
+3. **market data 不健康禁止新進場。** 既有部位仍照常管理與強制平倉。
+4. **收盤前一定清倉。** `force_exit_at` 強制平倉；跑完所有 bar 若仍有部位，在最後一根以 `pre_close` 平掉。
+
+被擋下的訊號保存在 `skipped[]` 並附理由，否則無法分辨「策略沒觸發」與「被風控擋掉」。
+
+### CLI
+
+新增 `paper run-day`。同時把 `bars rvol` 與它重複的「載入歷史 → 建 baseline → 評分今日」抽成 `_score_symbol_rvol()`。
+
+### 驗證
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 321 tests, OK
+PYTHONPATH=src python3 -m compileall -q src tests
+paper run-day --store-dir <不存在>                      # trades: 0 entries: 0，不 crash
+```
+
+測試數：282 → 321（structure 16、setup + paper 23）。
+
+### Residual Risks（新增）
+
+9. **PA-P6/P7/P8 的 Gate B 與整條 PA 線共用**，都卡在同一次真實行情驗證。目前只證明「同一份輸入永遠產生同一份輸出，且每條規則照定義執行」，**不是 strategy edge**。
+10. 目前只做多。空方 setup、部位大小、成本 / 滑價（`cost.py` 已存在）都尚未接上，屬於 PA-P9。
+
+### Next-run Seed
+
+1. 交易時段跑 `simulate shioaji-tick-smoke` → 關 PA-P1/P2/P3 Gate B。
+2. `bars backfill-kbars` + `check_backfill_against_daily` 定案 kbar volume 單位 → 關 PA-P5 Gate B。
+3. 上述通過後跑 `paper run-day`，PA-P6/P7/P8 的 Gate B 才有意義。
+4. PA-P9：接 `cost.py` 算 net R，做 expectancy 與 ablation 報表。

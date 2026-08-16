@@ -60,6 +60,11 @@ If a task appears to require live execution, stop and design the gate/SOP first.
 - `bars backfill-kbars` is a pre-market, bounded, candidate-scoped historical fetch, gated off by default. This is not the intraday kbars polling AGENTS.md forbids. It logs in for market data only and refuses `simulation != True`.
 - The Shioaji kbar volume unit is NOT documented by the SDK. Backfill assumes lots and converts to shares; `check_backfill_against_daily` settles it against the daily bar whose share unit is confirmed. A ratio near 1000 or 0.001 means the conversion is wrong - pass `--volume-in-shares` if so.
 - An RVOL result with fewer than `min_days` samples returns `status=insufficient_data` and NO ratio. Do not change it to return a small number: a number would be traded on.
+- Price Action Intraday PA-P6/P7/P8 reached Gate A: `structure.py` (swings, HH/HL/LH/LL, BOS), `setup.py` (breakout -> retest -> trigger state machine) and `paper.py` (paper trading day) plus the `paper run-day` CLI. All three share one Gate B with the rest of the PA track. See `docs/price-action-p6-p8-design.md`.
+- A swing needs `swing_n` bars on BOTH sides, so the newest bars are never swings. Do not "confirm" the current bar as a swing: structure would flip on noise and live would stop matching replay.
+- A missing or `insufficient_data` RVOL never passes the breakout volume gate. A gate that passes when volume is unknown is not a gate.
+- Paper trading checks stop before target inside one bar, never releases a `setup_id` from the ledger, refuses new entries when market data is not HEALTHY, and always closes every position before the day ends. Do not relax any of these: each one exists to stop a specific way of inflating expectancy.
+- Paper trade results prove determinism and rule compliance only. Until the PA Gate B smoke passes, they are not evidence of strategy edge.
 - Price Action phase numbers collide with this repo's P0-P11: `docs/price-action-intraday-plan.md` P1 is the Shioaji tick adapter, not the old-log importer. Always write `PA-Pn` for Price Action phases.
 - Until every PA Gate B passes, do not claim the tick to 1m to 5m pipeline is usable for daily paper trading.
 - `market_data.py` must stay free of Shioaji SDK imports, and any consumer of `ShioajiTickStream` must refuse to produce new entry signals unless `stream.is_healthy` is true.

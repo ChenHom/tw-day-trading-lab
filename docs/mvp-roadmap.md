@@ -418,8 +418,30 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
 - Gate A：7 項 checklist 全數完成。已完成。
 - Gate B：真實 backfill 跑過、kbar volume 單位以日 K 定案、每日 bar 數合理、20 日 baseline 建立完成。未完成。
 
-### PA-P6 之後
+### PA-P6 / PA-P7 / PA-P8
 
-未開始。依序為 persistence 與 bar revision contract（PA-P4）、TOD-RVOL / Cumulative RVOL（PA-P5）、Swing 與市場結構（PA-P6）、Breakout / Retest state machine（PA-P7）、接上 paper trading daily cycle（PA-P8）、daily performance / ablation report（PA-P9）。
+目前狀態：三者皆 `CODE_COMPLETE`，共用一個未達成的 Gate B。
 
-PA-P5 需要每檔候選股 20-30 個交易日的歷史 1m，補資料前置時間要提早排；目前 `data/raw/finmind/` 沒有任何 `TaiwanStockPriceMinute` 資料。
+- PA-P6 `structure.py`：swing 需兩側各 N 根確認，最新 N 根不算 swing；嚴格不等，不依賴 tie-break。HH/HL/LH/LL 與 BOS 規則明確，swing 不足回 `UNKNOWN` 而非猜測。
+- PA-P7 `setup.py`：Breakout → Retest → Trigger 狀態機。RVOL 缺失或 `insufficient_data` 一律不 breakout；同一 breakout level 每個 symbol 只用一次；entry / stop / target 在 signal 當下全部確定。
+- PA-P8 `paper.py`：同一根 bar 內先判 stop 再判 target；`setup_id` 永不釋放；market data 不健康禁止新進場；收盤前一定清倉。被擋下的訊號保存理由。
+
+驗收：三份 checklist 全數完成（共 39 tests）。詳見 `docs/price-action-p6-p8-design.md`。
+
+**Gate B 未達成前，paper trade 結果只證明 determinism 與規則遵循，不得解讀成 strategy edge。**
+
+### PA-P9
+
+未開始：daily performance report、expectancy report、ablation comparison（Breakout vs +RVOL vs +Retest vs +Trigger），並把既有 `cost.py` 的成本 / 滑價接進 paper trade 的 R 計算。
+
+判定 feature 是否真的增加 edge 時使用 net expectancy / profit factor / win rate / MFE / MAE / trade count / drawdown，不能因為回測變漂亮就保留。
+
+### 整條 PA 線的共同阻斷
+
+所有 `LIVE_VALIDATED` 都卡在同一件事：一次交易時段的真實行情驗證。
+
+1. `simulate shioaji-tick-smoke` → 關 PA-P1/P2/P3 Gate B。
+2. `bars backfill-kbars` + `check_backfill_against_daily` 定案 kbar volume 單位 → 關 PA-P5 Gate B。
+3. 上述通過後，PA-P6/P7/P8 的 Gate B 才有意義。
+
+在那之前 paper trade 結果只證明 determinism 與規則遵循，不是 strategy edge。

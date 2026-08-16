@@ -23,6 +23,7 @@ from .bars import (
     list_stored_dates,
     load_latest_bars,
 )
+from .paper import run_paper_trading_day
 from .rvol import build_volume_baseline, compute_rvol_series
 from .ledger import PaperLedger
 from .market_data import (
@@ -3213,25 +3214,9 @@ def cmd_bars_rvol(args: argparse.Namespace) -> None:
         "symbols": {},
     }
     for symbol in symbols:
-        history = []
-        for date in history_dates:
-            history.extend(
-                load_latest_bars(
-                    store_dir, timeframe=args.timeframe, trading_date=date, symbols=[symbol]
-                )
-            )
-        baseline = build_volume_baseline(
-            history,
-            symbol=symbol,
-            timeframe=args.timeframe,
-            lookback_days=args.lookback_days,
-        )
-        today = load_latest_bars(
-            store_dir, timeframe=args.timeframe, trading_date=args.date, symbols=[symbol]
-        )
-        results = compute_rvol_series(today, baseline, min_days=args.min_days)
+        today, results, baseline_days = _score_symbol_rvol(store_dir, args, symbol, history_dates)
         payload["symbols"][symbol] = {
-            "baseline_days": baseline.days,
+            "baseline_days": baseline_days,
             "results": [result.to_dict() for result in results],
             "insufficient": sum(1 for result in results if result.status != "ok"),
         }
@@ -3244,6 +3229,67 @@ def cmd_bars_rvol(args: argparse.Namespace) -> None:
             f"{symbol}: baseline_days={entry['baseline_days']} "
             f"bars={len(entry['results'])} insufficient={entry['insufficient']}"
         )
+
+
+def _score_symbol_rvol(store_dir, args, symbol, history_dates):
+    """Load one symbol's history and today, and score today against it."""
+    history = []
+    for date in history_dates:
+        history.extend(
+            load_latest_bars(
+                store_dir, timeframe=args.timeframe, trading_date=date, symbols=[symbol]
+            )
+        )
+    baseline = build_volume_baseline(
+        history, symbol=symbol, timeframe=args.timeframe, lookback_days=args.lookback_days
+    )
+    today = load_latest_bars(
+        store_dir, timeframe=args.timeframe, trading_date=args.date, symbols=[symbol]
+    )
+    return today, compute_rvol_series(today, baseline, min_days=args.min_days), baseline.days
+
+
+def cmd_paper_run_day(args: argparse.Namespace) -> None:
+    """Replay one trading day end to end into paper trades."""
+    store_dir = Path(args.store_dir)
+    symbols = _resolve_tick_smoke_symbols(args)
+    if not symbols:
+        raise ValueError("--symbols or --candidates-input is required")
+
+    history_dates = [
+        date for date in list_stored_dates(store_dir, args.timeframe) if date < args.date
+    ][-args.lookback_days:]
+
+    bars = []
+    rvol_by_key: dict[str, object] = {}
+    baselines = {}
+    for symbol in symbols:
+        today, results, baseline_days = _score_symbol_rvol(store_dir, args, symbol, history_dates)
+        bars.extend(today)
+        baselines[symbol] = baseline_days
+        for result in results:
+            rvol_by_key[f"{symbol}|{result.start_at}"] = result
+
+    report = run_paper_trading_day(
+        trading_date=args.date,
+        bars=bars,
+        rvol_by_key=rvol_by_key,
+        market_data_healthy=not args.market_data_unhealthy,
+        max_new_entries=args.max_new_entries,
+        no_entry_after=args.no_entry_after,
+        force_exit_at=args.force_exit_at,
+    )
+    report["baseline_days"] = baselines
+    report["history_dates"] = history_dates
+
+    output = Path(args.output) if args.output else Path("reports") / f"{args.date}-paper.json"
+    write_json(output, report)
+    print(output)
+    summary = report["summary"]
+    print(
+        f"trades: {summary['trades']}  entries: {summary['entries']}  "
+        f"total_r: {summary['total_r']:.2f}  skipped: {summary['skipped']}"
+    )
 
 
 def cmd_simulate_shioaji_tick_smoke(args: argparse.Namespace) -> None:
@@ -3502,6 +3548,23 @@ def build_parser() -> argparse.ArgumentParser:
     rvol.add_argument("--min-days", type=int, default=20)
     rvol.add_argument("--output")
     rvol.set_defaults(func=cmd_bars_rvol)
+
+    paper = subparsers.add_parser("paper")
+    paper_sub = paper.add_subparsers(required=True)
+    run_day = paper_sub.add_parser("run-day")
+    run_day.add_argument("--date", required=True)
+    run_day.add_argument("--symbols")
+    run_day.add_argument("--candidates-input")
+    run_day.add_argument("--store-dir", default="data/bars")
+    run_day.add_argument("--timeframe", default="5m")
+    run_day.add_argument("--lookback-days", type=int, default=20)
+    run_day.add_argument("--min-days", type=int, default=20)
+    run_day.add_argument("--max-new-entries", type=int, default=2)
+    run_day.add_argument("--no-entry-after", default="13:20")
+    run_day.add_argument("--force-exit-at", default="13:25")
+    run_day.add_argument("--market-data-unhealthy", action="store_true")
+    run_day.add_argument("--output")
+    run_day.set_defaults(func=cmd_paper_run_day)
 
     replay = subparsers.add_parser("replay")
     replay_sub = replay.add_subparsers(required=True)
