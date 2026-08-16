@@ -798,6 +798,34 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli bars build-1m \
 
 輸出 `reports/{date}-1m-bars.json`：`sources` / `aggregator` / `volume_check` / `bars`。
 
+### 5m Bar（P3）
+
+同一個 `MarketBar` 契約，`timeframe="5m"`、`source="local_1m_aggregated"`，由 `bars.FiveMinuteBarAggregator` 從 canonical 1m 聚合。
+
+```text
+[09:00, 09:05)   [09:05, 09:10)
+```
+
+```text
+open   = 最早 component 的 open
+high   = max(component high)
+low    = min(component low)
+close  = 最晚 component 的 close
+volume = sum(component volume)
+```
+
+規則：
+
+- **5m 永遠不向 provider 取得。** `on_bar` 只接受 `timeframe == "1m"`，其他計入 `ignored_timeframe` 並忽略。
+- **bucket 是時間區間，不是「五根 1m」。** P2 對無成交分鐘不發 bar，所以一根 5m 可能只由 4 根或 1 根組成。不補假資料、不因不足五根就不產生、不借下一個 bucket 的分鐘湊數。
+- **1m correction 是 replace 不是 accumulate。** 收到 `09:03 rev2` 會換掉該分鐘並**重算整根 5m**，不可能出現 `1000 + 1500 = 2500`。revision 低於現有的計入 `stale_revisions` 並忽略。
+- bucket close 前收到修正只換 component，不多算 revision；close 後才發 `CORRECTED`、revision +1。
+- watermark 由 1m 的 `start_at` 推進；`bucket_end <= watermark` 時 close。無成交仍要收 bucket 時用 `flush(now=...)`，收盤用 `close_all()`。
+- 超出 `correction_window_minutes`（預設 30）的遲到 1m 計入 `dropped_late` 並丟棄。
+- `latest_bars()` 的 key 含 `timeframe`，1m 與 5m 可放同一 list 收斂。
+
+Aggregator counters（`stats()`）：`bars_in` / `bars_closed` / `bars_corrected` / `stale_revisions` / `dropped_late` / `ignored_timeframe` / `invalid_timestamps` / `open_buckets` / `watermark`。
+
 ## Persisted Strategy Samples
 
 TiDB `valid_samples` table 目前保存 classified strategy samples。雖然沿用 `valid_samples` 名稱，實際內容包含：

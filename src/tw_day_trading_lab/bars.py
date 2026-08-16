@@ -29,7 +29,11 @@ from typing import Any, Iterable, Sequence
 from .market_data import MarketTick
 
 TIMEFRAME_1M = "1m"
+TIMEFRAME_5M = "5m"
 BAR_SOURCE_1M = "shioaji_tick_aggregated"
+BAR_SOURCE_5M = "local_1m_aggregated"
+FIVE_MINUTE_BUCKET = 5
+DEFAULT_5M_CORRECTION_WINDOW_MINUTES = 30
 
 STATUS_OPEN = "OPEN"
 STATUS_CLOSED = "CLOSED"
@@ -320,6 +324,199 @@ def aggregate_ticks(
     return bars
 
 
+@dataclass
+class _BucketState:
+    """One 5m bucket, held as the latest revision of each component minute."""
+
+    symbol: str
+    start: datetime
+    components: dict[datetime, MarketBar] = field(default_factory=dict)
+    revision: int = 0
+    closed: bool = False
+
+    def build(self, status: str) -> MarketBar:
+        minutes = sorted(self.components)
+        parts = [self.components[minute] for minute in minutes]
+        return MarketBar(
+            symbol=self.symbol,
+            timeframe=TIMEFRAME_5M,
+            start_at=self.start.isoformat(),
+            end_at=(self.start + timedelta(minutes=FIVE_MINUTE_BUCKET)).isoformat(),
+            open=parts[0].open,
+            high=max(part.high for part in parts),
+            low=min(part.low for part in parts),
+            close=parts[-1].close,
+            volume=sum(part.volume for part in parts),
+            trade_count=sum(part.trade_count for part in parts),
+            status=status,
+            revision=self.revision,
+            source=BAR_SOURCE_5M,
+            sequence_gap=any(part.sequence_gap for part in parts),
+        )
+
+
+class FiveMinuteBarAggregator:
+    """Aggregate canonical 1m bars into canonical 5m bars.
+
+    5m is never taken from a provider; it is always rebuilt from the latest
+    revision of each component minute:
+
+        open   = earliest component's open
+        high   = max component high
+        low    = min component low
+        close  = latest component's close
+        volume = sum of component volume
+
+    Three properties matter more than the arithmetic:
+
+    - **A bucket is a time range, not a count of five bars.** P2 emits no bar
+      for a minute nobody traded, so a bucket is built from whatever minutes
+      it actually has. Nothing is padded, and no minute is borrowed from the
+      next bucket to reach five.
+    - **A corrected 1m replaces its minute, it never adds to it.** Receiving
+      09:03 rev2 recomputes the whole bucket from the latest revision of each
+      minute, so rev1's volume cannot be summed alongside rev2's.
+    - **Emitted bars are frozen.** A correction produces a new revision; the
+      5m a strategy already acted on stays exactly as it was.
+    """
+
+    def __init__(
+        self,
+        *,
+        correction_window_minutes: int = DEFAULT_5M_CORRECTION_WINDOW_MINUTES,
+    ) -> None:
+        self._correction_window = timedelta(minutes=correction_window_minutes)
+        self._buckets: dict[str, dict[datetime, _BucketState]] = {}
+        self._watermark: datetime | None = None
+        self.bars_in = 0
+        self.bars_closed = 0
+        self.bars_corrected = 0
+        self.stale_revisions = 0
+        self.dropped_late = 0
+        self.ignored_timeframe = 0
+        self.invalid_timestamps = 0
+
+    def on_bar(self, bar: MarketBar) -> list[MarketBar]:
+        """Apply one canonical 1m bar and return the 5m bars it finalized."""
+        if bar.timeframe != TIMEFRAME_1M:
+            # 5m must never be built from a provider bar or from itself.
+            self.ignored_timeframe += 1
+            return []
+        minute = _parse_timestamp(bar.start_at)
+        if minute is None:
+            self.invalid_timestamps += 1
+            return []
+
+        self.bars_in += 1
+        if self._watermark is None or minute > self._watermark:
+            self._watermark = minute
+
+        bucket_start = _floor_to_bucket(minute, FIVE_MINUTE_BUCKET)
+        buckets = self._buckets.setdefault(bar.symbol, {})
+        state = buckets.get(bucket_start)
+        if state is None:
+            if self._watermark - bucket_start > self._correction_window:
+                self.dropped_late += 1
+                return []
+            state = _BucketState(symbol=bar.symbol, start=bucket_start)
+            buckets[bucket_start] = state
+
+        existing = state.components.get(minute)
+        if existing is not None and bar.revision < existing.revision:
+            self.stale_revisions += 1
+            return self._finalize_due()
+
+        # Replace, never accumulate: the latest revision is the whole truth
+        # for that minute.
+        state.components[minute] = bar
+
+        if state.closed:
+            state.revision += 1
+            self.bars_corrected += 1
+            return [state.build(STATUS_CORRECTED), *self._finalize_due()]
+        return self._finalize_due()
+
+    def flush(self, *, now: str | datetime | None = None) -> list[MarketBar]:
+        """Finalize whatever the given clock makes due, without new 1m bars."""
+        if now is not None:
+            at = now if isinstance(now, datetime) else _parse_timestamp(now)
+            if at is not None and (self._watermark is None or at > self._watermark):
+                self._watermark = at
+        return self._finalize_due()
+
+    def close_all(self) -> list[MarketBar]:
+        """Session end: close every bucket that still has components."""
+        due = [
+            (start, symbol, state)
+            for symbol, buckets in self._buckets.items()
+            for start, state in buckets.items()
+            if not state.closed
+        ]
+        return self._emit(due)
+
+    def _finalize_due(self) -> list[MarketBar]:
+        if self._watermark is None:
+            return []
+        due = [
+            (start, symbol, state)
+            for symbol, buckets in self._buckets.items()
+            for start, state in buckets.items()
+            if not state.closed
+            and start + timedelta(minutes=FIVE_MINUTE_BUCKET) <= self._watermark
+        ]
+        bars = self._emit(due)
+        self._prune()
+        return bars
+
+    def _emit(self, due: list[tuple[datetime, str, _BucketState]]) -> list[MarketBar]:
+        bars = []
+        for _start, _symbol, state in sorted(due, key=lambda item: (item[0], item[1])):
+            state.closed = True
+            state.revision += 1
+            self.bars_closed += 1
+            bars.append(state.build(STATUS_CLOSED))
+        return bars
+
+    def _prune(self) -> None:
+        if self._watermark is None:
+            return
+        cutoff = self._watermark - self._correction_window
+        for buckets in self._buckets.values():
+            for start in [s for s, state in buckets.items() if state.closed and s < cutoff]:
+                del buckets[start]
+
+    def stats(self) -> dict[str, Any]:
+        return {
+            "symbols": sorted(self._buckets),
+            "bars_in": self.bars_in,
+            "bars_closed": self.bars_closed,
+            "bars_corrected": self.bars_corrected,
+            "stale_revisions": self.stale_revisions,
+            "dropped_late": self.dropped_late,
+            "ignored_timeframe": self.ignored_timeframe,
+            "invalid_timestamps": self.invalid_timestamps,
+            "open_buckets": sum(
+                1 for buckets in self._buckets.values() for s in buckets.values() if not s.closed
+            ),
+            "watermark": self._watermark.isoformat() if self._watermark else "",
+        }
+
+
+def aggregate_1m_to_5m(bars: Iterable[MarketBar]) -> list[MarketBar]:
+    """Replay a finite 1m bar log into 5m bars, corrections included."""
+    aggregator = FiveMinuteBarAggregator()
+    emitted: list[MarketBar] = []
+    for bar in bars:
+        emitted.extend(aggregator.on_bar(bar))
+    emitted.extend(aggregator.close_all())
+    return emitted
+
+
+def _floor_to_bucket(value: datetime, minutes: int) -> datetime:
+    floored = value.replace(second=0, microsecond=0)
+    return floored - timedelta(minutes=floored.minute % minutes)
+
+
 def latest_bars(bars: Iterable[MarketBar]) -> list[MarketBar]:
     """Collapse an emission log to the latest revision of each bar.
 
@@ -327,13 +524,13 @@ def latest_bars(bars: Iterable[MarketBar]) -> list[MarketBar]:
     stream is an event log. Anything that sums bars must collapse it first or
     it counts corrected minutes twice.
     """
-    latest: dict[tuple[str, str], MarketBar] = {}
+    latest: dict[tuple[str, str, str], MarketBar] = {}
     for bar in bars:
-        key = (bar.symbol, bar.start_at)
+        key = (bar.symbol, bar.timeframe, bar.start_at)
         current = latest.get(key)
         if current is None or bar.revision >= current.revision:
             latest[key] = bar
-    return sorted(latest.values(), key=lambda bar: (bar.start_at, bar.symbol))
+    return sorted(latest.values(), key=lambda bar: (bar.start_at, bar.symbol, bar.timeframe))
 
 
 def check_bar_volume(bars: Iterable[MarketBar], ticks: Sequence[MarketTick]) -> dict[str, Any]:

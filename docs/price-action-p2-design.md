@@ -155,11 +155,4 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli bars build-1m \
 
 ## 不屬於 P2
 
-1m → 5m（P3）、persistence 與 bar revision store（P4）、TOD-RVOL（P5）、Swing / 結構（P6）、Breakout / Retest（P7）。
-
-## Verification
-
-```bash
-PYTHONPATH=src python3 -m unittest discover -s tests   # 228 tests
-PYTHONPATH=src python3 -m compileall -q src tests
-```
+1m → 5m（P3，見 `docs/price-action-p3-design.md`）、persistence 與 bar revision store（P4）、TOD-RVOL（P5）、Swing / 結構（P6）、Breakout / Retest（P7）。

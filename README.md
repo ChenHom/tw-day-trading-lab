@@ -266,7 +266,7 @@ src/tw_day_trading_lab/
   ledger.py             # paper / simulation idempotency 與部位生命週期骨架
   live.py               # live execution adapter boundary / approval token gate
   market_data.py        # Price Action P1 Shioaji tick -> normalized MarketTick
-  bars.py               # Price Action P2 MarketTick -> canonical 1m MarketBar
+  bars.py               # Price Action P2/P3 tick -> canonical 1m -> canonical 5m
   market_regime.py      # 0050 proxy 大盤環境過濾
   performance.py        # rolling expectancy / drawdown feedback
   reports.py            # Markdown / HTML 報告與 daily close report
@@ -345,6 +345,7 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 - P1 code review 修正已完成：provider callback 只入佇列不做 I/O（避免卡住行情 feed），壞掉的 `volume` 一律 `needs_review` 不再靜默轉成 0，ingestion 端二次檢查 candidate scope，duplicate tick 以 `(symbol, timestamp, cumulative_volume)` 去重，`code` 缺失的 tick 保存到 `_unknown.jsonl`，subscribe 例外與觀察窗中斷都保證 unsubscribe / logout。
 - P1 market data health 已完成：`dropped_queue_full` / `worker_errors` / `raw_write_errors` / `sink_errors` / `worker_failed` / `worker_stop_timeout` 皆可觀察，聚合成 `HEALTHY` / `DEGRADED` / `FAILED`。系統不保證永不掉 tick，但掉了一定知道；health 非 `HEALTHY` 時 smoke fail closed 並回傳非 0，下游禁止產生新進場訊號。另有逐檔 volume sanity check 交叉驗證 `cumulative_volume` 差值與 `trade_volume` 加總。
 - Price Action Intraday P2 已達 Gate A `P2_CODE_COMPLETE`：`bars.py` 提供 `MarketBar` 與 `OneMinuteBarAggregator`，半開 bucket `[09:00:00, 09:01:00)`、事件時間 watermark、多股票各自狀態、late tick 窗內併入／窗外 `CORRECTED` rev+1／超窗 `dropped_late`、sequence gap 逐 bar 標記。**沒有成交的分鐘不補 synthetic bar**，以保持「真的量 0 / 沒人交易 / feed 漏資料」三者可分辨。`bars build-1m` 可從 P1 raw tick 重建 1m bar，replay 與 live 共用同一套 aggregator。Gate B `P2_LIVE_VALIDATED` 未達成，需真實 tick 聚合結果與盤後 provider 分 K 比對。詳見 `docs/price-action-p2-design.md`。
+- Price Action Intraday P3 已達 Gate A `P3_CODE_COMPLETE`：`FiveMinuteBarAggregator` 由 canonical 1m 聚合出 canonical 5m，bucket `[09:00, 09:05)`。**5m 永遠不向 provider 取得**，只接受 `timeframe="1m"` 輸入。bucket 是時間區間不是「五根 1m」，缺分鐘照樣產生 5m 且不補假資料、不借下一個 bucket 湊數。1m correction 會 **replace 該分鐘並重算整根 5m**（不是加總），發出 `CORRECTED` 且 revision +1，舊 revision 物件不變。Gate B `P3_LIVE_VALIDATED` 未達成。詳見 `docs/price-action-p3-design.md`。
 - **P1 驗收分兩段**：Gate A `P1_CODE_COMPLETE` 已達成（50 個 unit / adversarial tests）；Gate B `P1_LIVE_VALIDATED` 未達成，仍缺一次交易時段的真實 simulation quote smoke。smoke report 的 `live_validation.passed` 會自己算出有沒有達標，不需人工核對欄位。P2 可以用 fixture / synthetic `MarketTick` 開始開發，但 Gate B 通過前不得宣告 Tick → 1m pipeline 已可用於每日 paper trading。詳見 `docs/price-action-p1-design.md`。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。
