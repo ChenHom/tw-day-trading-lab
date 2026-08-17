@@ -25,7 +25,8 @@ from .bars import (
 )
 from .paper import run_paper_trading_day
 from .rvol import build_volume_baseline, compute_rvol_series
-from .structure import SWING_RULES
+from .setup import BreakoutRetestEngine
+from .structure import DEFAULT_SWING_RULE, SWING_RULES, detect_swing_points
 from .ledger import PaperLedger
 from .market_data import (
     raw_tick_path,
@@ -3232,20 +3233,21 @@ def cmd_bars_rvol(args: argparse.Namespace) -> None:
         )
 
 
-def _score_symbol_rvol(store_dir, args, symbol, history_dates):
-    """Load one symbol's history and today, and score today against it."""
+def _score_symbol_rvol(store_dir, args, symbol, history_dates, date=None):
+    """Load one symbol's history and target day, and score the day against it."""
+    target_date = date or args.date
     history = []
-    for date in history_dates:
+    for history_date in history_dates:
         history.extend(
             load_latest_bars(
-                store_dir, timeframe=args.timeframe, trading_date=date, symbols=[symbol]
+                store_dir, timeframe=args.timeframe, trading_date=history_date, symbols=[symbol]
             )
         )
     baseline = build_volume_baseline(
         history, symbol=symbol, timeframe=args.timeframe, lookback_days=args.lookback_days
     )
     today = load_latest_bars(
-        store_dir, timeframe=args.timeframe, trading_date=args.date, symbols=[symbol]
+        store_dir, timeframe=args.timeframe, trading_date=target_date, symbols=[symbol]
     )
     return today, compute_rvol_series(today, baseline, min_days=args.min_days), baseline.days
 
@@ -3364,6 +3366,119 @@ def cmd_bars_swing_yield(args: argparse.Namespace) -> None:
             f"{tt['days_with_no_swing_high']:>9}{tt['days_classifiable']:>9}"
             f"{tt['breakout_candidates']:>10}{tt['days_with_breakout_candidate']:>9}"
         )
+
+
+def cmd_paper_funnel(args: argparse.Namespace) -> None:
+    """Count how many candidates survive each PA-P6 to PA-P8 stage.
+
+    Runs the real engine and the real day runner per symbol-day, so the counts
+    are what production would produce - not a reimplementation. The point is to
+    see WHICH gate the signals die at before touching any threshold.
+    """
+    store_dir = Path(args.store_dir)
+    symbols = _resolve_tick_smoke_symbols(args)
+    if not symbols:
+        raise ValueError("--symbols or --candidates-input is required")
+
+    all_dates = list_stored_dates(store_dir, args.timeframe)
+    if args.date:
+        all_dates = [d for d in all_dates if d <= args.date]
+    target_dates = all_dates[-args.days:]
+
+    stages = {
+        "symbol_days": 0,
+        "bars": 0,
+        "bars_with_swing_high": 0,
+        "breakout_candidate": 0,
+        "rvol_pass": 0,
+        "rvol_insufficient": 0,
+        "breakout_confirmed": 0,
+        "retest_accepted": 0,
+        "signal": 0,
+        "paper_entry": 0,
+    }
+    invalidations: dict[str, int] = {}
+    exits: dict[str, int] = {}
+    skips: dict[str, int] = {}
+    signals: list[dict[str, object]] = []
+
+    for date in target_dates:
+        history_dates = [d for d in all_dates if d < date][-args.lookback_days:]
+        for symbol in symbols:
+            today, results, baseline_days = _score_symbol_rvol(
+                store_dir, args, symbol, history_dates, date=date
+            )
+            if not today:
+                continue
+            stages["symbol_days"] += 1
+            stages["bars"] += len(today)
+
+            # Pre-gate view: where a confirmed swing high existed and price closed above it.
+            rvol_by_start = {r.start_at: r for r in results}
+            for index in range(len(today)):
+                highs, _ = detect_swing_points(
+                    today[: index + 1], rule=args.swing_rule, swing_n=args.swing_n
+                )
+                if not highs:
+                    continue
+                stages["bars_with_swing_high"] += 1
+                if today[index].close <= highs[-1].price:
+                    continue
+                stages["breakout_candidate"] += 1
+                rv = rvol_by_start.get(today[index].start_at)
+                if rv is None or rv.status != "ok" or rv.tod_rvol is None:
+                    stages["rvol_insufficient"] += 1
+                elif rv.tod_rvol >= args.breakout_rvol:
+                    stages["rvol_pass"] += 1
+
+            report = run_paper_trading_day(
+                trading_date=date,
+                bars=today,
+                rvol_by_key={f"{symbol}|{r.start_at}": r for r in results},
+                market_data_healthy=True,
+                engine=BreakoutRetestEngine(
+                    swing_n=args.swing_n,
+                    swing_rule=args.swing_rule,
+                    breakout_rvol=args.breakout_rvol,
+                ),
+            )
+            for event in report["setup_events"]:
+                if event["reason"] == "breakout_confirmed":
+                    stages["breakout_confirmed"] += 1
+                elif event["reason"] == "retest_accepted":
+                    stages["retest_accepted"] += 1
+                elif event["state"] == "SIGNAL":
+                    stages["signal"] += 1
+                    signals.append({"date": date, **event})
+                elif event["state"] == "INVALIDATED":
+                    invalidations[event["reason"]] = invalidations.get(event["reason"], 0) + 1
+            stages["paper_entry"] += report["summary"]["entries"]
+            for trade in report["trades"]:
+                exits[trade["exit_reason"]] = exits.get(trade["exit_reason"], 0) + 1
+            for item in report["skipped"]:
+                skips[item["reason"]] = skips.get(item["reason"], 0) + 1
+
+    payload = {
+        "dates": target_dates,
+        "symbols": symbols,
+        "swing_rule": args.swing_rule,
+        "breakout_rvol": args.breakout_rvol,
+        "lookback_days": args.lookback_days,
+        "stages": stages,
+        "invalidations": dict(sorted(invalidations.items())),
+        "exits": dict(sorted(exits.items())),
+        "skipped": dict(sorted(skips.items())),
+        "signals": signals,
+    }
+    output = Path(args.output) if args.output else Path("reports") / "paper-funnel.json"
+    write_json(output, payload)
+    print(output)
+    print(f"rule={args.swing_rule} rvol_gate={args.breakout_rvol} days={len(target_dates)}")
+    for key, value in stages.items():
+        print(f"  {key:<24}{value:>8}")
+    for label, table in (("invalidated", invalidations), ("exits", exits), ("skipped", skips)):
+        if table:
+            print(f"  {label}: " + ", ".join(f"{k}={v}" for k, v in sorted(table.items())))
 
 
 def cmd_paper_run_day(args: argparse.Namespace) -> None:
@@ -3707,6 +3822,21 @@ def build_parser() -> argparse.ArgumentParser:
     run_day.add_argument("--traded-setups-path")
     run_day.add_argument("--output")
     run_day.set_defaults(func=cmd_paper_run_day)
+
+    funnel = paper_sub.add_parser("funnel")
+    funnel.add_argument("--date")
+    funnel.add_argument("--symbols")
+    funnel.add_argument("--candidates-input")
+    funnel.add_argument("--store-dir", default="data/bars")
+    funnel.add_argument("--timeframe", default="5m")
+    funnel.add_argument("--days", type=int, default=20)
+    funnel.add_argument("--lookback-days", type=int, default=20)
+    funnel.add_argument("--min-days", type=int, default=20)
+    funnel.add_argument("--swing-rule", default=DEFAULT_SWING_RULE)
+    funnel.add_argument("--swing-n", type=int, default=2)
+    funnel.add_argument("--breakout-rvol", type=float, default=1.5)
+    funnel.add_argument("--output")
+    funnel.set_defaults(func=cmd_paper_funnel)
 
     replay = subparsers.add_parser("replay")
     replay_sub = replay.add_subparsers(required=True)

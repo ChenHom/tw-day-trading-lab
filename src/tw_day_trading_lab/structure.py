@@ -21,6 +21,10 @@ from typing import Any, Callable, Sequence
 from .bars import MarketBar, TIMEFRAME_5M
 
 DEFAULT_SWING_N = 2
+# V1 production rule. Chosen from a 20-day x 3-symbol yield measurement: the
+# strict rule left 2330 with 1 of 20 days classifiable because Taiwan tick
+# sizes make 5m highs repeat. See docs/price-action-p6-p8-design.md.
+DEFAULT_SWING_RULE = "plateau"
 
 TREND_UP = "UP"
 TREND_DOWN = "DOWN"
@@ -110,6 +114,7 @@ def compute_structure(
     *,
     swing_n: int = DEFAULT_SWING_N,
     timeframe: str = TIMEFRAME_5M,
+    rule: str = DEFAULT_SWING_RULE,
 ) -> MarketStructure:
     """Classify HH/HL/LH/LL and detect a break of structure."""
     ordered = sorted(
@@ -117,7 +122,7 @@ def compute_structure(
     )
     symbol = ordered[-1].symbol if ordered else ""
     as_of = ordered[-1].start_at if ordered else ""
-    highs, lows = find_swing_points(ordered, swing_n=swing_n)
+    highs, lows = detect_swing_points(ordered, rule=rule, swing_n=swing_n)
 
     structure = _classify(highs, lows)
     trend = {
@@ -287,3 +292,21 @@ def _default_tick_size(price: float) -> float:
     from .cost import TaiwanDayTradeCostModel
 
     return TaiwanDayTradeCostModel().tick_size(price)
+
+
+def detect_swing_points(
+    bars: Sequence[MarketBar],
+    *,
+    rule: str = DEFAULT_SWING_RULE,
+    swing_n: int = DEFAULT_SWING_N,
+) -> tuple[list[SwingPoint], list[SwingPoint]]:
+    """Dispatch to a named swing rule.
+
+    `directional` confirms on price reversal, so a bar count has no meaning
+    there and `swing_n` is not passed to it.
+    """
+    if rule not in SWING_RULES:
+        raise ValueError(f"unknown swing rule: {rule}")
+    if rule == "directional":
+        return find_swing_points_directional(bars)
+    return SWING_RULES[rule](bars, swing_n=swing_n)

@@ -246,6 +246,43 @@ class CorrectedBarTest(unittest.TestCase):
         self.assertEqual(event.reason, "corrected_bar_in_setup")
         self.assertEqual(engine.state_of("2330"), "WAIT_BREAKOUT")
 
+    def test_recompute_restores_state_from_corrected_history(self):
+        """A correction re-derives the setup instead of losing it for the day."""
+        bars = build([(115, 108, 114), (114, 110, 111)])
+        engine, events = feed(bars, {5: rvol(2.0)})
+        self.assertEqual(engine.state_of("2330"), WAIT_TRIGGER)
+
+        # Correct an early bar that does not change the swing high.
+        engine.on_bar(self._corrected(bars[0], close=103.0))
+
+        # The setup is dropped, then rebuilt from corrected bars: back in flight.
+        self.assertEqual(engine.corrections_applied, 1)
+        self.assertEqual(engine.state_of("2330"), WAIT_TRIGGER)
+
+    def test_a_correction_after_a_signal_is_audit_only(self):
+        bars = build([(115, 108, 114), (114, 110, 111), (118, 111, 117)])
+        engine, events = feed(bars, {5: rvol(2.0)})
+        self.assertEqual(events[-1].state, SIGNAL)
+
+        event = engine.on_bar(self._corrected(bars[2], high=140))
+
+        self.assertIsNone(event)
+        self.assertEqual(engine.corrections_after_signal, 1)
+        self.assertEqual(engine.signals_suppressed_by_recompute, 0)
+
+    def test_a_recomputed_signal_is_suppressed_not_traded(self):
+        """A signal derived from data that arrived late would be look-ahead."""
+        bars = build([(115, 108, 114), (114, 110, 111), (113, 110, 112)])
+        engine, events = feed(bars, {5: rvol(2.0)})
+        self.assertEqual([e.state for e in events], [WAIT_RETEST, WAIT_TRIGGER])
+
+        # The last bar is corrected upward so the replay would now trigger.
+        engine.on_bar(self._corrected(bars[7], high=118, close=117))
+
+        self.assertEqual(engine.signals_suppressed_by_recompute, 1)
+        self.assertEqual(engine.corrections_after_signal, 0)
+
+
     def test_a_stale_revision_is_ignored(self):
         bars = build([])
         engine = BreakoutRetestEngine()

@@ -30,7 +30,7 @@ from typing import Any, Sequence
 
 from .bars import MarketBar, TIMEFRAME_5M
 from .rvol import RvolResult, STATUS_OK
-from .structure import DEFAULT_SWING_N, find_swing_points
+from .structure import DEFAULT_SWING_N, DEFAULT_SWING_RULE, detect_swing_points
 
 WAIT_BREAKOUT = "WAIT_BREAKOUT"
 WAIT_RETEST = "WAIT_RETEST"
@@ -79,6 +79,9 @@ class SetupEvent:
 @dataclass
 class _SymbolSetup:
     bars: list[MarketBar] = field(default_factory=list)
+    # Kept so a correction can recompute from exactly the inputs live saw.
+    rvols: dict[str, RvolResult | None] = field(default_factory=dict)
+    last_signal_at: str = ""
     state: str = WAIT_BREAKOUT
     setup_id: str = ""
     breakout_level: float | None = None
@@ -100,8 +103,10 @@ class BreakoutRetestEngine:
         retest_window: int = DEFAULT_RETEST_WINDOW,
         target_r: float = DEFAULT_TARGET_R,
         timeframe: str = TIMEFRAME_5M,
+        swing_rule: str = DEFAULT_SWING_RULE,
     ) -> None:
         self._swing_n = swing_n
+        self._swing_rule = swing_rule
         self._breakout_rvol = breakout_rvol
         self._tolerance = retest_tolerance
         self._retest_window = retest_window
@@ -109,6 +114,8 @@ class BreakoutRetestEngine:
         self._timeframe = timeframe
         self._symbols: dict[str, _SymbolSetup] = {}
         self.corrections_applied = 0
+        self.corrections_after_signal = 0
+        self.signals_suppressed_by_recompute = 0
         self.stale_bars = 0
 
     def on_bar(self, bar: MarketBar, rvol: RvolResult | None = None) -> SetupEvent | None:
@@ -119,15 +126,17 @@ class BreakoutRetestEngine:
         if outcome == "stale":
             return None
         if outcome == "corrected":
-            # A correction is not a new time step, so the state machine does
-            # not advance on it. History is updated so later swings use the
-            # corrected data; an in-flight setup is dropped rather than
-            # rebuilt from mutated history. A setup that already emitted a
-            # SIGNAL is untouched: past decisions are not revisited.
-            if state.state != WAIT_BREAKOUT:
-                return self._invalidate(state, bar, "corrected_bar_in_setup")
-            return None
+            return self._apply_correction(state, bar)
 
+        state.rvols[bar.start_at] = rvol
+        return self._advance(state, bar, rvol)
+
+    def _advance(
+        self,
+        state: _SymbolSetup,
+        bar: MarketBar,
+        rvol: RvolResult | None,
+    ) -> SetupEvent | None:
         if state.state == WAIT_BREAKOUT:
             return self._check_breakout(state, bar, rvol)
         if state.state == WAIT_RETEST:
@@ -135,6 +144,36 @@ class BreakoutRetestEngine:
         if state.state == WAIT_TRIGGER:
             return self._check_trigger(state, bar)
         return None
+
+    def _apply_correction(self, state: _SymbolSetup, bar: MarketBar) -> SetupEvent | None:
+        """Recompute from corrected history without revisiting a decision.
+
+        A correction is not a new time step. If the setup already emitted a
+        SIGNAL it is audited and left alone: the position was opened on the
+        information available then, and rewriting that would be look-ahead.
+
+        Otherwise the in-flight setup is invalidated and the state machine is
+        replayed over the corrected bars, so the setup that survives reflects
+        the corrected data instead of starting from nothing. Any SIGNAL the
+        replay would produce is suppressed and counted, not emitted - it would
+        be an entry priced at a bar that closed before the correction arrived.
+        """
+        # A bar the signalled setup already used must not be rewound.
+        if state.last_signal_at and bar.start_at <= state.last_signal_at:
+            self.corrections_after_signal += 1
+            return None
+
+        event = None
+        if state.state != WAIT_BREAKOUT:
+            event = self._invalidate(state, bar, "corrected_bar_in_setup")
+
+        self._reset(state)
+        state.used_levels.clear()
+        for stored in sorted(state.bars, key=lambda item: item.start_at):
+            replayed = self._advance(state, stored, state.rvols.get(stored.start_at))
+            if replayed is not None and replayed.state == SIGNAL:
+                self.signals_suppressed_by_recompute += 1
+        return event
 
     def _store_bar(self, state: _SymbolSetup, bar: MarketBar) -> str:
         """Insert or replace a bar by start_at. Returns new / corrected / stale.
@@ -169,7 +208,9 @@ class BreakoutRetestEngine:
         bar: MarketBar,
         rvol: RvolResult | None,
     ) -> SetupEvent | None:
-        highs, _lows = find_swing_points(state.bars, swing_n=self._swing_n)
+        highs, _lows = detect_swing_points(
+            state.bars, rule=self._swing_rule, swing_n=self._swing_n
+        )
         if not highs:
             return None
         level = highs[-1].price
@@ -247,6 +288,7 @@ class BreakoutRetestEngine:
                 stop_price=stop,
                 target_price=entry + self._target_r * risk,
             )
+            state.last_signal_at = bar.start_at
             self._reset(state)
             return event
 

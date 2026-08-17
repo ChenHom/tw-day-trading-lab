@@ -2441,3 +2441,98 @@ PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 346 tests, OK
 3. 取得真實 SIGNAL 後，一次驗 P7 完整鏈 + P8 lifecycle + 餵 DEGRADED report 看 `skipped: market_data_unhealthy` 實際觸發。
 4. `backfill.py` 加 30 天自動分段。
 5. PA-P9 expectancy / 成本 / 滑價。
+
+## 2026-08-17 (3) PA-P6 切 plateau、P6→P8 funnel、P7 correction policy、unhealthy gate 實證
+
+### ① PA-P6 V1 預設改為 plateau-aware
+
+`structure.DEFAULT_SWING_RULE = "plateau"`，`compute_structure` 與 `BreakoutRetestEngine` 皆走這條。strict 保留只做 ablation，`directional` 量測後不採用（每檔每日 15–22 個 swing，已是雜訊）。新增 `detect_swing_points()` 做規則分派。
+
+### ② P6→P8 funnel（20 交易日 × 3 檔）
+
+新增 `paper funnel`，**用真實 `BreakoutRetestEngine` 與 `run_paper_trading_day`**，不另寫一套計數邏輯。
+
+```text
+                      plateau   strict
+symbol_days                60       60
+bars                     3169     3169
+bars_with_swing_high     2297     1587
+breakout_candidate        230      212
+rvol_pass                 110      105
+rvol_insufficient           2        4
+breakout_confirmed         25       18
+retest_accepted            19       12
+signal                      7        5
+paper_entry                 7        5
+invalidated  retest_low_lost      9        5
+             retest_window_expired 4       5
+             breakout_level_lost   1       1
+exits        force_exit            5       4
+             stop                  1       1
+             target_2r             1       0
+```
+
+**解讀時必須注意的一件事**：`rvol_pass 110 → breakout_confirmed 25` 不是閘門在刷掉 85 個。前者是**bar 計數**（每一根 close > swing high 且 RVOL 過的 bar），後者是**事件計數**。`used_levels` 讓同一個價位只用一次，且 setup 在飛行中時引擎不檢查新突破。110 根 bar 收斂成 25 個獨立事件是預期行為。
+
+**訊號真正掉在哪一層**：`retest_accepted 19 → signal 7`，主要死因是 `retest_low_lost = 9` — 回測成立後、觸發前跌破 retest low。不是 RVOL 閘門（候選 48% 通過），也不是 retest 接受率（突破 76% 得到回測）。
+
+**出場分布也說了一件事**：7 筆交易有 5 筆在 13:25 被強制平倉，既沒到停損也沒到 2R。配合 signal 時間（多在 11:20–13:10），訊號偏晚出現，沒有時間走完。
+
+plateau vs strict：signal 7 vs 5，可用 swing level 的 bar +45%，且唯一的 2R 獲利只出現在 plateau。
+
+### 途中發現並修正:我自己引入的 date shadowing bug
+
+`_score_symbol_rvol` 我加上 `date=None` 參數時，撞到既有的 `for date in history_dates:` 迴圈變數:
+
+```python
+date = date or args.date
+for date in history_dates:      # 覆蓋參數
+    ...
+today = load_latest_bars(..., trading_date=date)   # 拿到最後一個歷史日
+```
+
+後果是 funnel 每個目標日實際評分的是**前一天**，而該天又落在自己的 baseline 窗口裡 —— 自我污染。是因為 SIGNAL 事件時間與 `--date` 對不上才追出來的。已改名迴圈變數並重跑，上表為修正後數據。
+
+### ③ P7 correction policy
+
+規則定案:
+
+| 情境 | 行為 |
+|---|---|
+| correction 動到「已產生 SIGNAL 的 setup 用過的 bar」 | audit only，`corrections_after_signal` +1，完全不動 |
+| correction 在任何 SIGNAL 之前 | in-flight setup 先 `INVALIDATED / corrected_bar_in_setup`，再以修正後的 bars **重播**還原 state |
+| 重播過程若會產生 SIGNAL | **抑制且計數**（`signals_suppressed_by_recompute`），不發出 |
+
+為了讓重播精確，`_SymbolSetup` 現在保留每根 bar 當時的 RvolResult。
+
+**一個必須講清楚的結論**:有 correction 時 live 與 replay **本質上無法完全相同**，因為 replay 擁有決策當時不存在的資訊。強行讓兩者一致就是 look-ahead —— 用晚到的修正資料，在一根早已收盤的 bar 上進場。正確的不變式是**「live 絕不用它當時沒有的資訊交易」**，不是「live == replay」。第三條規則就是這個不變式的實作。
+
+### ④ unhealthy gate 已在真實 SIGNAL 上實證
+
+用 funnel 找到的歷史訊號 `2026-07-21 2317 10:35`：
+
+```text
++ 合成 HEALTHY report    → entries=1 trades=1  entry=245 exit=246 force_exit R=0.67
++ 今日真實 DEGRADED report → entries=0 trades=0
+                            skipped: market_data_unhealthy @ 2026-07-21T10:35:00
+```
+
+同一份資料、同一個 SIGNAL，只有 health 不同。**閘門已被觀察到實際觸發**，工程面排除完畢。這仍不是 live Gate B（訊號來自 backfill 而非當日 tick），但工程錯誤已排除。
+
+### 驗證
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 349 tests, OK
+```
+
+測試數 346 → 349。新增:correction 重播還原 state、post-signal 僅稽核、重播產生的 signal 被抑制。
+
+歷史 backfill 擴充到 64 個交易日（2026-05-18 → 08-17），因此 funnel 的每一天都有完整 20 日 baseline。
+
+### Next-run Seed（更新）
+
+1. 下個交易日 09:00 前啟動 collector，取完整場次，關 P7/P8 live Gate B。
+2. **不要現在調 RVOL / retest 門檻。** funnel 已指出瓶頸在 `retest_low_lost`，但 7 筆樣本不足以支撐調參；先累積樣本或擴大 symbol 範圍。
+3. 5 of 7 出場是 force_exit，訊號偏晚。值得看的是「訊號時間分布」是否與 13:20 停止進場衝突。
+4. `backfill.py` 加 30 天自動分段。
+5. PA-P9 expectancy / 成本 / 滑價 / OOS。
