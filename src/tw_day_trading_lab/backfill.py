@@ -33,8 +33,9 @@ from .bars import (
 from .market_data import SHARES_PER_LOT
 
 BAR_SOURCE_KBARS = "shioaji_kbars"
-# A full 09:00-13:30 session is 270 one-minute buckets.
-FULL_SESSION_MINUTES = 270
+# Continuous trading is 09:00-13:24 (265 one-minute bars) plus one closing
+# auction bar, so a complete session backfill is 266 bars, not 270.
+FULL_SESSION_MINUTES = 266
 
 
 def normalize_shioaji_kbars(
@@ -46,7 +47,7 @@ def normalize_shioaji_kbars(
     """Convert a columnar Shioaji `Kbars` object into canonical 1m bars.
 
     `Kbars` is column-oriented (`ts`, `Open`, `High`, `Low`, `Close`, `Volume`),
-    with `ts` in nanoseconds.
+    with `ts` in nanoseconds and labelled by the minute the bar ENDS.
 
     `volume_in_lots` defaults to True. The SDK does not document the unit, but
     the official 2330 example is arithmetically decisive: Volume 2565 at a
@@ -65,11 +66,15 @@ def normalize_shioaji_kbars(
     multiplier = SHARES_PER_LOT if volume_in_lots else 1
     bars = []
     for index, stamp in enumerate(stamps):
-        start = _from_nanoseconds(stamp)
-        if start is None:
+        marked = _from_nanoseconds(stamp)
+        if marked is None:
             continue
-        # Provider stamps can carry seconds; a canonical bucket starts on the minute.
-        start = start.replace(second=0, microsecond=0)
+        # Shioaji labels a kbar by the minute it ENDS: the bar stamped 09:01 is
+        # the 09:00:00-09:00:59 minute, proven by its open matching the daily
+        # open. Canonical bars are labelled by START, so shift back one minute.
+        # The one exception is the closing-auction bar (stamped 13:30, really
+        # covering 13:25-13:30); it lands at 13:29, which is the same 5m bucket.
+        start = marked.replace(second=0, microsecond=0) - timedelta(minutes=1)
         try:
             bars.append(
                 MarketBar(

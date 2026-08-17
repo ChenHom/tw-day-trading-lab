@@ -185,11 +185,13 @@ class FakeKbars:
 
 
 def kbar_rows(count=3, start=datetime(2026, 8, 17, 9, 0), volume=10):
-    """Shioaji encodes exchange local wall-clock time as a naive-UTC epoch."""
+    """Provider rows as Shioaji sends them: local wall clock as a naive-UTC
+    epoch, stamped with the minute the bar ENDS. `start` is the first bar's
+    canonical start, so the stamps run start+1 .. start+count."""
     rows = []
     for index in range(count):
-        moment = (start + timedelta(minutes=index)).replace(tzinfo=timezone.utc)
-        rows.append((int(moment.timestamp() * 1_000_000_000), 100.0, 101.0, 99.0, 100.5, volume))
+        marked = (start + timedelta(minutes=index + 1)).replace(tzinfo=timezone.utc)
+        rows.append((int(marked.timestamp() * 1_000_000_000), 100.0, 101.0, 99.0, 100.5, volume))
     return rows
 
 
@@ -220,17 +222,19 @@ class KbarsBackfillTest(unittest.TestCase):
         self.assertEqual(bars[0].volume, 10_000)
 
     def test_official_example_decodes_to_exchange_local_time(self):
-        """Shioaji's own 2330 sample: ts 1779094860000000000 is 09:01 local.
+        """Shioaji's own 2330 sample: ts 1779094860000000000 shows as 09:01.
 
-        Decoding with the host timezone would give 17:01 on a UTC+8 machine
-        and something else elsewhere.
+        Two conversions apply. Decoding with the host timezone would give
+        17:01 on a UTC+8 machine and something else elsewhere. And the label
+        is the minute the bar ENDS, so the canonical start is 09:00 - verified
+        on real data, where the bar stamped 09:01 carries the daily open.
         """
         kbars = FakeKbars([(1779094860000000000, 2230.0, 2235.0, 2228.0, 2230.0, 2565)])
 
         bar = normalize_shioaji_kbars("2330", kbars)[0]
 
-        self.assertEqual(bar.start_at, "2026-05-18T09:01:00")
-        self.assertEqual(bar.end_at, "2026-05-18T09:02:00")
+        self.assertEqual(bar.start_at, "2026-05-18T09:00:00")
+        self.assertEqual(bar.end_at, "2026-05-18T09:01:00")
         # Volume as lots: 2565 x 1000 x 2230 matches the official Amount of
         # about 5.7 billion. Read as shares it would be 5.7 million.
         self.assertEqual(bar.volume, 2_565_000)

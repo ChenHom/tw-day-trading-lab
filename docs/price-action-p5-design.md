@@ -51,6 +51,25 @@ pandas.to_datetime(ts)                  → 09:01   ← Shioaji 自己的範例�
 
 原本的測試 fixture 也用本地時區編碼 `ts`，正是這個編碼錯誤讓 bug 沒被抓到；fixture 已改成與 Shioaji 相同的編碼方式。
 
+## kbar bar 標記 — 第二個已修正的實際 bug
+
+**Shioaji kbars 用 bar 結束的分鐘標記,canonical MarketBar 用開始的分鐘。**
+
+2026-08-17 實跑 2330 於 2026-08-14 的證據:
+
+```text
+標記 09:01 的 bar → open = 2435.0 = 當日開盤價（09:00:00 成交）
+                  → 實際涵蓋 09:00:00–09:00:59
+最後一根標記 13:30 → close = 2395.0 = 當日收盤價
+一天 266 根：09:00–13:24 連續 265 根 + 收盤集合競價 1 根
+```
+
+未修正時每根 backfill bar 都比實際晚 1 分鐘,5m 聚合會有一根落到錯的 bucket,PA-P5 baseline 建在偏移的 slot 上再與正確標記的 live bar 比較。已改為解碼後減 1 分鐘。
+
+已知且有界的例外:收盤集合競價那根(標記 13:30,實際涵蓋 13:25–13:30)會落在 13:29。它與 13:25 屬於同一個 5m bucket,對 5m 無影響。
+
+`FULL_SESSION_MINUTES` 也由 270 改為 **266**。原本的 270 會讓每一天都被標成 `short_day`,真正被截斷的抓取反而淹沒在雜訊裡。
+
 ## kbar volume 單位
 
 SDK 沒有標註，但官方 2330 範例在算術上是決定性的：
@@ -128,16 +147,20 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli bars rvol \
 → PA-P5_CODE_COMPLETE（21 tests）
 ```
 
-### Gate B：PA-P5_LIVE_VALIDATED（未達成）
+### Gate B：PA-P5 backfill 已實測（2026-08-17）
 
 ```text
-[ ] 真實 kbars backfill 跑過，simulation 帳號確認取得得到分 K
-[ ] check_backfill_against_daily 的 ratio 落在 0.8–1.2（單位定案）
-[ ] session_complete 每日 bar 數合理（完整場次 270）
-[ ] 20 個交易日 backfill 完成，baseline_days >= 20
+[x] 真實 kbars backfill 跑過，simulation 帳號確實取得得到分 K
+[x] volume 單位定案：張。ratio 0.89 / 0.96 / 0.91（2330 / 2317 / 2454），皆在 0.8–1.2
+[x] 每日 bar 數 266，與連續交易 265 + 收盤 1 相符
+[x] 22 個交易日 backfill 完成
+[x] OHLC 與 FinMind 日 K 完全相符（三檔的 open / close / high / low 全對）
+[ ] 今日 canonical 5m 的 RVOL 實算（等收盤後的 tick 聚合）
 ```
 
-前兩項未過之前，`bars rvol` 的輸出只是演算法正確，不代表數值可信。
+日 K 交叉驗證缺的 4–10% 是日 K 含零股 / 盤後 / 鉅額而分 K 不含,屬預期差異。
+
+實測用的區間限制:**Shioaji kbars 單次請求不得超過 30 天**（`Kbars date range must not exceed 30 days.`）。要拿超過 30 天必須自行分段,目前 `backfill.py` 未做分段。
 
 ## 不屬於 P5
 
