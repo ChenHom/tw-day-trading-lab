@@ -25,6 +25,7 @@ from .bars import (
 )
 from .paper import run_paper_trading_day
 from .rvol import build_volume_baseline, compute_rvol_series
+from .structure import SWING_RULES
 from .ledger import PaperLedger
 from .market_data import (
     raw_tick_path,
@@ -3249,6 +3250,122 @@ def _score_symbol_rvol(store_dir, args, symbol, history_dates):
     return today, compute_rvol_series(today, baseline, min_days=args.min_days), baseline.days
 
 
+def _resolve_market_data_health(args: argparse.Namespace) -> dict[str, object]:
+    """Derive paper-trading health from a PA-P1 session report.
+
+    Unknown health is treated as unhealthy. A gate that passes because nobody
+    supplied evidence is not a gate, and this is the gate that decides whether
+    a signal computed from a possibly-holed feed may open a position.
+    `--assume-healthy` is the explicit opt-out for fixture / replay work.
+    """
+    if args.session_report:
+        path = Path(args.session_report)
+        if not path.exists():
+            return {
+                "healthy": False,
+                "source": "session_report_missing",
+                "report_path": str(path),
+            }
+        report = json.loads(path.read_text(encoding="utf-8"))
+        health = str(report.get("health") or "")
+        live = report.get("live_validation") or {}
+        return {
+            "healthy": health == "HEALTHY",
+            "source": "session_report",
+            "report_path": str(path),
+            "health": health,
+            "live_validation_passed": bool(live.get("passed")),
+            "volume_gaps": (report.get("summary") or {}).get("volume_gaps"),
+        }
+    if args.assume_healthy:
+        return {"healthy": True, "source": "assumed_healthy"}
+    return {"healthy": False, "source": "no_session_report"}
+
+
+def cmd_bars_swing_yield(args: argparse.Namespace) -> None:
+    """Measure how many swings each PA-P6 rule finds on real stored bars.
+
+    Answers "does this rule produce anything on a real market" before any rule
+    is chosen. Counts, per rule and per symbol-day: bars, swing highs / lows,
+    whether structure was classifiable, BOS, and how many bars closed above a
+    confirmed swing high - the precondition PA-P7 needs to even attempt a
+    breakout.
+    """
+    store_dir = Path(args.store_dir)
+    symbols = _resolve_tick_smoke_symbols(args)
+    if not symbols:
+        raise ValueError("--symbols or --candidates-input is required")
+    dates = list_stored_dates(store_dir, args.timeframe)
+    if args.date:
+        dates = [d for d in dates if d <= args.date]
+    dates = dates[-args.lookback_days:]
+
+    rules = {name: SWING_RULES[name] for name in args.rules.split(",") if name in SWING_RULES}
+    payload: dict[str, object] = {
+        "timeframe": args.timeframe,
+        "dates": dates,
+        "symbols": symbols,
+        "rules": sorted(rules),
+        "per_rule": {},
+    }
+
+    for name, detect in rules.items():
+        totals = {
+            "symbol_days": 0,
+            "bars": 0,
+            "swing_highs": 0,
+            "swing_lows": 0,
+            "days_with_no_swing_high": 0,
+            "days_classifiable": 0,
+            "bos_bullish": 0,
+            "breakout_candidates": 0,
+            "days_with_breakout_candidate": 0,
+        }
+        per_symbol: dict[str, dict[str, int]] = {}
+        for symbol in symbols:
+            counts = dict.fromkeys(totals, 0)
+            for date in dates:
+                bars = load_latest_bars(
+                    store_dir, timeframe=args.timeframe, trading_date=date, symbols=[symbol]
+                )
+                if not bars:
+                    continue
+                highs, lows = detect(bars)
+                counts["symbol_days"] += 1
+                counts["bars"] += len(bars)
+                counts["swing_highs"] += len(highs)
+                counts["swing_lows"] += len(lows)
+                counts["days_with_no_swing_high"] += int(not highs)
+                counts["days_classifiable"] += int(len(highs) >= 2 and len(lows) >= 2)
+                if highs and bars[-1].close > highs[-1].price:
+                    counts["bos_bullish"] += 1
+                # Walk forward: a breakout needs a swing high confirmed before it.
+                hits = 0
+                for index in range(len(bars)):
+                    window_highs, _ = detect(bars[: index + 1])
+                    if window_highs and bars[index].close > window_highs[-1].price:
+                        hits += 1
+                counts["breakout_candidates"] += hits
+                counts["days_with_breakout_candidate"] += int(hits > 0)
+            per_symbol[symbol] = counts
+            for key in totals:
+                totals[key] += counts[key]
+        payload["per_rule"][name] = {"totals": totals, "per_symbol": per_symbol}
+
+    output = Path(args.output) if args.output else Path("reports") / "swing-yield.json"
+    write_json(output, payload)
+    print(output)
+    header = f"{'rule':<13}{'sym-days':>9}{'bars':>7}{'highs':>7}{'lows':>7}{'no-high':>9}{'classif':>9}{'brk-cand':>10}{'days-brk':>9}"
+    print(header)
+    for name in sorted(rules):
+        tt = payload["per_rule"][name]["totals"]
+        print(
+            f"{name:<13}{tt['symbol_days']:>9}{tt['bars']:>7}{tt['swing_highs']:>7}{tt['swing_lows']:>7}"
+            f"{tt['days_with_no_swing_high']:>9}{tt['days_classifiable']:>9}"
+            f"{tt['breakout_candidates']:>10}{tt['days_with_breakout_candidate']:>9}"
+        )
+
+
 def cmd_paper_run_day(args: argparse.Namespace) -> None:
     """Replay one trading day end to end into paper trades."""
     store_dir = Path(args.store_dir)
@@ -3270,11 +3387,12 @@ def cmd_paper_run_day(args: argparse.Namespace) -> None:
         for result in results:
             rvol_by_key[f"{symbol}|{result.start_at}"] = result
 
+    market_data = _resolve_market_data_health(args)
     report = run_paper_trading_day(
         trading_date=args.date,
         bars=bars,
         rvol_by_key=rvol_by_key,
-        market_data_healthy=not args.market_data_unhealthy,
+        market_data_healthy=bool(market_data["healthy"]),
         max_new_entries=args.max_new_entries,
         no_entry_after=args.no_entry_after,
         force_exit_at=args.force_exit_at,
@@ -3282,6 +3400,7 @@ def cmd_paper_run_day(args: argparse.Namespace) -> None:
     )
     report["baseline_days"] = baselines
     report["history_dates"] = history_dates
+    report["market_data"] = market_data
 
     output = Path(args.output) if args.output else Path("reports") / f"{args.date}-paper.json"
     write_json(output, report)
@@ -3290,6 +3409,11 @@ def cmd_paper_run_day(args: argparse.Namespace) -> None:
     print(
         f"trades: {summary['trades']}  entries: {summary['entries']}  "
         f"total_r: {summary['total_r']:.2f}  skipped: {summary['skipped']}"
+    )
+    print(
+        f"market_data: healthy={market_data['healthy']} "
+        f"source={market_data['source']}"
+        + (f" health={market_data['health']}" if market_data.get("health") else "")
     )
 
 
@@ -3550,6 +3674,17 @@ def build_parser() -> argparse.ArgumentParser:
     rvol.add_argument("--output")
     rvol.set_defaults(func=cmd_bars_rvol)
 
+    swing_yield = bars_sub.add_parser("swing-yield")
+    swing_yield.add_argument("--date")
+    swing_yield.add_argument("--symbols")
+    swing_yield.add_argument("--candidates-input")
+    swing_yield.add_argument("--store-dir", default="data/bars")
+    swing_yield.add_argument("--timeframe", default="5m")
+    swing_yield.add_argument("--lookback-days", type=int, default=20)
+    swing_yield.add_argument("--rules", default="strict,plateau,directional")
+    swing_yield.add_argument("--output")
+    swing_yield.set_defaults(func=cmd_bars_swing_yield)
+
     paper = subparsers.add_parser("paper")
     paper_sub = paper.add_subparsers(required=True)
     run_day = paper_sub.add_parser("run-day")
@@ -3563,7 +3698,12 @@ def build_parser() -> argparse.ArgumentParser:
     run_day.add_argument("--max-new-entries", type=int, default=2)
     run_day.add_argument("--no-entry-after", default="13:20")
     run_day.add_argument("--force-exit-at", default="13:25")
-    run_day.add_argument("--market-data-unhealthy", action="store_true")
+    run_day.add_argument("--session-report", help="PA-P1 session report; health is read from it")
+    run_day.add_argument(
+        "--assume-healthy",
+        action="store_true",
+        help="treat market data as healthy without a session report (fixture / replay only)",
+    )
     run_day.add_argument("--traded-setups-path")
     run_day.add_argument("--output")
     run_day.set_defaults(func=cmd_paper_run_day)

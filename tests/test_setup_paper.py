@@ -1,8 +1,11 @@
+import json
 import tempfile
 import unittest
+from argparse import Namespace
 from pathlib import Path
 
 from tw_day_trading_lab.bars import STATUS_CLOSED, MarketBar
+from tw_day_trading_lab.cli import _resolve_market_data_health
 from tw_day_trading_lab.paper import (
     EXIT_FORCE,
     EXIT_PRE_CLOSE,
@@ -449,6 +452,67 @@ class PaperTradingTest(unittest.TestCase):
         self.assertEqual(report["summary"]["trades"], 0)
         self.assertEqual(report["summary"]["entries"], 0)
         self.assertEqual(report["trades"], [])
+
+
+class MarketDataHealthResolutionTest(unittest.TestCase):
+    """PA-P8 must take health from the PA-P1 report, not from a human flag."""
+
+    def _args(self, **overrides):
+        args = Namespace(session_report=None, assume_healthy=False)
+        for key, value in overrides.items():
+            setattr(args, key, value)
+        return args
+
+    def _report(self, tmp, health, passed):
+        path = Path(tmp) / "session.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "health": health,
+                    "live_validation": {"passed": passed},
+                    "summary": {"volume_gaps": 0 if passed else 3},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_healthy_report_allows_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = _resolve_market_data_health(
+                self._args(session_report=str(self._report(tmp, "HEALTHY", True)))
+            )
+
+        self.assertTrue(result["healthy"])
+        self.assertEqual(result["source"], "session_report")
+
+    def test_degraded_report_blocks_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = _resolve_market_data_health(
+                self._args(session_report=str(self._report(tmp, "DEGRADED", False)))
+            )
+
+        self.assertFalse(result["healthy"])
+        self.assertEqual(result["volume_gaps"], 3)
+
+    def test_no_report_fails_closed(self):
+        """Nobody supplying evidence is not the same as evidence of health."""
+        result = _resolve_market_data_health(self._args())
+
+        self.assertFalse(result["healthy"])
+        self.assertEqual(result["source"], "no_session_report")
+
+    def test_missing_report_file_fails_closed(self):
+        result = _resolve_market_data_health(self._args(session_report="/nope/session.json"))
+
+        self.assertFalse(result["healthy"])
+        self.assertEqual(result["source"], "session_report_missing")
+
+    def test_assume_healthy_is_an_explicit_opt_out(self):
+        result = _resolve_market_data_health(self._args(assume_healthy=True))
+
+        self.assertTrue(result["healthy"])
+        self.assertEqual(result["source"], "assumed_healthy")
 
 
 if __name__ == "__main__":

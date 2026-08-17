@@ -16,7 +16,7 @@ neighbouring clock buckets.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from .bars import MarketBar, TIMEFRAME_5M
 
@@ -170,3 +170,120 @@ def _break_of_structure(
     if last_low is not None and close < last_low:
         return BOS_BEARISH, last_low
     return BOS_NONE, None
+
+# -- alternative swing rules, for PA-P6 yield comparison only ----------------
+#
+# `find_swing_points` (rule A, strict) stays the default. These are here to be
+# measured against 20 days of real bars before any rule change is decided:
+# on 2026-08-17 rule A found 0 / 0 / 1 swing highs on 2330 / 2317 / 2454,
+# because Taiwan tick sizes make 5m highs repeat and a strictly-greater test
+# rejects every equal neighbour.
+
+DEFAULT_DIRECTIONAL_TICKS = 2
+
+
+def find_swing_points_plateau(
+    bars: Sequence[MarketBar],
+    *,
+    swing_n: int = DEFAULT_SWING_N,
+) -> tuple[list[SwingPoint], list[SwingPoint]]:
+    """Rule B: consecutive equal extremes count as ONE plateau, not many bars.
+
+    Answers the question `>=` leaves open - four bars sharing a high are one
+    high, not four - without letting a flat stretch become a swing.
+    A plateau is anchored at its last bar, which is when it is complete.
+    """
+    ordered = sorted(bars, key=lambda bar: bar.start_at)
+    highs = _plateau_swings(ordered, [bar.high for bar in ordered], swing_n, "high", higher=True)
+    lows = _plateau_swings(ordered, [bar.low for bar in ordered], swing_n, "low", higher=False)
+    return highs, lows
+
+
+def find_swing_points_directional(
+    bars: Sequence[MarketBar],
+    *,
+    min_ticks: float = DEFAULT_DIRECTIONAL_TICKS,
+    tick_size: Callable[[float], float] | None = None,
+) -> tuple[list[SwingPoint], list[SwingPoint]]:
+    """Rule C: an extreme is confirmed once price reverses `min_ticks` from it.
+
+    Bar-count confirmation is replaced by a price-move confirmation, so a
+    tight range simply produces no swings instead of producing noise, and a
+    real reversal is recognised as soon as it happens.
+    """
+    ordered = sorted(bars, key=lambda bar: bar.start_at)
+    if not ordered:
+        return [], []
+    size = tick_size or _default_tick_size
+    highs: list[SwingPoint] = []
+    lows: list[SwingPoint] = []
+    state = ""
+    candidate_high = candidate_low = ordered[0]
+
+    for bar in ordered[1:]:
+        if bar.high > candidate_high.high:
+            candidate_high = bar
+        if bar.low < candidate_low.low:
+            candidate_low = bar
+
+        if state != "down":
+            if candidate_high.high - bar.low >= min_ticks * size(candidate_high.high):
+                highs.append(
+                    SwingPoint(kind="high", start_at=candidate_high.start_at, price=candidate_high.high)
+                )
+                state, candidate_low = "down", bar
+                continue
+        if state != "up":
+            if bar.high - candidate_low.low >= min_ticks * size(candidate_low.low):
+                lows.append(
+                    SwingPoint(kind="low", start_at=candidate_low.start_at, price=candidate_low.low)
+                )
+                state, candidate_high = "up", bar
+    return highs, lows
+
+
+SWING_RULES: dict[str, Callable[..., tuple[list[SwingPoint], list[SwingPoint]]]] = {
+    "strict": find_swing_points,
+    "plateau": find_swing_points_plateau,
+    "directional": find_swing_points_directional,
+}
+
+
+def _plateau_swings(
+    ordered: Sequence[MarketBar],
+    values: Sequence[float],
+    swing_n: int,
+    kind: str,
+    *,
+    higher: bool,
+) -> list[SwingPoint]:
+    points = []
+    for start, end, value in _runs(values):
+        if start - swing_n < 0 or end + swing_n >= len(values):
+            continue
+        left = values[start - swing_n : start]
+        right = values[end + 1 : end + 1 + swing_n]
+        if higher:
+            ok = all(value > other for other in left) and all(value > other for other in right)
+        else:
+            ok = all(value < other for other in left) and all(value < other for other in right)
+        if ok:
+            points.append(SwingPoint(kind=kind, start_at=ordered[end].start_at, price=value))
+    return points
+
+
+def _runs(values: Sequence[float]) -> list[tuple[int, int, float]]:
+    """Group consecutive equal values into (start_index, end_index, value)."""
+    runs = []
+    start = 0
+    for index in range(1, len(values) + 1):
+        if index == len(values) or values[index] != values[start]:
+            runs.append((start, index - 1, values[start]))
+            start = index
+    return runs
+
+
+def _default_tick_size(price: float) -> float:
+    from .cost import TaiwanDayTradeCostModel
+
+    return TaiwanDayTradeCostModel().tick_size(price)

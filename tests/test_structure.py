@@ -13,8 +13,11 @@ from tw_day_trading_lab.structure import (
     TREND_RANGE,
     TREND_UNKNOWN,
     TREND_UP,
+    SWING_RULES,
     compute_structure,
     find_swing_points,
+    find_swing_points_directional,
+    find_swing_points_plateau,
 )
 
 DATE = "2026-08-17"
@@ -196,6 +199,82 @@ class RecomputeTest(unittest.TestCase):
 
         self.assertNotIn(0, [point.price for point in result.swing_lows])
         self.assertNotIn(0, [point.price for point in result.swing_highs])
+
+
+class AlternativeSwingRuleTest(unittest.TestCase):
+    """PA-P6 yield comparison rules. `strict` stays the default."""
+
+    def test_plateau_counts_repeated_highs_as_one_swing(self):
+        """Four bars sharing a high are one high, not four and not none."""
+        bars = series([(10, 5), (11, 6), (15, 7), (15, 8), (15, 9), (12, 6), (11, 5)])
+
+        strict_highs, _ = find_swing_points(bars, swing_n=2)
+        plateau_highs, _ = find_swing_points_plateau(bars, swing_n=2)
+
+        self.assertEqual(strict_highs, [])
+        self.assertEqual([p.price for p in plateau_highs], [15])
+        # Anchored at the last bar of the plateau, which is when it completes.
+        self.assertEqual(plateau_highs[0].start_at, f"{DATE}T09:20:00")
+
+    def test_plateau_still_needs_to_stand_above_its_neighbours(self):
+        flat = series([(10, 5)] * 7)
+
+        highs, lows = find_swing_points_plateau(flat, swing_n=2)
+
+        self.assertEqual((highs, lows), ([], []))
+
+    def test_plateau_finds_lows_the_same_way(self):
+        bars = series([(20, 15), (18, 12), (16, 8), (17, 8), (19, 13), (21, 16)])
+
+        _, lows = find_swing_points_plateau(bars, swing_n=2)
+
+        self.assertEqual([p.price for p in lows], [8])
+
+    def test_directional_confirms_a_high_after_price_reverses(self):
+        # 2330-scale prices: tick size is 5.0, so 2 ticks is 10.0.
+        bars = series([(2400, 2395, 2400), (2430, 2420, 2430), (2420, 2405, 2410)])
+
+        highs, _ = find_swing_points_directional(bars, min_ticks=2)
+
+        self.assertEqual([p.price for p in highs], [2430])
+        self.assertEqual(highs[0].start_at, f"{DATE}T09:05:00")
+
+    def test_directional_finds_nothing_in_a_range_narrower_than_the_threshold(self):
+        bars = series([(2405, 2400, 2402)] * 8)
+
+        highs, lows = find_swing_points_directional(bars, min_ticks=2)
+
+        self.assertEqual((highs, lows), ([], []))
+
+    def test_directional_alternates_between_highs_and_lows(self):
+        bars = series(
+            [
+                (2400, 2395, 2398), (2440, 2430, 2438), (2420, 2400, 2405),
+                (2410, 2390, 2395), (2450, 2440, 2448),
+            ]
+        )
+
+        highs, lows = find_swing_points_directional(bars, min_ticks=2)
+
+        self.assertGreaterEqual(len(highs), 1)
+        self.assertGreaterEqual(len(lows), 1)
+        self.assertLess(highs[0].start_at, lows[0].start_at)
+
+    def test_alternative_rules_are_deterministic(self):
+        bars = series(HH_HL)
+
+        for rule in (find_swing_points_plateau, find_swing_points_directional):
+            runs = [[p.to_dict() for p in rule(bars)[0]] for _ in range(3)]
+            self.assertEqual(runs[0], runs[1], rule.__name__)
+            self.assertEqual(runs[1], runs[2], rule.__name__)
+
+    def test_every_named_rule_shares_one_signature(self):
+        bars = series(HH_HL)
+
+        for name, rule in SWING_RULES.items():
+            highs, lows = rule(bars)
+            self.assertIsInstance(highs, list, name)
+            self.assertIsInstance(lows, list, name)
 
 
 if __name__ == "__main__":

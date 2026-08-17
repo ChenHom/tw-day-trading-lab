@@ -2354,3 +2354,90 @@ Shioaji log 顯示中途 `Session reconnecting` → `Session reconnected (attemp
 3. 把 P1 health 自動接進 `paper run-day`。
 4. `backfill.py` 加 30 天自動分段。
 5. 上述完成前，P7/P8 的 Gate B 仍未達成。
+
+## 2026-08-17 (2) PA-P8 health 自動接線 + PA-P6 swing 產出率量測
+
+### ① paper run-day 自動讀 P1 health
+
+原本要人工加 `--market-data-unhealthy`，屬明確整合缺口。改為 `--session-report` 指向 PA-P1 的 session report，由其 `health` 決定 `market_data_healthy`。
+
+一個設計決定:**沒有 session report 時視為不健康**，不是預設 healthy。理由與 RVOL 那條相同——「沒有人提供健康證據」不等於「證明是健康的」，而這正是決定「可能有洞的資料算出的訊號能否開倉」的閘門。fixture / replay 用 `--assume-healthy` 明確 opt out。
+
+`--market-data-unhealthy` 已移除，餵一份 DEGRADED report 即可達到同樣效果，不需要兩種說法。
+
+report 內新增 `market_data` 區塊記錄來源，可稽核:
+
+```json
+{"healthy": false, "source": "session_report", "health": "DEGRADED",
+ "live_validation_passed": false, "volume_gaps": 3}
+```
+
+實測三種情境:
+
+```text
+餵今日 DEGRADED session   → healthy=False source=session_report health=DEGRADED
+什麼都不給                 → healthy=False source=no_session_report
+餵通過的 60 秒 smoke       → healthy=True  source=session_report health=HEALTHY
+```
+
+注意:三者都仍是 0 skipped，因為今日狀態機沒產生 SIGNAL。**閘門已接線但尚未在真實資料上被觀察到觸發**，仍不能宣稱驗過。
+
+### ② PA-P6 swing 產出率量測（不改預設規則）
+
+依 review 意見，不憑今日 31–32 根 bar 改規則，改用已取得的 20 日歷史做量測。新增 `bars swing-yield` 與兩個備選規則（`structure.SWING_RULES`），`find_swing_points`（strict）仍是預設。
+
+三種規則:
+
+- **A strict**（現行）：`high[i]` 嚴格大於左右各 N 根。
+- **B plateau-aware**：連續相同高點視為一個 plateau，plateau 需嚴格高於其前 N 根與其後 N 根，錨定在 plateau 最後一根。回答了 `>=` 沒回答的問題——四根同高是一個高點還是四個。
+- **C directional-change**：極值在價格反向 `min_ticks` 個 tick 後才確認（tick size 取自既有 `cost.TaiwanDayTradeCostModel`）。
+
+20 交易日 × 3 檔 = 60 symbol-days、3236 根 5m（≈53.9 根/日，與完整場次相符）:
+
+```text
+rule          sym-days   bars  highs   lows  no-high  classif  brk-cand days-brk
+strict              60   3236    100    117       17       21       231       24
+plateau             60   3236    203    223        2       48       239       35
+directional         60   3236   1173   1144        1       58       149       50
+```
+
+逐檔（`classif` = 該日 swing high 與 low 皆 >= 2 根，結構可分類）:
+
+```text
+rule         sym    highs  lows  no-high  classif  brk-cand
+strict       2330      16    19        8        1        38
+strict       2317      26    32        6        6        84
+strict       2454      58    66        3       14       109
+
+plateau      2330      53    62        0       14        55
+plateau      2317      63    67        0       16        90
+plateau      2454      87    94        2       18        94
+
+directional  2330     300   292        0       20        30
+directional  2317     422   412        0       20        45
+directional  2454     451   440        1       18        74
+```
+
+讀出來的事實:
+
+1. **strict 在 2330 上 20 天只有 1 天結構可分類**，8 天完全沒有 swing high。整體 60 symbol-days 只有 21 天可分類（35%）。今日的 0/0/1 是常態不是特例，tick size 假設成立。
+2. **plateau 精準修掉壞的那一檔**：2330 從 1/20 → 14/20 可分類、無 swing 的日子 0 天；整體可分類率 35% → 80%。breakout candidate 總數幾乎不動（231 → 239），代表它讓**同一組結構更常被偵測到**，而不是製造額外訊號。
+3. **directional (2 ticks) 過度切分**：每檔每日 15–22 個 swing（54 根 bar），已非「市場結構」而是雜訊。其 breakout candidate 反而最少（149），因為極值確認在價格已回落 2 tick 之後，剛確認時 close 必然低於該位階。
+
+**這張表只量測產出率，不量測 edge。** breakout candidate 多不代表好。哪條規則的 swing 標記出市場真正尊重的價位，要靠 PA-P9 的 expectancy ablation 才能回答。本表能確定的只有:strict 以現況不可用，plateau 是針對 tick-size 假象最便宜的修法。規則選擇仍為策略決定，未更動預設。
+
+### 驗證
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 346 tests, OK
+```
+
+測試數 333 → 346。新增涵蓋:plateau 把四根同高算成一個、全平不算 swing、plateau 找 low、directional 反向確認、窄幅無 swing、高低交替、兩規則 determinism、三規則簽章一致；以及 health 解析的五種情境（healthy / degraded / 無 report / report 不存在 / assume-healthy）。
+
+### Next-run Seed（更新）
+
+1. **P6 規則選擇仍待決定**，但已有 20 日數據可依據。若要更多證據，可擴到更多檔或更長窗口（注意 kbars 單次上限 30 天）。
+2. 下個交易日 09:00 前啟動 collector 取完整場次。
+3. 取得真實 SIGNAL 後，一次驗 P7 完整鏈 + P8 lifecycle + 餵 DEGRADED report 看 `skipped: market_data_unhealthy` 實際觸發。
+4. `backfill.py` 加 30 天自動分段。
+5. PA-P9 expectancy / 成本 / 滑價。
