@@ -2247,3 +2247,110 @@ PYTHONPATH=src python3 -m compileall -q src tests
 ```
 
 ①～④ 已在非交易日修完。
+
+## 2026-08-17 PA 線真實行情驗證（交易時段實跑）
+
+10:49 開始收集至 13:30 收盤。三檔:2330 / 2317 / 2454。
+
+### 執行前擋下的錯誤
+
+使用者的步驟指示要求 backfill 加 `--volume-in-shares`，理由是「Kbars.Volume 是股」。這與前一輪的結論相反，且該旗標語意是「provider 已是股，不要換算」。若照做，20 日 baseline 會全部小 1000 倍，而今日 5m 走 tick 聚合路徑單位正確，TOD-RVOL 會**全部放大 1000 倍**，每根都變成爆量突破，且報表上看不出異常。已於執行前擋下並改為不帶旗標，事後交叉驗證證實不帶是對的（ratio 0.89–0.96，帶了會是 0.0009）。
+
+### 實跑中發現並修正的 bug：kbars 用 bar 結束時間標記
+
+`ffb0151`。證據:2330 於 2026-08-14 標記 `09:01` 的 bar `open = 2435.0`，正是 09:00:00 成交的當日開盤價，故其涵蓋 09:00:00–09:00:59。
+
+修正前每根 backfill bar 晚 1 分鐘。修正後的實測比對（今日 tick 聚合 vs provider kbars）:
+
+```text
+symbol  重疊  O==  H==  L==  C==  V==  我方獨有  vol ratio
+2330    157  156  157  156  156  153       0    0.99784
+2317    156  155  155  156  155  153       0    0.99886
+2454    155  154  155  155  155  154       0    0.99966
+```
+
+**「我方獨有 = 0」是時間對齊正確的最強證據**——若標記仍差 1 分鐘，重疊會趨近 0。
+
+同時把 `FULL_SESSION_MINUTES` 由 270 改為 266（連續交易 09:00–13:24 共 265 根 + 收盤集合競價 1 根）。原本每天都被標成 `short_day`，真正被截斷的抓取會淹沒在雜訊裡。
+
+另記錄 API 限制:**Shioaji kbars 單次請求不得超過 30 天**（`Kbars date range must not exceed 30 days.`）。`backfill.py` 未做自動分段。
+
+### 逐階段驗證結果
+
+| Phase | 結果 | 證據 |
+|---|---|---|
+| PA-P1 | ✅ 60 秒 smoke `live_validation.passed = true` | health HEALTHY、所有遺失 counter 0 |
+| PA-P2 | ✅ | 7913 ticks → 468 根 1m，`volume_consistent: true`（23,329,000 兩邊完全相等）；與 provider 99%+ 相符 |
+| PA-P3 | ✅ | 95 根 5m，無 correction、無 stale、無 dropped |
+| PA-P4 | ✅ | 全流程讀寫 store 正常 |
+| PA-P5 | ✅ | `baseline_days = 20`；手算驗證 2330 slot 10:50 中位數 230500 與 TOD-RVOL 0.143167 皆與程式完全一致 |
+| PA-P6 | ⚠️ 見下 | 程式正確執行，但真實資料幾乎產不出 swing |
+| PA-P7 | ⚠️ 部分 | 突破位判定與量能閘門有作用，但完整鏈未觸發 |
+| PA-P8 | ⚠️ 部分 | 執行無誤但 0 trade，lifecycle 未被實際運行 |
+
+### volume_gaps 抓到真實斷線（health 機制的真陽性）
+
+長時段 session `live_validation.passed = false`，`health = DEGRADED`，唯一原因是 `volume_gaps: 3`（每檔各一）:
+
+```text
+2317 cum_delta 14,851,000 vs tick 加總 14,847,000  diff 4,000（0.027%）
+2330 cum_delta  5,543,000 vs           5,538,000  diff 5,000（0.09%）
+2454 cum_delta  2,936,000 vs           2,935,000  diff 1,000（0.03%）
+```
+
+Shioaji log 顯示中途 `Session reconnecting` → `Session reconnected (attempt 3 of 10)` 並重新訂閱三檔。缺口與重連時點吻合（12:37/12:38 的 bar 對 provider 少 1000–4000 股）。
+
+**其他所有 counter 全為 0**（`dropped_queue_full` / `worker_errors` / `out_of_order` / `queue_backlog`）。沒有這個檢查，這次 session 會回報 HEALTHY，P8 會在有洞的資料上進場。前一輪加的 cumulative invariant 在第一次實跑就抓到真實事件。
+
+另 `rejected: {'simtrade': 177}`——收盤集合競價的試撮 tick 全數正確過濾，`raw_ticks 8087 - market_ticks 7910 = 177` 完全對得上。
+
+### ⚠️ 新發現：P6 swing 規則在真實大型股上幾乎產不出 swing
+
+今日三檔的 5m 結構:
+
+```text
+2330: 32 根，distinct highs 只有 4 個，相鄰等高 23/31 → swing high 0 個
+2317: 32 根，distinct highs 只有 4 個，相鄰等高 22/31 → swing high 0 個
+2454: 31 根，distinct highs 9 個                    → swing high 1 個
+```
+
+原因是**嚴格不等 + 台股 tick size 相對於當日區間過粗**。2330 整個下午在 2405–2415 區間、tick 為 5 元，5m 高點反覆是同一個數字；相等的鄰居依規則不算 swing。
+
+放寬成 `>=`（加上非全平的守衛）也只得到 0 / 4 / 4 個，改善有限。
+
+這**不是 bug**——程式完全照規格執行，且 swing 不足時回 `UNKNOWN` 而非亂猜，是設計上的 fail-closed。但這條規則在真實資料上的產出率必須重新檢討，屬於策略設計決定，未擅自更動。
+
+### P7 實際走到哪裡
+
+2454 有 2 根 bar `close > 已確認 swing high`:
+
+```text
+13:00  level=4065.0  close=4070.0  tod_rvol=1.327  → volume gate 擋下
+13:05  level=4065.0  close=4075.0  tod_rvol=0.878  → volume gate 擋下
+```
+
+突破位判定與量能閘門都確實運作且正確拒絕。但完整 Breakout → Retest → Trigger 鏈今日未觸發。
+
+今日全體 TOD-RVOL ≥ 1.5 的 bar 有 13 根，所以**不是量能閘門把一切擋光**，是突破條件與高量 bar 沒有重合。
+
+### 今日未能驗證的部分
+
+```text
+[ ] P7 完整鏈（retest → trigger → SIGNAL）
+[ ] P8 entry / stop / target / exit 的真實 lifecycle
+[ ] market data unhealthy 阻擋進場（沒有 signal 抵達該閘門，`skipped` 為空）
+```
+
+`paper run-day` 兩種模式（正常 / `--market-data-unhealthy`）都是 0 trade 0 skipped，因為狀態機根本沒產生 SIGNAL。**不能宣稱 fail-closed 閘門已在真實資料上驗證過。**
+
+### 另一個整合缺口
+
+`paper run-day` 不會自動讀取 P1 session report 的 health，預設當成 healthy，要靠人工加 `--market-data-unhealthy`。AGENTS.md 已規定消費端必須檢查 `is_healthy`，但 CLI 這條路徑沒有自動接上。
+
+### Next-run Seed
+
+1. **P6 swing 規則需要決策**：可能方向包括改用 tick-size 感知的最小擺盪幅度、拉長 swing_n、或改在 1m 上找 swing 再投影到 5m。這是策略設計決定。
+2. 下個交易日在 **09:00 前**啟動 collector，取得完整場次（今日 10:49 起收，缺 09:00–10:48，Cum-RVOL 因此普遍偏低，屬預期而非 bug）。
+3. 把 P1 health 自動接進 `paper run-day`。
+4. `backfill.py` 加 30 天自動分段。
+5. 上述完成前，P7/P8 的 Gate B 仍未達成。
