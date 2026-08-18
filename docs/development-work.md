@@ -2536,3 +2536,263 @@ PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 349 tests, OK
 3. 5 of 7 出場是 force_exit，訊號偏晚。值得看的是「訊號時間分布」是否與 13:20 停止進場衝突。
 4. `backfill.py` 加 30 天自動分段。
 5. PA-P9 expectancy / 成本 / 滑價 / OOS。
+
+## 2026-08-18 第二次真實行情驗證（10:43 起收至 13:31）
+
+collector 於 10:43:55 啟動（當日已進入交易時段才開始），收至 13:31。三檔 2330 / 2317 / 2454。
+
+### PA-P1 Gate B 再度通過，且比昨日乾淨
+
+```text
+status ok / health HEALTHY / live_validation.passed true
+raw_ticks 10536 → market_ticks 10359   rejected {simtrade: 177}
+volume_gaps 0  dropped_queue_full 0  out_of_order 0  worker_errors 0  queue_backlog 0
+三檔 volume_checks 全 consistent
+```
+
+昨日 `volume_gaps: 3` 來自 Shioaji 中途 `Session reconnecting`；今日全程無斷線，counter 歸零。**同一份程式在有斷線與無斷線兩天分別回報 DEGRADED 與 HEALTHY**，健康判定不是常數。
+
+### PA-P2 / P3
+
+```text
+10359 ticks → 488 根 1m → 102 根 5m
+bars_corrected 0  late_ticks 0  dropped_late 0  sequence_gaps 0  stale_revisions 0
+volume_check  bar 37,459,000 == tick 37,459,000  consistent
+no_trade_minutes 15（真的沒成交，非遺失）
+```
+
+### 與 provider kbars 交叉比對（重疊段 1m）
+
+```text
+symbol  provider          我方             重疊  O    H    L    C    V    我方獨有  vol ratio
+2330    09:00–13:29 270   10:43–13:30 163  162  162  162  161  162  161   1        0.99673
+2317    09:00–13:29 270   10:43–13:30 163  162  162  161  162  162  161   1        0.99966
+2454    09:00–13:29 270   10:44–13:30 162  161  161  161  161  161  161   1        1.00000
+```
+
+「我方獨有 = 1」那一根是 13:30 的收盤集合競價。**provider 把集合競價放進 13:25 這個 5m bucket，我方放在 13:30**，但兩邊該筆成交量完全相等（2330 4,015,000 / 2317 3,374,000 / 2454 557,000），且 13:20 bucket 也完全相等，所以只是標記位置差異，不是資料差異。paper 在 13:25 強制平倉，實務上不受影響。
+
+另記：provider 今日回 **270 根**（09:00–13:29 連續），與 `FULL_SESSION_MINUTES = 266` 的假設（265 + 1 集合競價）不符。270 > 266 所以不會被判 `short_day`，但這個常數的語意與 provider 實際行為不一致，**尚未修正**。
+
+### 缺口回填（09:00–10:42）
+
+collector 錯過開盤 103 分鐘。處理方式是**只補洞、不覆蓋**：
+
+- provider bar 只在對應時間沒有 tick bar 時寫入 `data/bars`，`source` 標為 `*_gapfill`，可事後區分。
+- collector 中途加入的那個 bucket（1m 10:43、5m 10:40）是殘缺的（5m 10:40 我方 59,000 vs provider 185,000），以 `status=CORRECTED`、`revision+1` 讓 provider 版本勝出。
+- **13:25–13:29 的 provider bar 刻意不補**，那段是集合競價，補進去會與我方 13:30 那根重複計算成交量。
+
+補完後 1m 266 根 / 5m 54 根，09:00–13:30 完整。
+
+### PA-P7 / P8 今日仍未達成 live Gate B
+
+純 tick 資料與補洞後的完整場次,狀態機事件**完全相同**（開盤段沒有產生任何 setup）：
+
+```text
+11:45  2454  WAIT_RETEST    breakout_confirmed  level 3920  tod_rvol 1.608
+11:50  2454  WAIT_TRIGGER   retest_accepted     retest_low 3925
+11:55  2454  INVALIDATED    retest_low_lost
+```
+
+比昨日前進一步（昨日連 breakout_confirmed 都沒有），但仍**沒有 SIGNAL，因此 entry / stop / target / exit 的真實 lifecycle 依然沒跑過**。`market_data_healthy=true` 走的是 healthy 分支，unhealthy 阻擋在真實 tick 資料上同樣還沒被觸發。
+
+失效原因又是 `retest_low_lost`——與 20 日 funnel 指出的瓶頸一致。
+
+### 訊號時間分布（回答上一輪留下的問題）
+
+funnel 視窗滾動到 2026-07-22 … 08-18（掉了 07-21，加了 08-18）：
+
+```text
+bars 3169 → bars_with_swing_high 2310 → breakout_candidate 188 → rvol_pass 100
+  → breakout_confirmed 24 → retest_accepted 18 → signal 5 → paper_entry 5
+invalidated  breakout_level_lost 1  retest_low_lost 10  retest_window_expired 4
+exits        force_exit 4  stop 1
+```
+
+5 筆 SIGNAL 的時間：**10:50 / 11:20 / 12:25 / 13:10 / 13:10**。
+
+結論是**訊號並非集中在下午**，所以「13:20 停止進場」不是實際成本所在；真正吃掉結果的是 **13:25 強制平倉**——13:10 的兩筆只有 15 分鐘可走，必然 force_exit。要動的話該動的是出場規則而不是進場截止時間，但這仍屬調參，樣本數 5 依舊不足，**未更動**。
+
+（掉出視窗的 07-21 那筆正是先前唯一的 `target_2r`，所以本次 exits 只剩 force_exit 4 / stop 1。這說明目前的樣本量下，單日進出視窗就能改變整體結論。）
+
+### Next-run Seed（更新）
+
+1. P7/P8 live Gate B **仍未達成**，連兩個交易日都沒產生 SIGNAL。下次仍需 09:00 前啟動 collector。
+2. 若再兩三個交易日都收不到 SIGNAL，該考慮的是**擴大 symbol 範圍**（3 檔太少）而不是放寬門檻。
+3. `FULL_SESSION_MINUTES = 266` 與 provider 實際的 270 不一致，待釐清。
+4. `backfill.py` 加 30 天自動分段。
+5. PA-P9 expectancy / 成本 / 滑價 / OOS。
+
+## 2026-08-18 (2) 標的池由 3 檔擴大到 9 檔
+
+前一段的結論是「樣本不足不是門檻問題，是標的太少」。依此加入 6 檔（代號以 `TaiwanStockInfo` 快取核對，非憑記憶）：
+
+```text
+2360 致茂   6805 富世達  3481 群創
+3189 景碩   6239 力成    3037 欣興
+```
+
+六檔皆為 twse 上市，與既有三檔同一個 TSE 訂閱路徑，不引入 tpex 分支。
+
+`data/bars` 已補齊六檔的 2026-05-18 → 08-18 共 65 個交易日 1m/5m，與既有三檔同深度。分四段抓（kbars 單次上限 30 天）；`2026-07-17 → 08-18` 是 32 天被 API 擋下，切成 07-17→08-15 與 08-16→08-18。**`backfill.py` 仍未自動分段**。
+
+### 擴大後的 20 日 funnel（同參數，唯一變數是標的數）
+
+```text
+                        3 檔      9 檔
+symbol_days               60       180
+bars                    3169      9600
+bars_with_swing_high    2310      6928
+breakout_candidate       188       702
+rvol_pass                100       259
+rvol_insufficient          2       114
+breakout_confirmed        24        88
+retest_accepted           18        55
+signal                     5        18
+paper_entry                5        16
+invalidated  level_lost    1         7
+             retest_low   10        33
+             window       4         18
+exits  force_exit          4         7
+       stop                1         7
+       target_2r           0         2
+skipped                    -  after_hard_stop=1, position_already_open=1
+```
+
+- 訊號 5 → 18，**每檔都貢獻至少 1 筆**（3481 最多 4 筆），不是被單一標的灌出來的。
+- 有訊號的交易日 5 → 11（共 20 日）。
+- 時間分布 10 時 3 / 11 時 5 / 12 時 5 / 13 時 5，比三檔時更平均，再次確認**訊號不集中在下午**。
+- `after_hard_stop` 與 `position_already_open` 首次出現——`max_new_entries` 與單標的持倉互斥這兩條規則到現在才真的被走到過。
+- `rvol_insufficient` 2 → 114：新加的較冷門標的在某些時間槽湊不滿 20 日樣本，baseline 依規則回 `insufficient_data` 而非硬給比值，fail-closed 正常運作。
+
+漏斗形狀沒有改變（瓶頸仍是 `retest_low_lost`），**改變的只有樣本量**。這支持先前的判斷：不該調門檻，該補樣本。
+
+`scripts/collect-session.sh` 的預設標的同步改為 9 檔，2026-08-19/20/21 三天的排程直接生效。
+
+### 仍未改變的事
+
+`target_2r` 只有 2 筆，18 筆訊號仍不足以談 expectancy。**這是 PA-P9 的工作，且必須先接上成本與滑價**，現在算出來的任何 R 都是毛數。
+
+## 2026-08-18 (3) 再加三檔（9 → 12），發現 3081 被 baseline 排除
+
+```text
+3450 聯鈞（twse）  3081 聯亞（tpex）  2615 萬海（twse）
+```
+
+3081 是**目前唯一的上櫃標的**。`api.Contracts.Stocks[symbol]` 對 tpex 一樣解得到，kbars 正常回，不需要分支處理——已實測，非推論。
+
+三檔同樣補齊 2026-05-18 → 08-18 共 65 個交易日。
+
+### 12 檔 20 日 funnel
+
+```text
+                        3 檔    9 檔   12 檔
+symbol_days               60     180     240
+breakout_candidate       188     702    1011
+rvol_pass                100     259     385
+rvol_insufficient          2     114     225
+breakout_confirmed        24      88     132
+retest_accepted           18      55      89
+signal                     5      18      24
+paper_entry                5      16      22
+exits  force_exit          4       7      10
+       stop                1       7      10
+       target_2r           0       2       2
+```
+
+有訊號的交易日 5 → 11 → 12（共 20 日），時間分布 09/10/11/12/13 時各 1/4/7/6/6。
+
+### 3081 聯亞產不出訊號，原因是流動性而非策略
+
+單檔跑 20 日：
+
+```text
+        bars  candidate  rvol_pass  rvol_insufficient  confirmed
+3081     901         82          5                 77          2
+3450    1071        144         63                 34         21
+2615    1080         83         58                  0         21
+```
+
+3081 每日只有約 45 根 5m bar（滿場 54 根），**約 17% 的時間槽整天沒有成交**。TOD-RVOL 的 per-slot baseline 因此湊不滿 20 日樣本，82 個突破候選裡有 77 個直接被判 `insufficient_data`。
+
+這是 baseline 規則（缺 bar 不記為 0）正確 fail-closed 的結果，不是 bug。但實務意義是：**現行 TOD-RVOL 設計對這種流動性的標的無效**，不是「3081 沒有機會」，是「我們沒有資格判斷 3081 有沒有機會」。
+
+要納入這類標的，得改 baseline 設計（例如以成交的日數為分母、或退回 Cumulative RVOL）——那是策略設計決定，**未擅自更動**。目前 3081 留在池子裡，讓它繼續產生 `rvol_insufficient` 的紀錄，而不是靜靜地被跳過。
+
+`scripts/collect-session.sh` 預設標的更新為 12 檔。
+
+## 2026-08-18 (4) 追查 3081：API 沒有缺資料，缺的是 baseline 的樣本數
+
+問題：3081 聯亞是否有辦法從 API 取得需要的資料？
+
+### 直接問 provider（實測，非推論）
+
+```text
+3081 聯亞  exchange=OTC  category=27  unit=1000
+2615 萬海  exchange=TSE  category=15  unit=1000
+
+2026-08-18 單日 kbars     rows      zero_volume_rows   api.ticks rows
+3081                       270                    10             2909
+2615                       270                     4            11795
+缺漏分鐘                     0                     -                -
+```
+
+**kbars 對 3081 回滿 270 根，一分鐘都不缺**，且零成交分鐘的 O/H/L/C 帶的是前一筆成交價（3030.0 平盤四價相同）而非 0，不會污染 swing 判定。`api.ticks` 也拿得到 2909 筆逐筆。**沒有任何欄位或資料是 API 給不出來的。**
+
+### 但歷史日與當日的回法不同
+
+```text
+3081 近 20 日每日 1m bar 數
+07-22  52 | 07-23 106 | 07-24 256 | 07-27 262 | 07-28 252 | 07-29 148 | 07-30 246
+07-31  61 | 08-03  39 | 08-04  46 | 08-05  59 | 08-06 122 | 08-07 262 | 08-10 117
+08-11 134 | 08-12 124 | 08-13 133 | 08-14 132 | 08-17 106 | 08-18 270
+```
+
+已排除「多日請求會被截斷」這個假設——單日請求與 30 日請求對同一天回的行數**完全相同**：
+
+```text
+          單日請求                          多日請求
+3081  08-13 133 / 08-14 132 / 08-17 106  ← 完全一致
+3450  08-13 134 / 08-14 132 / 08-17 133  ← 完全一致
+2615  08-13 264 / 08-14 265 / 08-17 266  ← 完全一致
+```
+
+差別在於：**歷史日的 `zero_volume_rows` 一律為 0（沒成交的分鐘直接不回），當日的 kbars 才會補零成交分鐘**。所以 3081 在 08-17 只有 106 個分鐘真的有成交，這是市場事實不是 API 限制。
+
+副作用：同一檔同一天的 bar 數會因為「什麼時候抓的」而不同（08-18 抓到 270 含 10 根零量，隔天再抓會變 260）。目前 store 裡 08-18 就是 270 根。尚未處理。
+
+### 真正的瓶頸：per-slot baseline 湊不滿 20 日
+
+近 20 日每個 5m 時間槽實際拿到幾天樣本：
+
+```text
+        出現過的槽   滿 20 日的槽   樣本日數分布
+3081     54/54            8         13:3  14:3  15:11  16:12  17:7  18:6  19:4  20:8
+3450     54/54           46         18:1  19:7  20:46
+2615     54/54           54         20:54
+```
+
+3081 每個槽都出現過，但只有 8 個槽湊得滿 20 日。`min_days=20` 因此擋掉 85% 的槽，82 個突破候選有 77 個被判 `insufficient_data`。
+
+### min_days 敏感度（僅量測，未改預設）
+
+```text
+3081 單檔 20 日   min_days=20   min_days=15   min_days=13
+rvol_pass                   5            27            29
+rvol_insufficient          77             6             0
+breakout_confirmed          2            11            12
+retest_accepted             1             5             6
+signal                      0             1             1
+```
+
+`min_days=13`（3081 觀測到的樣本下限）可讓全部 54 個槽可用。但這是**用較少樣本的中位數換取覆蓋率**，屬於策略設計取捨，且會同時放寬所有標的的守門標準。**預設維持 20，未更動。**
+
+### 結論
+
+「3081 拿不到資料」是錯的說法。正確的說法是：**資料完整，是我們的 TOD-RVOL 設計要求每個 5 分鐘槽都有 20 日樣本，而流動性不足的標的在多數時段根本沒有成交，湊不出這個樣本。**
+
+可能的設計方向（皆未實作）：
+1. 依標的分別設定 `min_days`。
+2. 改用較粗的時間槽（15m / 30m）建 baseline。
+3. 對這類標的改用 Cumulative RVOL（當日累計量 vs 基準日累計量），不需要 per-slot 出現率。
+4. 把「該槽當日無成交」記為 0 併入 baseline——**不建議**，會壓低中位數並系統性放大 RVOL，正是目前規則刻意避免的。

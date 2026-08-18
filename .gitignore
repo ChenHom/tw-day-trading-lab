@@ -22,3 +22,5 @@ shioaji.log
 .agents/
 
 Sinopac.pfx
+logs/*
+!logs/.gitkeep
