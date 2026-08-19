@@ -2796,3 +2796,97 @@ signal                      0             1             1
 2. 改用較粗的時間槽（15m / 30m）建 baseline。
 3. 對這類標的改用 Cumulative RVOL（當日累計量 vs 基準日累計量），不需要 per-slot 出現率。
 4. 把「該槽當日無成交」記為 0 併入 baseline——**不建議**，會壓低中位數並系統性放大 RVOL，正是目前規則刻意避免的。
+
+## 2026-08-19 PA-P7 / PA-P8 live Gate B 達成
+
+第一次完整場次：cron 於 08:58:01 準時啟動（主觸發，補跑排程未曾觸發，代表主程序全程存活），12 檔收至 13:31。
+
+### PA-P1 在 12 檔負載下的表現
+
+```text
+status ok / health HEALTHY / live_validation.passed true
+subscribed 12   raw_ticks 96,883 → market_ticks 95,869   rejected {simtrade: 1014}
+out_of_order 0  dropped_queue_full 0  volume_gaps 0  worker_errors 0
+raw_write_errors 0  sink_errors 0  worker_failed False  queue_backlog 0
+12 檔 volume_checks 全部 consistent
+```
+
+tick 量由前日三檔的 10,536 增至 95,869（約 9 倍），`queue_backlog` 與 `dropped_queue_full` 仍為 0。**12 檔的吞吐壓力測試通過**，`TICK_QUEUE_MAXSIZE = 100_000` 未被逼近。
+
+`3081` 的訂閱走 `TIC/v1/STK/*/OTC/3081`，上櫃標的在 tick stream 這條路徑同樣不需分支。
+
+### PA-P2 / P3
+
+```text
+95,869 ticks → 3105 根 1m → 648 根 5m
+bars_corrected 0  late_ticks 0  dropped_late 0  sequence_gaps 0  stale_revisions 0
+volume_check  bar 407,033,000 == tick 407,033,000  consistent
+no_trade_minutes 147
+```
+
+### PA-P7 / P8：真實 tick 上跑完整個 lifecycle
+
+```text
+10:15  2615  breakout_confirmed  lvl 102.5   tod_rvol 21.09
+10:45  2615  INVALIDATED  retest_window_expired
+11:00  2360  breakout_confirmed  lvl 2115.0  tod_rvol 2.13
+11:05  2360  retest_accepted
+11:30  2360  SIGNAL  trigger_break_local_high
+11:30  3450  breakout_confirmed  lvl 557.0   tod_rvol 6.49
+11:30  3481  breakout_confirmed  lvl 47.3    tod_rvol 1.54
+11:40  3481  INVALIDATED  retest_low_lost
+11:45  3481  breakout_confirmed  lvl 47.45   tod_rvol 2.21
+11:50  2454  breakout_confirmed  lvl 3855.0  tod_rvol 2.24
+11:55  3481  INVALIDATED  retest_low_lost
+12:00  2454  SIGNAL  trigger_break_local_high
+12:00  3037  breakout_confirmed  lvl 1125.0  tod_rvol 2.63
+12:00  3450  INVALIDATED  retest_window_expired
+12:05  3037  INVALIDATED  breakout_level_lost
+13:10  2360  breakout_confirmed  lvl 2125.0  tod_rvol 1.63
+13:20  2360  INVALIDATED  retest_low_lost
+```
+
+兩筆成交，兩筆都停損：
+
+```text
+2360  entry 11:30 @2150  stop 2120  target 2210  exit 12:00 @2120  stop   R -1.0
+2454  entry 12:00 @3870  stop 3860  target 3890  exit 12:05 @3860  stop   R -1.0
+total_r -2.00   wins 0  losses 2  open_positions 0  skipped 0
+```
+
+**`PA-P7_LIVE_VALIDATED` / `PA-P8_LIVE_VALIDATED` 達成**：SIGNAL → entry → stop → exit 的完整鏈第一次在當日 tick 聚合出來的 bar 上跑完，`market_data_healthy=true` 來自當日 session report 而非人工旗標。
+
+**這不是策略有效的證據。** 兩筆都停損，`total_r = -2.00`，而且尚未計入成本與滑價。Gate B 驗證的是機制會動，不是機制會賺。
+
+### 極端 RVOL 已逐一核對，不是 bug
+
+2615 在 10:15 的 `tod_rvol = 21.09` 一度可疑，手算核對後確認正確：
+
+```text
+2615 10:15  樣本 20 日  median 64,000  今日 1,350,000  ratio 21.09
+3450 11:30  樣本 20 日  median 63,500  今日   412,000  ratio  6.49
+2360 11:00  樣本 20 日  median 30,000  今日    64,000  ratio  2.13
+```
+
+歷史樣本本身分布極寬（2615 該槽從 19,000 到 2,074,000），中位數 64,000 是合理的中心，今日確實是真實爆量。
+
+### 20 日 funnel（2026-07-23 … 08-19）
+
+```text
+                        12 檔 @08-18   12 檔 @08-19
+signal                            24             26
+paper_entry                       22             24
+exits  force_exit                 10             10
+       stop                       10             12
+       target_2r                   2              2
+```
+
+樣本加了兩筆，兩筆都是停損。`target_2r` 停在 2 筆。**26 筆訊號、2 筆達標、12 筆停損**——這個分布不支持任何正期望值的宣稱，但也還不足以否定，因為成本模型尚未接上，且 `force_exit` 佔 10 筆（出場規則而非策略判斷決定的結果）。這正是 PA-P9 要處理的問題。
+
+### Next-run Seed
+
+1. **PA-P9 現在是唯一有意義的下一步**：接上 `cost.py`、把 `force_exit` 與 `stop` / `target` 分開統計、算 expectancy 與 Profit Factor。
+2. 08-20 / 08-21 排程照跑，繼續累積樣本，不需要人工介入。
+3. `FULL_SESSION_MINUTES = 266` 與 provider 的 270 仍未對齊。
+4. `backfill.py` 30 天自動分段仍未做。
+5. 3081 的 baseline 設計仍未決定（今日它有 1804 筆 tick，量不是問題，per-slot 樣本數才是）。
