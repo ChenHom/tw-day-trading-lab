@@ -25,7 +25,12 @@ from .bars import (
 )
 from .paper import run_paper_trading_day, summarize_expectancy
 from .rvol import build_volume_baseline, compute_rvol_series
-from .setup import STOP_ENTRY_BAR_LOW, STOP_RETEST_LOW, BreakoutRetestEngine
+from .setup import (
+    STOP_ENTRY_BAR_LOW,
+    STOP_FIXED_TICKS,
+    STOP_RETEST_LOW,
+    BreakoutRetestEngine,
+)
 from .structure import DEFAULT_SWING_RULE, SWING_RULES, detect_swing_points
 from .ledger import PaperLedger
 from .market_data import (
@@ -3383,6 +3388,14 @@ ABLATION_ARMS = {
                     stop_rule=STOP_ENTRY_BAR_LOW),
     "production": dict(require_rvol=True, require_retest=True, require_trigger=True,
                        stop_rule=STOP_RETEST_LOW),
+    # Distance controls. Same signals as production, structureless stop. If one
+    # of these matches production at a comparable distance, the retest low was
+    # doing nothing that a ruler could not.
+    **{
+        f"fixed{ticks}": dict(require_rvol=True, require_retest=True, require_trigger=True,
+                              stop_rule=STOP_FIXED_TICKS, stop_ticks=float(ticks))
+        for ticks in (2, 3, 4, 6, 8, 12)
+    },
 }
 
 

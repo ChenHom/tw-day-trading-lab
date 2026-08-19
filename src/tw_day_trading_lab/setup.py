@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from .bars import MarketBar, TIMEFRAME_5M
+from .cost import TaiwanDayTradeCostModel
 from .rvol import RvolResult, STATUS_OK
 from .structure import DEFAULT_SWING_N, DEFAULT_SWING_RULE, detect_swing_points
 
@@ -54,7 +55,12 @@ DEFAULT_TARGET_R = 2.0
 # every arm, which is what makes an ablation comparable at all.
 STOP_RETEST_LOW = "retest_low"
 STOP_ENTRY_BAR_LOW = "entry_bar_low"
-STOP_RULES = (STOP_RETEST_LOW, STOP_ENTRY_BAR_LOW)
+# A stop at a flat number of ticks below entry. It carries no structure at all,
+# which is the point: if it matches the retest low at the same distance, then
+# the retest low was never anything but a distance.
+STOP_FIXED_TICKS = "fixed_ticks"
+STOP_RULES = (STOP_RETEST_LOW, STOP_ENTRY_BAR_LOW, STOP_FIXED_TICKS)
+DEFAULT_STOP_TICKS = 4.0
 
 
 @dataclass(frozen=True)
@@ -121,6 +127,7 @@ class BreakoutRetestEngine:
         require_retest: bool = True,
         require_trigger: bool = True,
         stop_rule: str = STOP_RETEST_LOW,
+        stop_ticks: float = DEFAULT_STOP_TICKS,
     ) -> None:
         if stop_rule not in STOP_RULES:
             raise ValueError(f"unknown stop_rule: {stop_rule}")
@@ -130,6 +137,8 @@ class BreakoutRetestEngine:
             raise ValueError("require_trigger needs require_retest")
         if stop_rule == STOP_RETEST_LOW and not require_retest:
             raise ValueError("stop_rule=retest_low needs require_retest")
+        if stop_rule == STOP_FIXED_TICKS and stop_ticks <= 0:
+            raise ValueError("stop_ticks must be > 0")
         self._swing_n = swing_n
         self._swing_rule = swing_rule
         self._breakout_rvol = breakout_rvol
@@ -141,6 +150,8 @@ class BreakoutRetestEngine:
         self._require_retest = require_retest
         self._require_trigger = require_trigger
         self._stop_rule = stop_rule
+        self._stop_ticks = stop_ticks
+        self._cost_model = TaiwanDayTradeCostModel()
         self._symbols: dict[str, _SymbolSetup] = {}
         self.corrections_applied = 0
         self.corrections_after_signal = 0
@@ -325,7 +336,12 @@ class BreakoutRetestEngine:
         decided here, on this bar, so nothing about the trade is settled later.
         """
         entry = bar.close
-        stop = state.retest_low if self._stop_rule == STOP_RETEST_LOW else bar.low
+        if self._stop_rule == STOP_RETEST_LOW:
+            stop = state.retest_low
+        elif self._stop_rule == STOP_FIXED_TICKS:
+            stop = entry - self._stop_ticks * self._cost_model.tick_size(entry)
+        else:
+            stop = bar.low
         risk = entry - stop if stop is not None else 0.0
         if risk <= 0:
             return self._invalidate(state, bar, "non_positive_risk")

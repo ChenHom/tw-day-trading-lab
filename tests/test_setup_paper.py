@@ -20,6 +20,7 @@ from tw_day_trading_lab.setup import (
     INVALIDATED,
     SIGNAL,
     STOP_ENTRY_BAR_LOW,
+    STOP_FIXED_TICKS,
     WAIT_RETEST,
     WAIT_TRIGGER,
     BreakoutRetestEngine,
@@ -627,6 +628,22 @@ class AblationFlagsTest(unittest.TestCase):
         self.assertEqual([e.state for e in events], [INVALIDATED])
         self.assertEqual(events[0].reason, "non_positive_risk")
 
+    def test_fixed_tick_stop_scales_with_the_price_band(self):
+        """The control has to be a distance, not a fixed number of dollars."""
+        bars = build([self.BREAKOUT, self.RETEST, (118, 111, 117)])
+
+        _, events = feed(
+            bars,
+            {5: rvol(2.0)},
+            BreakoutRetestEngine(stop_rule=STOP_FIXED_TICKS, stop_ticks=4),
+        )
+
+        signal = events[-1]
+        # Entry 117 is in the 100-500 band, so a tick is 0.50 and four is 2.00.
+        self.assertEqual(signal.entry_price, 117)
+        self.assertEqual(signal.stop_price, 115.0)
+        self.assertEqual(signal.target_price, 117 + 2 * 2.0)
+
     def test_contradictory_combinations_are_refused(self):
         with self.assertRaises(ValueError):
             BreakoutRetestEngine(require_retest=False)  # trigger still required
@@ -635,6 +652,8 @@ class AblationFlagsTest(unittest.TestCase):
             BreakoutRetestEngine(require_retest=False, require_trigger=False)
         with self.assertRaises(ValueError):
             BreakoutRetestEngine(stop_rule="atr")
+        with self.assertRaises(ValueError):
+            BreakoutRetestEngine(stop_rule=STOP_FIXED_TICKS, stop_ticks=0)
 
 
 class SummarizeExpectancyTest(unittest.TestCase):
