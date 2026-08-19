@@ -2961,3 +2961,82 @@ sym   ticks   有效價差(元)   = 幾個 tick     sym   ticks   有效價差  
 - 20 筆裡有 1 筆的停損只有 2 個 tick，那種 setup 應該在進場前就被判定為不可交易，而不是事後在報表上看到 -1.0
 
 `slippage_ticks_per_side` 由 1.0 改為 0.5 有本次量測支持，但**尚未更動預設**。
+
+## 2026-08-19 (3) PA-P9 實作：成本進入 R，expectancy / PF / MDD 上線
+
+非交易時段做，全程只讀已存資料，不碰 API。
+
+### 改了什麼
+
+```text
+cost.py       slippage_ticks_per_side 1.0 → 0.5（本日 12 檔量測支持，見上一節）
+paper.py      PaperTrade 新增 cost_r / net_r / risk_ticks
+              summary 新增 net_total_r / average_net_r
+              新增 summarize_expectancy()：expectancy / win_rate / PF / MDD，毛淨並列
+cli.py        paper funnel 輸出逐筆 trades 與 expectancy
+              run-day 與 funnel 都印毛淨兩行
+```
+
+設計上的三個決定：
+
+- **毛與淨永遠並列印出。** 只看毛數無法決定任何事；只看淨數則看不出來虧損是規則造成還是成本造成。
+- **`profit_factor` 在沒有虧損交易時回 `None` 而非 inf 或 0。** 沒有分母就是沒有這個數字，不要給一個看起來像結論的值。
+- **`risk_ticks` 只回報不設限。** 停損只有 2 個 tick 的 setup 應該被擋，但要用幾個 tick 當門檻是策略決定，目前樣本 24 筆不足以定，先讓每筆帶著這個欄位。
+
+### 20 日 12 檔的實際數字（2026-07-23 … 08-19）
+
+```text
+        total_R   expectancy   win_rate      PF     MDD
+gross     -5.10       -0.213       0.33  0.6171    8.90
+net      -15.08       -0.628       0.21  0.2693   16.38
+cost_R 中位數 0.35  最大 1.41       risk_ticks 最小 2.0  中位數 7.0
+```
+
+依出場原因拆開：
+
+```text
+              n     gross      net
+force_exit   10     +2.90    -0.76
+stop         12    -12.00   -17.67
+target_2r     2     +4.00    +3.35
+```
+
+**`force_exit` 這一組是關鍵**：毛數 +2.90 是正的，扣成本後變 -0.76。也就是「撐到 13:25 收場」的那批交易賺的錢，剛好被成本吃光。這批佔 10/24。
+
+### 時間切分（不是嚴謹的 OOS，樣本不足）
+
+```text
+                 n   gross_total  net_total   gross_expectancy   net_expectancy
+前半 07-23~     10        +1.80      -1.90            +0.180          -0.190
+後半 08-06~     14        -6.90     -13.19            -0.493          -0.942
+```
+
+前半毛數是正的、淨數已經是負的；後半兩者都明顯轉差。**24 筆分兩半各 10/14 筆，這個切分沒有統計意義**，記錄下來是為了之後樣本夠時能回頭對照，不是結論。
+
+### 一個必須知道的口徑差異
+
+`paper funnel` 是**逐檔獨立**跑 `run_paper_trading_day`，所以 `max_new_entries` 與「同一檔已有部位」這兩個組合層級的限制不會生效；`paper run-day` 則是所有標的一起跑。因此 funnel 的 24 筆 > run-day 逐日加總的 20 筆。
+
+**funnel 量的是規則產出率，run-day 量的是實際組合會做到的交易。** 兩個數字不該互相取代。
+
+### 驗證
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 354 tests, OK
+```
+
+349 → 354。新增：expectancy / PF / MDD 的手算對照、成本讓賺錢交易變賠錢、無虧損時 PF 為 None、空輸入不除零、trade 帶回 cost_r / net_r / risk_ticks。
+
+### 目前能說與不能說的
+
+能說：**這組規則在 2026-07-23 到 08-19、12 檔、24 筆交易上，毛數與淨數都是負的**，且成本佔了毛淨差距的 9.98 R。
+
+不能說：策略無效。24 筆不足以下這個判斷，而且 `force_exit` 佔 10 筆——那批的損益是由「13:25 平倉」這條規則決定的，不是由進出場邏輯決定的。
+
+### Next-run Seed
+
+1. 08-20 / 08-21 排程照跑，樣本會累積到約 30 筆。
+2. 下一個該問的問題是 **`force_exit` 那 10 筆如果不在 13:25 平倉會怎樣**，因為那批是毛正淨負，最接近打平。這需要延長持有到收盤的對照組，是分析不是調參。
+3. `risk_ticks` 門檻仍未設。
+4. `FULL_SESSION_MINUTES = 266` 與 provider 的 270 仍未對齊。
+5. `backfill.py` 30 天自動分段仍未做。

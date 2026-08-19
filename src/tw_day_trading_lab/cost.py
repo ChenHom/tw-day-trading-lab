@@ -7,7 +7,9 @@ class TaiwanDayTradeCostModel:
     commission_rate: float = 0.001425       # 1.425‰
     commission_discount: float = 0.3        # 3折
     day_trade_tax_rate: float = 0.0015      # 減半當沖稅 0.15%
-    slippage_ticks_per_side: float = 1.0    # 買賣各滑 1 tick
+    # 2026-08-19 量測 12 檔的 tick_type，有效價差落在 0.71-1.00 個 tick。
+    # 買在賣價、賣在買價，一趟來回付的是「一次」價差，所以單邊 0.5 tick。
+    slippage_ticks_per_side: float = 0.5
 
     def tick_size(self, price: float) -> float:
         """台股最小升降單位 (Tick Size)"""

@@ -13,6 +13,7 @@ from tw_day_trading_lab.paper import (
     EXIT_TARGET,
     load_traded_setups,
     run_paper_trading_day,
+    summarize_expectancy,
 )
 from tw_day_trading_lab.rvol import RvolResult
 from tw_day_trading_lab.setup import (
@@ -550,6 +551,77 @@ class MarketDataHealthResolutionTest(unittest.TestCase):
 
         self.assertTrue(result["healthy"])
         self.assertEqual(result["source"], "assumed_healthy")
+
+
+class SummarizeExpectancyTest(unittest.TestCase):
+    """PA-P9. The numbers that decide whether any of this is worth trading."""
+
+    @staticmethod
+    def _trade(r, cost_r=0.2, risk_ticks=6.0):
+        return {"r": r, "cost_r": cost_r, "net_r": r - cost_r, "risk_ticks": risk_ticks}
+
+    def test_expectancy_profit_factor_and_drawdown(self):
+        trades = [self._trade(2.0), self._trade(-1.0), self._trade(-1.0), self._trade(2.0)]
+
+        summary = summarize_expectancy(trades)
+
+        gross = summary["gross"]
+        self.assertEqual(summary["trades"], 4)
+        self.assertEqual(gross["total_r"], 2.0)
+        self.assertEqual(gross["expectancy_r"], 0.5)
+        self.assertEqual(gross["win_rate"], 0.5)
+        self.assertEqual(gross["average_win_r"], 2.0)
+        self.assertEqual(gross["average_loss_r"], -1.0)
+        self.assertEqual(gross["profit_factor"], 2.0)
+        # Equity walks 2.0 -> 1.0 -> 0.0 -> 2.0, so the worst peak-to-trough is 2.0.
+        self.assertEqual(gross["max_drawdown_r"], 2.0)
+
+    def test_cost_moves_a_winner_into_a_loser(self):
+        """The whole point of PA-P9: gross and net can disagree about the sign."""
+        summary = summarize_expectancy([self._trade(0.5, cost_r=0.9)])
+
+        self.assertEqual(summary["gross"]["total_r"], 0.5)
+        self.assertEqual(summary["net"]["total_r"], -0.4)
+        self.assertEqual(summary["gross"]["win_rate"], 1.0)
+        self.assertEqual(summary["net"]["win_rate"], 0.0)
+
+    def test_profit_factor_is_none_without_a_losing_trade(self):
+        """No loss means the ratio is undefined, not infinite and not zero."""
+        summary = summarize_expectancy([self._trade(2.0)])
+
+        self.assertIsNone(summary["gross"]["profit_factor"])
+
+    def test_empty_input_does_not_divide_by_zero(self):
+        summary = summarize_expectancy([])
+
+        self.assertEqual(summary["trades"], 0)
+        self.assertEqual(summary["gross"]["expectancy_r"], 0.0)
+        self.assertNotIn("cost_r", summary)
+
+
+class PaperTradeCostTest(unittest.TestCase):
+    """A trade must carry what it cost, not just what it moved."""
+
+    def test_trade_reports_cost_and_net_r(self):
+        report = run_paper_trading_day(
+            trading_date=DATE,
+            bars=winning_day(),
+            rvol_by_key={f"2330|{DATE}T09:25:00": rvol(2.0)},
+        )
+
+        self.assertEqual(len(report["trades"]), 1)
+        trade = report["trades"][0]
+        self.assertGreater(trade["cost_r"], 0.0)
+        self.assertAlmostEqual(trade["net_r"], trade["r"] - trade["cost_r"], places=9)
+        # Entry 117 sits in the 100-500 band, so the tick is 0.50 and the 7 point
+        # risk is 14 ticks of it.
+        self.assertAlmostEqual(trade["risk_ticks"], 14.0, places=9)
+        self.assertAlmostEqual(
+            report["summary"]["net_total_r"],
+            report["summary"]["total_r"] - trade["cost_r"],
+            places=9,
+        )
+        self.assertEqual(report["expectancy"]["trades"], 1)
 
 
 if __name__ == "__main__":

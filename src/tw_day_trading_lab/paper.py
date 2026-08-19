@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .bars import MarketBar
+from .cost import TaiwanDayTradeCostModel
 from .ledger import DuplicateIntentError, OrderIntent, PaperLedger
 from .rvol import RvolResult
 from .setup import SIGNAL, BreakoutRetestEngine, SetupEvent
@@ -53,6 +54,9 @@ class PaperTrade:
     exit_price: float
     exit_reason: str
     r: float
+    cost_r: float
+    net_r: float
+    risk_ticks: float
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -66,6 +70,9 @@ class PaperTrade:
             "exit_price": self.exit_price,
             "exit_reason": self.exit_reason,
             "r": self.r,
+            "cost_r": self.cost_r,
+            "net_r": self.net_r,
+            "risk_ticks": self.risk_ticks,
         }
 
 
@@ -90,6 +97,7 @@ class _DayState:
     entries: int = 0
     traded_setups: set[str] = field(default_factory=set)
     traded_setups_path: Path | None = None
+    cost_model: TaiwanDayTradeCostModel = field(default_factory=TaiwanDayTradeCostModel)
 
 
 def run_paper_trading_day(
@@ -104,12 +112,15 @@ def run_paper_trading_day(
     force_exit_at: str = DEFAULT_FORCE_EXIT_AT,
     engine: BreakoutRetestEngine | None = None,
     traded_setups_path: Path | None = None,
+    cost_model: TaiwanDayTradeCostModel | None = None,
 ) -> dict[str, Any]:
     """Replay one trading day and return trades plus an audit of what was skipped."""
     engine = engine or BreakoutRetestEngine()
+    cost_model = cost_model or TaiwanDayTradeCostModel()
     lookup = rvol_by_key or {}
     state = _DayState(traded_setups=load_traded_setups(traded_setups_path))
     state.traded_setups_path = traded_setups_path
+    state.cost_model = cost_model
 
     ordered = sorted(bars, key=lambda bar: (bar.start_at, bar.symbol))
     for bar in ordered:
@@ -258,6 +269,12 @@ def _close(
     reason: str,
 ) -> None:
     risk = position.entry_price - position.stop_price
+    gross_r = ((exit_price - position.entry_price) / risk) if risk else 0.0
+    # Cost is charged in R so it stays comparable across a 47 dollar stock and a
+    # 3870 dollar one. At these stop distances it is not a rounding term: a two
+    # tick stop on a 5 dollar tick pays more than one R just to open and close.
+    cost_r = state.cost_model.cost_r(position.entry_price, position.stop_price)
+    tick = state.cost_model.tick_size(position.entry_price)
     state.trades.append(
         PaperTrade(
             setup_id=position.setup_id,
@@ -269,15 +286,65 @@ def _close(
             exit_time=exit_time,
             exit_price=exit_price,
             exit_reason=reason,
-            r=((exit_price - position.entry_price) / risk) if risk else 0.0,
+            r=gross_r,
+            cost_r=cost_r,
+            net_r=gross_r - cost_r,
+            risk_ticks=(risk / tick) if tick else 0.0,
         )
     )
     state.positions.pop(position.symbol, None)
 
 
+def summarize_expectancy(trades: Sequence[Any]) -> dict[str, Any]:
+    """Expectancy, profit factor and max drawdown, gross and net of cost.
+
+    Accepts PaperTrade or the dicts they serialise to, so a multi-day funnel can
+    pass accumulated rows straight in. Gross and net are always reported side by
+    side: gross alone has never been the number that decides anything, and net
+    alone hides whether the cost or the rule is what lost the money.
+    """
+    rows = [t if isinstance(t, dict) else t.to_dict() for t in trades]
+    out: dict[str, Any] = {"trades": len(rows)}
+    for label, key in (("gross", "r"), ("net", "net_r")):
+        values = [float(row[key]) for row in rows]
+        wins = [v for v in values if v > 0]
+        losses = [v for v in values if v < 0]
+        gain = sum(wins)
+        pain = -sum(losses)
+        equity = 0.0
+        peak = 0.0
+        drawdown = 0.0
+        for value in values:
+            equity += value
+            peak = max(peak, equity)
+            drawdown = max(drawdown, peak - equity)
+        out[label] = {
+            "total_r": round(sum(values), 4),
+            "expectancy_r": round(sum(values) / len(values), 4) if values else 0.0,
+            "win_rate": round(len(wins) / len(values), 4) if values else 0.0,
+            "average_win_r": round(gain / len(wins), 4) if wins else 0.0,
+            "average_loss_r": round(-pain / len(losses), 4) if losses else 0.0,
+            # No trade can lose an infinite amount, but a sample with no losing
+            # trade has no measurable profit factor - say so instead of dividing.
+            "profit_factor": round(gain / pain, 4) if pain else None,
+            "max_drawdown_r": round(drawdown, 4),
+        }
+    if rows:
+        out["cost_r"] = {
+            "median": round(sorted(float(row["cost_r"]) for row in rows)[len(rows) // 2], 4),
+            "max": round(max(float(row["cost_r"]) for row in rows), 4),
+        }
+        out["risk_ticks"] = {
+            "min": round(min(float(row["risk_ticks"]) for row in rows), 2),
+            "median": round(sorted(float(row["risk_ticks"]) for row in rows)[len(rows) // 2], 2),
+        }
+    return out
+
+
 def _report(trading_date: str, state: _DayState, healthy: bool) -> dict[str, Any]:
     trades = state.trades
     total_r = sum(trade.r for trade in trades)
+    net_total_r = sum(trade.net_r for trade in trades)
     return {
         "trading_date": trading_date,
         "market_data_healthy": healthy,
@@ -288,9 +355,12 @@ def _report(trading_date: str, state: _DayState, healthy: bool) -> dict[str, Any
             "losses": sum(1 for trade in trades if trade.r < 0),
             "total_r": total_r,
             "average_r": (total_r / len(trades)) if trades else 0.0,
+            "net_total_r": net_total_r,
+            "average_net_r": (net_total_r / len(trades)) if trades else 0.0,
             "open_positions": len(state.positions),
             "skipped": len(state.skipped),
         },
+        "expectancy": summarize_expectancy(trades),
         "trades": [trade.to_dict() for trade in trades],
         "setup_events": [event.to_dict() for event in state.events],
         "skipped": state.skipped,

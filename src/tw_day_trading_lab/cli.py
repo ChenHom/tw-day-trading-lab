@@ -23,7 +23,7 @@ from .bars import (
     list_stored_dates,
     load_latest_bars,
 )
-from .paper import run_paper_trading_day
+from .paper import run_paper_trading_day, summarize_expectancy
 from .rvol import build_volume_baseline, compute_rvol_series
 from .setup import BreakoutRetestEngine
 from .structure import DEFAULT_SWING_RULE, SWING_RULES, detect_swing_points
@@ -3401,6 +3401,7 @@ def cmd_paper_funnel(args: argparse.Namespace) -> None:
     exits: dict[str, int] = {}
     skips: dict[str, int] = {}
     signals: list[dict[str, object]] = []
+    trades: list[dict[str, object]] = []
 
     for date in target_dates:
         history_dates = [d for d in all_dates if d < date][-args.lookback_days:]
@@ -3455,6 +3456,10 @@ def cmd_paper_funnel(args: argparse.Namespace) -> None:
             stages["paper_entry"] += report["summary"]["entries"]
             for trade in report["trades"]:
                 exits[trade["exit_reason"]] = exits.get(trade["exit_reason"], 0) + 1
+                # Kept per trade, not just counted: every expectancy question
+                # needs the R of each row, and re-running 20 days to get it back
+                # is how this was answered the first time.
+                trades.append({"date": date, **trade})
             for item in report["skipped"]:
                 skips[item["reason"]] = skips.get(item["reason"], 0) + 1
 
@@ -3468,7 +3473,9 @@ def cmd_paper_funnel(args: argparse.Namespace) -> None:
         "invalidations": dict(sorted(invalidations.items())),
         "exits": dict(sorted(exits.items())),
         "skipped": dict(sorted(skips.items())),
+        "expectancy": summarize_expectancy(trades),
         "signals": signals,
+        "trades": trades,
     }
     output = Path(args.output) if args.output else Path("reports") / "paper-funnel.json"
     write_json(output, payload)
@@ -3479,6 +3486,28 @@ def cmd_paper_funnel(args: argparse.Namespace) -> None:
     for label, table in (("invalidated", invalidations), ("exits", exits), ("skipped", skips)):
         if table:
             print(f"  {label}: " + ", ".join(f"{k}={v}" for k, v in sorted(table.items())))
+    _print_expectancy(payload["expectancy"])
+
+
+def _print_expectancy(summary: dict[str, object]) -> None:
+    """Print gross and net side by side; neither number means much alone."""
+    if not summary.get("trades"):
+        print("  expectancy: no trades")
+        return
+    print(f"  trades {summary['trades']}")
+    for label in ("gross", "net"):
+        row = summary[label]
+        factor = row["profit_factor"]
+        print(
+            f"  {label:<6} total_R {row['total_r']:+8.2f}  expectancy {row['expectancy_r']:+7.3f}"
+            f"  win_rate {row['win_rate']:.2f}  PF {factor if factor is not None else 'n/a':>6}"
+            f"  MDD {row['max_drawdown_r']:.2f}"
+        )
+    print(
+        f"  cost_R median {summary['cost_r']['median']:.2f} max {summary['cost_r']['max']:.2f}"
+        f"   risk_ticks min {summary['risk_ticks']['min']:.1f}"
+        f" median {summary['risk_ticks']['median']:.1f}"
+    )
 
 
 def cmd_paper_run_day(args: argparse.Namespace) -> None:
@@ -3523,8 +3552,10 @@ def cmd_paper_run_day(args: argparse.Namespace) -> None:
     summary = report["summary"]
     print(
         f"trades: {summary['trades']}  entries: {summary['entries']}  "
-        f"total_r: {summary['total_r']:.2f}  skipped: {summary['skipped']}"
+        f"total_r: {summary['total_r']:.2f}  net_total_r: {summary['net_total_r']:.2f}  "
+        f"skipped: {summary['skipped']}"
     )
+    _print_expectancy(report["expectancy"])
     print(
         f"market_data: healthy={market_data['healthy']} "
         f"source={market_data['source']}"
