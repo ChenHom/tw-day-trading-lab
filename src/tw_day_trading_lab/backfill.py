@@ -37,6 +37,33 @@ BAR_SOURCE_KBARS = "shioaji_kbars"
 # auction bar, so a complete session backfill is 266 bars, not 270.
 FULL_SESSION_MINUTES = 266
 
+# Shioaji refuses a kbars request spanning more than 30 days, so a long history
+# has to be fetched in pieces. Chunking here rather than at the CLI keeps it to
+# one login: 2 years x 12 symbols is ~290 requests, and re-logging in for each
+# one is both slow and a good way to hit the per-person connection cap.
+MAX_KBARS_RANGE_DAYS = 30
+
+
+def split_date_range(start_date: str, end_date: str, max_days: int = MAX_KBARS_RANGE_DAYS):
+    """Split an inclusive date range into consecutive spans of at most max_days.
+
+    Consecutive, not overlapping: a duplicated boundary day would be appended
+    twice, and a skipped one would leave a hole no counter would notice.
+    """
+    if max_days < 1:
+        raise ValueError("max_days must be >= 1")
+    start = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d")
+    if end < start:
+        raise ValueError(f"end_date {end_date} precedes start_date {start_date}")
+    spans = []
+    cursor = start
+    while cursor <= end:
+        stop = min(cursor + timedelta(days=max_days - 1), end)
+        spans.append((cursor.strftime("%Y-%m-%d"), stop.strftime("%Y-%m-%d")))
+        cursor = stop + timedelta(days=1)
+    return spans
+
 
 def normalize_shioaji_kbars(
     symbol: str,
@@ -166,20 +193,31 @@ def run_gated_shioaji_kbars_backfill(
         report["review_reason"] = "simulation_api_required"
         return report
 
+    try:
+        spans = split_date_range(start_date, end_date)
+    except ValueError as error:
+        report["review_reason"] = "invalid_date_range"
+        report["error"] = str(error)
+        return report
+
     report["side_effects"] = ["kbars_fetch"]
+    report["checks"]["request_spans"] = len(spans)
     fetch_kbars = fetch or _default_fetch
     stored: list[str] = []
     for symbol in symbol_list:
         entry: dict[str, Any] = {"symbol": symbol}
         try:
             contract = api.Contracts.Stocks[symbol]
-            raw = fetch_kbars(api, contract, start_date, end_date)
+            fetched = []
+            for span_start, span_end in spans:
+                raw = fetch_kbars(api, contract, span_start, span_end)
+                fetched.extend(normalize_shioaji_kbars(symbol, raw, volume_in_lots=volume_in_lots))
         except Exception as error:
             entry.update({"status": "failed", "error": str(error), "bars_1m": 0})
             report["symbols"].append(entry)
             continue
 
-        bars_1m = latest_bars(normalize_shioaji_kbars(symbol, raw, volume_in_lots=volume_in_lots))
+        bars_1m = latest_bars(fetched)
         bars_5m = latest_bars(aggregate_1m_to_5m(bars_1m))
         entry.update(
             {

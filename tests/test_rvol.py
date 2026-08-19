@@ -3,9 +3,11 @@ from datetime import datetime, timedelta, timezone
 
 from tw_day_trading_lab.backfill import (
     BAR_SOURCE_KBARS,
+    MAX_KBARS_RANGE_DAYS,
     check_backfill_against_daily,
     normalize_shioaji_kbars,
     run_gated_shioaji_kbars_backfill,
+    split_date_range,
 )
 from tw_day_trading_lab.bars import STATUS_CLOSED, MarketBar
 from tw_day_trading_lab.rvol import (
@@ -327,6 +329,80 @@ class KbarsBackfillTest(unittest.TestCase):
         self.assertEqual(report["status"], "failed")
         self.assertEqual(report["review_reason"], "kbars_fetch_failed")
         self.assertEqual(report["symbols"][0]["status"], "failed")
+
+
+class SplitDateRangeTest(unittest.TestCase):
+    """Chunking exists so a multi-year backfill is one login, not 290."""
+
+    def test_a_short_range_is_left_alone(self):
+        self.assertEqual(
+            split_date_range("2026-08-01", "2026-08-10"), [("2026-08-01", "2026-08-10")]
+        )
+
+    def test_exactly_the_limit_is_still_one_span(self):
+        spans = split_date_range("2026-08-01", "2026-08-30")
+
+        self.assertEqual(spans, [("2026-08-01", "2026-08-30")])
+
+    def test_one_day_over_the_limit_splits(self):
+        spans = split_date_range("2026-08-01", "2026-08-31")
+
+        self.assertEqual(spans, [("2026-08-01", "2026-08-30"), ("2026-08-31", "2026-08-31")])
+
+    def test_spans_are_consecutive_with_no_gap_and_no_overlap(self):
+        spans = split_date_range("2024-01-01", "2026-08-19")
+
+        for (_, previous_end), (next_start, _) in zip(spans, spans[1:]):
+            end = datetime.strptime(previous_end, "%Y-%m-%d")
+            start = datetime.strptime(next_start, "%Y-%m-%d")
+            self.assertEqual(start - end, timedelta(days=1), f"{previous_end} -> {next_start}")
+        self.assertEqual(spans[0][0], "2024-01-01")
+        self.assertEqual(spans[-1][1], "2026-08-19")
+        for span_start, span_end in spans:
+            span = datetime.strptime(span_end, "%Y-%m-%d") - datetime.strptime(
+                span_start, "%Y-%m-%d"
+            )
+            self.assertLessEqual(span.days + 1, MAX_KBARS_RANGE_DAYS)
+
+    def test_a_backwards_range_is_refused(self):
+        with self.assertRaises(ValueError):
+            split_date_range("2026-08-19", "2026-08-01")
+
+
+class ChunkedBackfillTest(unittest.TestCase):
+    def test_a_long_range_is_fetched_in_spans_within_one_call(self):
+        calls = []
+
+        def fetch(api, contract, start, end):
+            calls.append((start, end))
+            return FakeKbars(kbar_rows(1))
+
+        report = run_gated_shioaji_kbars_backfill(
+            api=FakeApi(),
+            symbols=["2330"],
+            start_date="2026-06-01",
+            end_date="2026-08-19",
+            enabled=True,
+            fetch=fetch,
+        )
+
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(report["checks"]["request_spans"], 3)
+        self.assertEqual(calls[0][0], "2026-06-01")
+        self.assertEqual(calls[-1][1], "2026-08-19")
+
+    def test_a_backwards_range_is_reported_not_raised(self):
+        report = run_gated_shioaji_kbars_backfill(
+            api=FakeApi(),
+            symbols=["2330"],
+            start_date="2026-08-19",
+            end_date="2026-06-01",
+            enabled=True,
+        )
+
+        self.assertEqual(report["review_reason"], "invalid_date_range")
+        self.assertEqual(report["side_effects"], [])
 
 
 if __name__ == "__main__":
