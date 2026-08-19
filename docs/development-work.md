@@ -3305,7 +3305,7 @@ require_rvol=False     連缺值都放行
 
 而且上一節兩個 arm 都走完 retest + trigger 且用 retest_low stop，本節的兩個 arm 是 breakout-only 加 entry_bar_low stop。**RVOL gate 的效果取決於它後面接什麼**，不能單獨宣稱它有用或沒用。先前那句話已限定在「full chain + retest_low stop」的條件下。
 
-### 結論三（最有價值）：retest 的貢獻不是過濾，是定義了一個更好的停損
+### 結論三（觀察，非結論）：retest low 當 stop 的表現較好，但差異通不過檢定
 
 `trigger` 與 `production` 是**同一組訊號**（68 / 70，都成交 65 筆），唯一差別是 stop：
 
@@ -3318,9 +3318,24 @@ exits      trigger     force_exit 11  stop 43  target 11
            production  force_exit 29  stop 29  target  7
 ```
 
-停損從 43 筆降到 29 筆，期望值從 -0.233 改善到 -0.092。**retest low 是一個實際上更能承受雜訊的價位**，而 entry bar low 太貼近進場價（中位數 3 tick 對 6 tick），成本佔比因此翻倍。
+停損從 43 筆降到 29 筆，期望值從 -0.233 改善到 -0.092。
 
-也就是說：把 retest 當成「篩選器」來評價會低估它。它在漏斗裡砍掉 176 筆 `retest_low_lost`，但它真正的產出是一個可用的 stop。
+**但這個差通不過檢定。** 兩個 arm 是同一組 setup，可以逐筆配對：
+
+```text
+配對 65 筆
+  36 筆結果完全相同
+  17 筆 production 較好  +23.54 R
+  12 筆 production 較差  -14.42 R
+  逐筆平均差 +0.1404 R   sd 1.076   se 0.133
+  t = 1.05   95% 區間 [-0.121, +0.402]
+```
+
+區間包含 0。**「retest 的貢獻是 stop 而不是過濾」這個說法目前沒有證據支持**，只能說觀察到 +0.14R 的方向，而 65 筆分不出它與雜訊的差別。
+
+即使效果為真，也還有第二個未分離的問題：production 的 stop 距離中位數是 6 tick，trigger 是 3 tick。優勢可能來自「那是買方守過的價位」（結構），也可能只來自「比較遠」（距離）。要分辨需要一個距離對照組，但在效果本身尚未確立之前不該做。
+
+要把 +0.14R 測到 80% power 需要 n ≈ (2.8 × 1.076 / 0.14)² ≈ 460 筆，是現在的 7 倍。
 
 ### 這次設計決定的偏誤，必須揭露
 
@@ -3357,5 +3372,5 @@ PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 360 tests, OK
 ### Next-run Seed
 
 1. `retest` arm 的偏誤要修：對「在回檔 bar 進場」的 arm 換一個不吃虧的共用 stop（例如 breakout level，或前 N 根的 low），重跑後才能讀淨期望值。
-2. 結論三值得單獨追：**如果 retest 的價值是 stop 而不是過濾**，那麼「用 retest low 當 stop 但不要求 retest 通過」這種組合是否存在？目前引擎做不到，也還沒想清楚語意。
+2. ~~「用 retest low 當 stop 但不要求 retest 通過」~~ —— **作廢**。retest low 要等 retest 發生才存在，而 retest 在突破之後，突破當根用它是 look-ahead。這個組合不存在。真正該問的是「拉遠 stop 本身是否足以解釋優勢」，但配對檢定顯示優勢本身就未確立，所以對照組也先不做。
 3. 所有 arm 毛期望值皆為負，仍不足以宣告規則無效——最鬆的 arm 有 430 筆，這個樣本量下 -0.149 已經不是雜訊了，值得正視。
