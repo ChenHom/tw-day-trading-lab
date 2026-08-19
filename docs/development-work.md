@@ -3243,3 +3243,119 @@ cli.py     funnel 加 --arms，並列輸出多組
 ### 事前判準
 
 跑 ablation 之前先寫下什麼結果會讓我們拿掉某個 gate，否則是事後找理由。以目前樣本，誠實的做法是**只報 effect size 與 n，不預先承諾行動**——真正可能下得了結論的只有 RVOL 這一層。
+
+## 2026-08-19 (7) Research Rule 的 ablation：第一次真的做
+
+repo 的 Research Rule 要求每加一個 feature 就做 ablation，這條至今沒被執行過。本節補上。
+
+### 引擎改動
+
+`setup.py` 新增四個參數，**只為 ablation 存在，不是調參旋鈕**：
+
+```text
+require_rvol      False 時，缺值與低量都不再擋突破
+require_retest    False 時，突破當根直接發訊號
+require_trigger   False 時，retest 當根直接發訊號
+stop_rule         retest_low（production）／ entry_bar_low（各 arm 共用）
+```
+
+拒絕矛盾組合（建構時就 raise）：
+
+```text
+require_trigger=True 且 require_retest=False   trigger 定義在 retest 之上
+stop_rule=retest_low 且 require_retest=False   retest low 不存在
+```
+
+`cli.py` 的 `paper funnel` 新增 `--arms`。重構後以同參數重跑，`stages` / `invalidations` / `exits` / `trades` / `expectancy` 與重構前**逐欄相同**，確認等價。
+
+### 五個 arm，46 天，12 檔
+
+```text
+arm         signals    n  gross_exp  net_exp      PF   win  cost_R  ticks  force%
+breakout        505  430     -0.149   -0.975   0.772  0.31    0.62    4.0     14%
+rvol            347  303     -0.178   -0.868   0.727  0.29    0.53    4.0     17%
+retest          187  180     -0.304   -1.771   0.593  0.23    1.30    2.0      4%
+trigger          68   65     -0.233   -1.030   0.657  0.26    0.73    3.0     17%
+production       70   65     -0.092   -0.538   0.814  0.37    0.37    6.0     45%
+```
+
+前四個 arm 共用 `entry_bar_low`；`production` 用 `retest_low`。**production 不是階梯的一員，是參照組。**
+
+### 結論一：整條鏈沒有把系統轉正，加 gate 也沒有改善毛期望值
+
+```text
+breakout   430 筆   -0.149
+  + RVOL   303 筆   -0.178   ← 砍掉 158 個訊號，期望值變差
+  + Retest 180 筆   -0.304
+  + Trigger 65 筆   -0.233
+```
+
+在共用 stop 的條件下，**最鬆的 arm 反而最不差**，而且樣本是 430 筆對 65 筆。這條階梯沒有顯示出「每加一層就更好」。
+
+### 結論二：先前「RVOL gate 有一點用」的說法要限定條件
+
+上一節用 `--breakout-rvol 0.0` 比出 gate 有幫助（-0.127 → -0.092）。本節用 `require_rvol=False` 比出 gate 有害（-0.149 → -0.178）。
+
+兩者不矛盾，是**兩種不同的鬆法**：
+
+```text
+--breakout-rvol 0.0    只放行「有值但很低」，rvol_insufficient 仍被擋（340 個）
+require_rvol=False     連缺值都放行
+```
+
+而且上一節兩個 arm 都走完 retest + trigger 且用 retest_low stop，本節的兩個 arm 是 breakout-only 加 entry_bar_low stop。**RVOL gate 的效果取決於它後面接什麼**，不能單獨宣稱它有用或沒用。先前那句話已限定在「full chain + retest_low stop」的條件下。
+
+### 結論三（最有價值）：retest 的貢獻不是過濾，是定義了一個更好的停損
+
+`trigger` 與 `production` 是**同一組訊號**（68 / 70，都成交 65 筆），唯一差別是 stop：
+
+```text
+                stop            gross_exp    PF   win   avg_win  avg_loss  cost_R  ticks
+trigger    entry_bar_low          -0.233  0.657  0.26     1.704    -0.958    0.73    3.0
+production   retest_low           -0.092  0.814  0.37     1.093    -0.848    0.37    6.0
+
+exits      trigger     force_exit 11  stop 43  target 11
+           production  force_exit 29  stop 29  target  7
+```
+
+停損從 43 筆降到 29 筆，期望值從 -0.233 改善到 -0.092。**retest low 是一個實際上更能承受雜訊的價位**，而 entry bar low 太貼近進場價（中位數 3 tick 對 6 tick），成本佔比因此翻倍。
+
+也就是說：把 retest 當成「篩選器」來評價會低估它。它在漏斗裡砍掉 176 筆 `retest_low_lost`，但它真正的產出是一個可用的 stop。
+
+### 這次設計決定的偏誤，必須揭露
+
+用單一 `entry_bar_low` 讓 arm 可比，代價比預期大：
+
+```text
+arm       risk_ticks 中位數   cost_R 中位數
+retest              2.0            1.30
+trigger             3.0            0.73
+breakout            4.0            0.62
+production          6.0            0.37
+```
+
+`retest` arm 在 retest 那根 bar 發訊號，而那是一根回檔 bar，low 貼近 close，於是 stop 只有 2 個 tick、成本 1.30R。**它的 net_exp -1.771 主要是這個結構造成的，不是 retest 這個 feature 造成的。**
+
+`entry_bar_low` 不是中性的。它對「在回檔 bar 進場」的 arm 系統性不利。我在設計時說它「在每個 arm 都存在」，那是對的，但沒有預見它會把成本結構綁進來。**arm 之間的毛期望值比較仍可讀，淨期望值比較不可讀。**
+
+### 無法消除、只能揭露的 confound
+
+`force%` 從 4% 到 45%。production 的停損較遠、活得較久，被 13:25 截斷的比例最高。13:25 是原則，不允許對照組，所以這欄只能附在表上讓人自行折算。
+
+### 事前判準的執行結果
+
+先前寫下的是「只報 effect size 與 n，不預先承諾行動」。照此執行：**沒有依據這份結果更動任何預設參數。**
+
+### 驗證
+
+```bash
+PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 360 tests, OK
+```
+
+354 → 360。新增：關掉 retest 時突破當根發訊號且 stop 取自進場 bar、關掉 trigger 時 retest 當根發訊號、關掉 RVOL 時缺值不再擋（並對照預設會擋）、同一組 bar 換 stop_rule 得到不同 stop 相同 entry、close 等於 low 時 `non_positive_risk`、三種矛盾組合 raise。
+
+### Next-run Seed
+
+1. `retest` arm 的偏誤要修：對「在回檔 bar 進場」的 arm 換一個不吃虧的共用 stop（例如 breakout level，或前 N 根的 low），重跑後才能讀淨期望值。
+2. 結論三值得單獨追：**如果 retest 的價值是 stop 而不是過濾**，那麼「用 retest low 當 stop 但不要求 retest 通過」這種組合是否存在？目前引擎做不到，也還沒想清楚語意。
+3. 所有 arm 毛期望值皆為負，仍不足以宣告規則無效——最鬆的 arm 有 430 筆，這個樣本量下 -0.149 已經不是雜訊了，值得正視。

@@ -21,6 +21,13 @@ explicit condition so a replay can be argued about:
 
 A breakout level is used at most once per symbol per run, so a signal cannot
 re-fire off the same swing while price sits above it.
+
+`require_rvol` / `require_retest` / `require_trigger` exist for the ablation the
+repo's Research Rule demands, and for nothing else. Turning a stage off is not a
+tuning knob: the arms are not nested, because production takes its stop from the
+retest low, which does not exist once the retest is gone. An ablation therefore
+has to put every arm on one `stop_rule` and treat the production configuration
+as a separate reference arm - see docs/development-work.md 2026-08-19 (6).
 """
 
 from __future__ import annotations
@@ -42,6 +49,12 @@ DEFAULT_BREAKOUT_RVOL = 1.5
 DEFAULT_RETEST_TOLERANCE = 0.003
 DEFAULT_RETEST_WINDOW = 6
 DEFAULT_TARGET_R = 2.0
+
+# Stop definitions. The retest low is production. The entry bar low exists in
+# every arm, which is what makes an ablation comparable at all.
+STOP_RETEST_LOW = "retest_low"
+STOP_ENTRY_BAR_LOW = "entry_bar_low"
+STOP_RULES = (STOP_RETEST_LOW, STOP_ENTRY_BAR_LOW)
 
 
 @dataclass(frozen=True)
@@ -104,7 +117,19 @@ class BreakoutRetestEngine:
         target_r: float = DEFAULT_TARGET_R,
         timeframe: str = TIMEFRAME_5M,
         swing_rule: str = DEFAULT_SWING_RULE,
+        require_rvol: bool = True,
+        require_retest: bool = True,
+        require_trigger: bool = True,
+        stop_rule: str = STOP_RETEST_LOW,
     ) -> None:
+        if stop_rule not in STOP_RULES:
+            raise ValueError(f"unknown stop_rule: {stop_rule}")
+        # A trigger is defined as the break of the high formed by the retest, so
+        # it cannot outlive the stage it is measured against.
+        if require_trigger and not require_retest:
+            raise ValueError("require_trigger needs require_retest")
+        if stop_rule == STOP_RETEST_LOW and not require_retest:
+            raise ValueError("stop_rule=retest_low needs require_retest")
         self._swing_n = swing_n
         self._swing_rule = swing_rule
         self._breakout_rvol = breakout_rvol
@@ -112,6 +137,10 @@ class BreakoutRetestEngine:
         self._retest_window = retest_window
         self._target_r = target_r
         self._timeframe = timeframe
+        self._require_rvol = require_rvol
+        self._require_retest = require_retest
+        self._require_trigger = require_trigger
+        self._stop_rule = stop_rule
         self._symbols: dict[str, _SymbolSetup] = {}
         self.corrections_applied = 0
         self.corrections_after_signal = 0
@@ -216,11 +245,13 @@ class BreakoutRetestEngine:
         level = highs[-1].price
         if level in state.used_levels or bar.close <= level:
             return None
-        # An unknown volume is not a passing volume gate.
-        if rvol is None or rvol.status != STATUS_OK or rvol.tod_rvol is None:
-            return None
-        if rvol.tod_rvol < self._breakout_rvol:
-            return None
+        if self._require_rvol:
+            # An unknown volume is not a passing volume gate.
+            if rvol is None or rvol.status != STATUS_OK or rvol.tod_rvol is None:
+                return None
+            if rvol.tod_rvol < self._breakout_rvol:
+                return None
+        measured_rvol = rvol.tod_rvol if rvol is not None else None
 
         state.used_levels.add(level)
         state.state = WAIT_RETEST
@@ -229,6 +260,10 @@ class BreakoutRetestEngine:
         state.bars_since_breakout = 0
         state.retest_low = None
         state.trigger_level = None
+        if not self._require_retest:
+            return self._emit_signal(
+                state, bar, "breakout_close_above_swing_high", tod_rvol=measured_rvol
+            )
         return SetupEvent(
             setup_id=state.setup_id,
             symbol=bar.symbol,
@@ -236,7 +271,7 @@ class BreakoutRetestEngine:
             at=bar.start_at,
             reason="breakout_confirmed",
             breakout_level=level,
-            tod_rvol=rvol.tod_rvol,
+            tod_rvol=measured_rvol,
         )
 
     def _check_retest(self, state: _SymbolSetup, bar: MarketBar) -> SetupEvent | None:
@@ -250,6 +285,8 @@ class BreakoutRetestEngine:
             state.state = WAIT_TRIGGER
             state.retest_low = bar.low
             state.trigger_level = bar.high
+            if not self._require_trigger:
+                return self._emit_signal(state, bar, "retest_accepted_no_trigger")
             return SetupEvent(
                 setup_id=state.setup_id,
                 symbol=bar.symbol,
@@ -271,29 +308,43 @@ class BreakoutRetestEngine:
 
         trigger_level = state.trigger_level or 0.0
         if bar.close > trigger_level:
-            entry = bar.close
-            stop = retest_low
-            risk = entry - stop
-            if risk <= 0:
-                return self._invalidate(state, bar, "non_positive_risk")
-            event = SetupEvent(
-                setup_id=state.setup_id,
-                symbol=bar.symbol,
-                state=SIGNAL,
-                at=bar.start_at,
-                reason="trigger_break_local_high",
-                breakout_level=state.breakout_level,
-                retest_low=retest_low,
-                entry_price=entry,
-                stop_price=stop,
-                target_price=entry + self._target_r * risk,
-            )
-            state.last_signal_at = bar.start_at
-            self._reset(state)
-            return event
+            return self._emit_signal(state, bar, "trigger_break_local_high")
 
         state.trigger_level = max(trigger_level, bar.high)
         return None
+
+    def _emit_signal(
+        self,
+        state: _SymbolSetup,
+        bar: MarketBar,
+        reason: str,
+        *,
+        tod_rvol: float | None = None,
+    ) -> SetupEvent:
+        """Price the signal and close the setup. Entry, stop and target are all
+        decided here, on this bar, so nothing about the trade is settled later.
+        """
+        entry = bar.close
+        stop = state.retest_low if self._stop_rule == STOP_RETEST_LOW else bar.low
+        risk = entry - stop if stop is not None else 0.0
+        if risk <= 0:
+            return self._invalidate(state, bar, "non_positive_risk")
+        event = SetupEvent(
+            setup_id=state.setup_id,
+            symbol=bar.symbol,
+            state=SIGNAL,
+            at=bar.start_at,
+            reason=reason,
+            breakout_level=state.breakout_level,
+            retest_low=state.retest_low,
+            entry_price=entry,
+            stop_price=stop,
+            target_price=entry + self._target_r * risk,
+            tod_rvol=tod_rvol,
+        )
+        state.last_signal_at = bar.start_at
+        self._reset(state)
+        return event
 
     def _invalidate(self, state: _SymbolSetup, bar: MarketBar, reason: str) -> SetupEvent:
         event = SetupEvent(

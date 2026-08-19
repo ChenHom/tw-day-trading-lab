@@ -25,7 +25,7 @@ from .bars import (
 )
 from .paper import run_paper_trading_day, summarize_expectancy
 from .rvol import build_volume_baseline, compute_rvol_series
-from .setup import BreakoutRetestEngine
+from .setup import STOP_ENTRY_BAR_LOW, STOP_RETEST_LOW, BreakoutRetestEngine
 from .structure import DEFAULT_SWING_RULE, SWING_RULES, detect_swing_points
 from .ledger import PaperLedger
 from .market_data import (
@@ -3367,6 +3367,24 @@ def cmd_bars_swing_yield(args: argparse.Namespace) -> None:
             f"{tt['breakout_candidates']:>10}{tt['days_with_breakout_candidate']:>9}"
         )
 
+ABLATION_ARMS = {
+    # The Research Rule ablation. Every arm but `production` shares one stop
+    # rule, because the arms are only comparable if the stop is not also
+    # changing underneath them. `production` is the reference, not a member of
+    # the ladder: its stop is the retest low, so its numbers are not
+    # interchangeable with the rest.
+    "breakout": dict(require_rvol=False, require_retest=False, require_trigger=False,
+                     stop_rule=STOP_ENTRY_BAR_LOW),
+    "rvol": dict(require_rvol=True, require_retest=False, require_trigger=False,
+                 stop_rule=STOP_ENTRY_BAR_LOW),
+    "retest": dict(require_rvol=True, require_retest=True, require_trigger=False,
+                   stop_rule=STOP_ENTRY_BAR_LOW),
+    "trigger": dict(require_rvol=True, require_retest=True, require_trigger=True,
+                    stop_rule=STOP_ENTRY_BAR_LOW),
+    "production": dict(require_rvol=True, require_retest=True, require_trigger=True,
+                       stop_rule=STOP_RETEST_LOW),
+}
+
 
 def cmd_paper_funnel(args: argparse.Namespace) -> None:
     """Count how many candidates survive each PA-P6 to PA-P8 stage.
@@ -3374,6 +3392,11 @@ def cmd_paper_funnel(args: argparse.Namespace) -> None:
     Runs the real engine and the real day runner per symbol-day, so the counts
     are what production would produce - not a reimplementation. The point is to
     see WHICH gate the signals die at before touching any threshold.
+
+    With `--arms` the same window is replayed once per ablation arm, which is
+    what the Research Rule asks for. Read the arm table with the sample size in
+    view: dropping a stage raises the trade count, so the loose arms carry the
+    statistical weight and the tight ones do not.
     """
     store_dir = Path(args.store_dir)
     symbols = _resolve_tick_smoke_symbols(args)
@@ -3385,6 +3408,49 @@ def cmd_paper_funnel(args: argparse.Namespace) -> None:
         all_dates = [d for d in all_dates if d <= args.date]
     target_dates = all_dates[-args.days:]
 
+    arms = [name.strip() for name in args.arms.split(",")] if args.arms else []
+    for name in arms:
+        if name not in ABLATION_ARMS:
+            raise ValueError(f"unknown arm {name}; choose from {', '.join(ABLATION_ARMS)}")
+
+    if not arms:
+        payload = _run_funnel_arm(store_dir, args, symbols, target_dates, all_dates, {})
+        output = Path(args.output) if args.output else Path("reports") / "paper-funnel.json"
+        write_json(output, payload)
+        print(output)
+        _print_funnel(payload, args, len(target_dates))
+        return
+
+    results = {
+        name: _run_funnel_arm(
+            store_dir, args, symbols, target_dates, all_dates, ABLATION_ARMS[name]
+        )
+        for name in arms
+    }
+    payload = {
+        "dates": target_dates,
+        "symbols": symbols,
+        "swing_rule": args.swing_rule,
+        "breakout_rvol": args.breakout_rvol,
+        "lookback_days": args.lookback_days,
+        "arms": {name: ABLATION_ARMS[name] for name in arms},
+        "results": results,
+    }
+    output = Path(args.output) if args.output else Path("reports") / "paper-funnel-ablation.json"
+    write_json(output, payload)
+    print(output)
+    _print_ablation(results, args, len(target_dates))
+
+
+def _run_funnel_arm(
+    store_dir: Path,
+    args: argparse.Namespace,
+    symbols: list[str],
+    target_dates: list[str],
+    all_dates: list[str],
+    engine_options: dict[str, object],
+) -> dict[str, object]:
+    """Replay the whole window with one engine configuration."""
     stages = {
         "symbol_days": 0,
         "bars": 0,
@@ -3441,6 +3507,7 @@ def cmd_paper_funnel(args: argparse.Namespace) -> None:
                     swing_n=args.swing_n,
                     swing_rule=args.swing_rule,
                     breakout_rvol=args.breakout_rvol,
+                    **engine_options,
                 ),
             )
             for event in report["setup_events"]:
@@ -3463,12 +3530,13 @@ def cmd_paper_funnel(args: argparse.Namespace) -> None:
             for item in report["skipped"]:
                 skips[item["reason"]] = skips.get(item["reason"], 0) + 1
 
-    payload = {
+    return {
         "dates": target_dates,
         "symbols": symbols,
         "swing_rule": args.swing_rule,
         "breakout_rvol": args.breakout_rvol,
         "lookback_days": args.lookback_days,
+        "engine_options": {k: v for k, v in engine_options.items()},
         "stages": stages,
         "invalidations": dict(sorted(invalidations.items())),
         "exits": dict(sorted(exits.items())),
@@ -3477,16 +3545,46 @@ def cmd_paper_funnel(args: argparse.Namespace) -> None:
         "signals": signals,
         "trades": trades,
     }
-    output = Path(args.output) if args.output else Path("reports") / "paper-funnel.json"
-    write_json(output, payload)
-    print(output)
-    print(f"rule={args.swing_rule} rvol_gate={args.breakout_rvol} days={len(target_dates)}")
-    for key, value in stages.items():
+
+
+def _print_funnel(payload: dict, args: argparse.Namespace, days: int) -> None:
+    print(f"rule={args.swing_rule} rvol_gate={args.breakout_rvol} days={days}")
+    for key, value in payload["stages"].items():
         print(f"  {key:<24}{value:>8}")
-    for label, table in (("invalidated", invalidations), ("exits", exits), ("skipped", skips)):
+    for label, table in (
+        ("invalidated", payload["invalidations"]),
+        ("exits", payload["exits"]),
+        ("skipped", payload["skipped"]),
+    ):
         if table:
             print(f"  {label}: " + ", ".join(f"{k}={v}" for k, v in sorted(table.items())))
     _print_expectancy(payload["expectancy"])
+
+
+def _print_ablation(results: dict, args: argparse.Namespace, days: int) -> None:
+    """One row per arm. The n column is the point, not an aside."""
+    print(f"rule={args.swing_rule} rvol_gate={args.breakout_rvol} days={days}")
+    header = (
+        f"{'arm':<11}{'signals':>8}{'n':>5}{'gross_exp':>11}{'net_exp':>9}"
+        f"{'PF':>8}{'win':>6}{'cost_R':>8}{'ticks':>7}{'force%':>8}"
+    )
+    print(header)
+    for name, payload in results.items():
+        summary = payload["expectancy"]
+        if not summary["trades"]:
+            print(f"{name:<11}{payload['stages']['signal']:>8}{0:>5}   no trades")
+            continue
+        factor = summary["gross"]["profit_factor"]
+        exits = payload["exits"]
+        forced = exits.get("force_exit", 0) + exits.get("pre_close", 0)
+        print(
+            f"{name:<11}{payload['stages']['signal']:>8}{summary['trades']:>5}"
+            f"{summary['gross']['expectancy_r']:>11.3f}{summary['net']['expectancy_r']:>9.3f}"
+            f"{(factor if factor is not None else 0):>8.3f}{summary['gross']['win_rate']:>6.2f}"
+            f"{summary['cost_r']['median']:>8.2f}{summary['risk_ticks']['median']:>7.1f}"
+            f"{forced / summary['trades'] * 100:>7.0f}%"
+        )
+    print("  production 的 stop 是 retest low，其餘 arm 是 entry bar low：不可互相取代")
 
 
 def _print_expectancy(summary: dict[str, object]) -> None:
@@ -3866,6 +3964,10 @@ def build_parser() -> argparse.ArgumentParser:
     funnel.add_argument("--swing-rule", default=DEFAULT_SWING_RULE)
     funnel.add_argument("--swing-n", type=int, default=2)
     funnel.add_argument("--breakout-rvol", type=float, default=1.5)
+    funnel.add_argument(
+        "--arms",
+        help="comma separated ablation arms: " + ",".join(ABLATION_ARMS),
+    )
     funnel.add_argument("--output")
     funnel.set_defaults(func=cmd_paper_funnel)
 

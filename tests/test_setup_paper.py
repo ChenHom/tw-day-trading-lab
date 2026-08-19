@@ -19,6 +19,7 @@ from tw_day_trading_lab.rvol import RvolResult
 from tw_day_trading_lab.setup import (
     INVALIDATED,
     SIGNAL,
+    STOP_ENTRY_BAR_LOW,
     WAIT_RETEST,
     WAIT_TRIGGER,
     BreakoutRetestEngine,
@@ -551,6 +552,89 @@ class MarketDataHealthResolutionTest(unittest.TestCase):
 
         self.assertTrue(result["healthy"])
         self.assertEqual(result["source"], "assumed_healthy")
+
+
+class AblationFlagsTest(unittest.TestCase):
+    """Stages can be switched off for the Research Rule ablation, and only that.
+
+    BASE builds a confirmed swing high of 110 at index 2; index 5 closes 114
+    above it, index 6 retests it.
+    """
+
+    BREAKOUT = (115, 108, 114)
+    RETEST = (114, 110, 111)
+
+    def test_without_retest_the_breakout_bar_signals(self):
+        engine = BreakoutRetestEngine(
+            require_retest=False, require_trigger=False, stop_rule=STOP_ENTRY_BAR_LOW
+        )
+
+        _, events = feed(build([self.BREAKOUT]), {5: rvol(2.0)}, engine)
+
+        self.assertEqual([e.state for e in events], [SIGNAL])
+        signal = events[0]
+        self.assertEqual(signal.reason, "breakout_close_above_swing_high")
+        self.assertEqual(signal.entry_price, 114)
+        # No retest happened, so the stop can only come from the entry bar.
+        self.assertEqual(signal.stop_price, 108)
+        self.assertEqual(signal.target_price, 114 + 2 * (114 - 108))
+        self.assertIsNone(signal.retest_low)
+
+    def test_without_trigger_the_retest_bar_signals(self):
+        engine = BreakoutRetestEngine(require_trigger=False)
+
+        _, events = feed(build([self.BREAKOUT, self.RETEST]), {5: rvol(2.0)}, engine)
+
+        self.assertEqual([e.state for e in events], [WAIT_RETEST, SIGNAL])
+        signal = events[1]
+        self.assertEqual(signal.reason, "retest_accepted_no_trigger")
+        self.assertEqual(signal.entry_price, 111)
+        self.assertEqual(signal.stop_price, 110)
+
+    def test_without_the_rvol_gate_a_missing_rvol_still_breaks_out(self):
+        """The production rule blocks here; the ablation arm must not."""
+        blocked = BreakoutRetestEngine()
+        _, blocked_events = feed(build([self.BREAKOUT]), {}, blocked)
+        self.assertEqual(blocked_events, [])
+
+        engine = BreakoutRetestEngine(require_rvol=False)
+
+        _, events = feed(build([self.BREAKOUT]), {}, engine)
+
+        self.assertEqual([e.reason for e in events], ["breakout_confirmed"])
+        self.assertIsNone(events[0].tod_rvol)
+
+    def test_entry_bar_low_stop_applies_to_the_full_chain_too(self):
+        """Same arm, different stop rule: the comparison needs one definition."""
+        bars = build([self.BREAKOUT, self.RETEST, (118, 111, 117)])
+
+        _, production = feed(bars, {5: rvol(2.0)}, BreakoutRetestEngine())
+        _, ablation = feed(
+            bars, {5: rvol(2.0)}, BreakoutRetestEngine(stop_rule=STOP_ENTRY_BAR_LOW)
+        )
+
+        self.assertEqual(production[-1].stop_price, 110)  # the retest low
+        self.assertEqual(ablation[-1].stop_price, 111)  # the trigger bar low
+        self.assertEqual(production[-1].entry_price, ablation[-1].entry_price)
+
+    def test_a_bar_closing_on_its_low_has_no_risk_and_is_invalidated(self):
+        engine = BreakoutRetestEngine(
+            require_retest=False, require_trigger=False, stop_rule=STOP_ENTRY_BAR_LOW
+        )
+
+        _, events = feed(build([(115, 114, 114)]), {5: rvol(2.0)}, engine)
+
+        self.assertEqual([e.state for e in events], [INVALIDATED])
+        self.assertEqual(events[0].reason, "non_positive_risk")
+
+    def test_contradictory_combinations_are_refused(self):
+        with self.assertRaises(ValueError):
+            BreakoutRetestEngine(require_retest=False)  # trigger still required
+        with self.assertRaises(ValueError):
+            # The retest low does not exist once the retest is gone.
+            BreakoutRetestEngine(require_retest=False, require_trigger=False)
+        with self.assertRaises(ValueError):
+            BreakoutRetestEngine(stop_rule="atr")
 
 
 class SummarizeExpectancyTest(unittest.TestCase):
