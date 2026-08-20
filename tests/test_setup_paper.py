@@ -32,11 +32,15 @@ DATE = "2026-08-17"
 def bar(index, high, low, close, symbol="2330", start_hour=9, start_minute=0):
     total = start_minute + index * 5
     hour, minute = start_hour + total // 60, total % 60
+    # A 5m bar ends five minutes later, not five seconds. The old fixture made
+    # end_at indistinguishable from start_at for any minute-level comparison.
+    end = total + 5
+    end_hour, end_minute = start_hour + end // 60, end % 60
     return MarketBar(
         symbol=symbol,
         timeframe="5m",
         start_at=f"{DATE}T{hour:02d}:{minute:02d}:00",
-        end_at=f"{DATE}T{hour:02d}:{minute:02d}:05",
+        end_at=f"{DATE}T{end_hour:02d}:{end_minute:02d}:00",
         open=close,
         high=high,
         low=low,
@@ -345,6 +349,24 @@ class PaperTradingTest(unittest.TestCase):
         self.assertEqual(trade["exit_reason"], EXIT_STOP)
         self.assertAlmostEqual(trade["r"], -1.0)
 
+    def test_fill_times_are_the_bar_close_not_the_bar_open(self):
+        # A fill is priced off a closed bar, so it happens at that bar's end.
+        # Labelling it with the bar's start makes the report claim a fill at a
+        # price that had not traded yet, which is unauditable against a chart.
+        bars = build([(115, 108, 114), (114, 110, 111), (118, 111, 117), (118, 109, 110)])
+        signal_bar = bars[-2]
+        exit_bar = bars[-1]
+
+        report = run_paper_trading_day(
+            trading_date=DATE, bars=bars, rvol_by_key=self._rvol_map()
+        )
+
+        trade = report["trades"][0]
+        self.assertEqual(trade["entry_price"], signal_bar.close)
+        self.assertEqual(trade["entry_time"], signal_bar.end_at)
+        self.assertEqual(trade["exit_time"], exit_bar.end_at)
+        self.assertNotEqual(trade["entry_time"], signal_bar.start_at)
+
     def test_a_bar_covering_both_levels_is_assumed_to_hit_the_stop(self):
         bars = build([(115, 108, 114), (114, 110, 111), (118, 111, 117), (140, 105, 138)])
 
@@ -407,6 +429,22 @@ class PaperTradingTest(unittest.TestCase):
         trade = report["trades"][0]
         self.assertEqual(trade["exit_reason"], EXIT_FORCE)
         self.assertEqual(report["summary"]["open_positions"], 0)
+
+    def test_force_exit_fills_at_1325_not_in_the_closing_auction(self):
+        # 13:25 to 13:30 is the closing auction: no continuous trading, so an
+        # exit that lands there is not an exit at a price anyone chose.
+        bars = winning_day()[:-1]
+        bars.append(bar(0, 120, 116, 119, start_hour=13, start_minute=20))
+        bars.append(bar(0, 121, 117, 120, start_hour=13, start_minute=25))
+
+        report = run_paper_trading_day(
+            trading_date=DATE, bars=bars, rvol_by_key=self._rvol_map()
+        )
+
+        trade = report["trades"][0]
+        self.assertEqual(trade["exit_reason"], EXIT_FORCE)
+        self.assertEqual(trade["exit_time"], f"{DATE}T13:25:00")
+        self.assertEqual(trade["exit_price"], 119)
 
     def test_nothing_is_left_open_even_without_a_force_exit_bar(self):
         report = run_paper_trading_day(

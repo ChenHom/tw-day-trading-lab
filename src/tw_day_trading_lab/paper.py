@@ -185,14 +185,21 @@ def _manage_position(
     position.last_bar = bar
 
     # Worst case first: a bar covering both levels is assumed to hit the stop.
+    # Times recorded are bar.end_at: a fill inside a 5m bar is only known to
+    # have happened by the time that bar closes, and labelling it with the
+    # bar's start reads as a fill at a price that had not traded yet.
     if bar.low <= position.stop_price:
-        _close(state, position, bar.start_at, position.stop_price, EXIT_STOP)
+        _close(state, position, bar.end_at, position.stop_price, EXIT_STOP)
         return
     if bar.high >= position.target_price:
-        _close(state, position, bar.start_at, position.target_price, EXIT_TARGET)
+        _close(state, position, bar.end_at, position.target_price, EXIT_TARGET)
         return
-    if clock >= force_exit_at:
-        _close(state, position, bar.start_at, bar.close, EXIT_FORCE)
+    # 13:25 is a principle, not a parameter: flat before the closing auction.
+    # The test is on the bar's end because that is when the fill happens, so
+    # the first bar ending at or after 13:25 is the one to exit on. Testing
+    # bar.start_at instead exits one bar late, at the 13:30 auction price.
+    if _clock(bar.end_at) >= force_exit_at:
+        _close(state, position, bar.end_at, bar.close, EXIT_FORCE)
 
 
 def _try_enter(
@@ -245,7 +252,7 @@ def _try_enter(
     state.positions[event.symbol] = _OpenPosition(
         setup_id=event.setup_id,
         symbol=event.symbol,
-        entry_time=event.at,
+        entry_time=bar.end_at,
         entry_price=event.entry_price,
         stop_price=event.stop_price,
         target_price=event.target_price,
@@ -257,7 +264,7 @@ def _close_remaining(state: _DayState) -> None:
     for position in list(state.positions.values()):
         bar = position.last_bar
         exit_price = bar.close if bar is not None else position.entry_price
-        exit_time = bar.start_at if bar is not None else position.entry_time
+        exit_time = bar.end_at if bar is not None else position.entry_time
         _close(state, position, exit_time, exit_price, EXIT_PRE_CLOSE)
 
 
