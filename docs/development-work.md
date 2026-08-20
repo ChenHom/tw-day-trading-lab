@@ -3564,3 +3564,50 @@ PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 368 tests, OK
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 368 tests, OK
 ```
+
+## 2026-08-20 第三次線上驗證日
+
+排程自動啟動,全程無人工介入。收盤後 18:37 補跑後續。
+
+### 收集
+
+| 指標 | 值 |
+|---|---|
+| 訂閱 | 12 檔全上 |
+| raw_ticks | 82,305 |
+| market_ticks | 81,390 |
+| out_of_order / dropped_queue_full / volume_gaps | 0 / 0 / 0 |
+| worker_errors / queue_backlog | 0 / 0 |
+| health | HEALTHY |
+| live_validation | PASSED (9/9) |
+
+`rejected.simtrade = 915` 是模擬撮合的測試單,非本帳號行為,照例排除。
+
+13:40 那次 catch-up 印出 `past 13:31, nothing to collect` 後結束 — self-healing 的分支第一次在正常日被走到,行為正確。
+
+### bars
+
+`ticks 81390 → 1m 3081 / 5m 648`,`volume_consistent: True`。1m 3081 對比 12×270=3240 的滿格,差的是本來就沒成交的分鐘,不是漏收。
+
+### paper（Gate B 第三天）
+
+| | 值 |
+|---|---|
+| trades / entries / skipped | 2 / 2 / 0 |
+| gross total_R | -2.00（expectancy -1.000, win_rate 0.00, PF 0.0, MDD 2.00）|
+| net total_R | -2.73（expectancy -1.367, MDD 2.73）|
+| cost_R | median 0.43 |
+| risk_ticks | min 5.0 median 7.0 |
+
+兩筆都停損:
+
+- 2615 10:00 進 111.0,停 108.5（5 ticks）,10:10 觸停。cost_r 0.30。
+- 3189 12:00 進 850.0,停 843.0（7 ticks）,12:50 觸停。cost_r 0.43。
+
+`market_data: healthy=True source=session_report`,fail-closed 閘門走的是當日 session report,不是假設。
+
+### 與離線結論的關係
+
+線上兩天共 4 筆全停損,gross -4.00 / net -6.48。這個樣本小到不能單獨說明任何事,但方向與 617 天 830 筆的離線結果一致（production 毛期望值 -0.107 R,淨 -0.721 R）。**線上這幾天的價值仍然只在管線正確性,不在邊際**;把 4 筆當成證據會犯 2026-08-19 (5) 那個 24-vs-65 的同型錯誤。
+
+3189 那筆的 cost_r 0.43 值得記:850 元的股票、7 個 tick 的停損,光開平倉就吃掉 0.43 R。停損距離愈短、股價愈高,成本佔 R 的比重愈大 — 這正是離線 fixed-ticks 對照組看到的同一件事。
