@@ -211,6 +211,20 @@ class FakeApi:
 
 
 class KbarsBackfillTest(unittest.TestCase):
+    def test_zero_volume_padding_is_not_stored(self):
+        # A recent day arrives with 13:25-13:28 padded flat at zero volume;
+        # the same day fetched later does not have them. Storing them would
+        # make the bar count depend on the fetch time and would record prices
+        # that never traded.
+        rows = kbar_rows(3, volume=10)
+        padded = list(rows)
+        padded[1] = (*rows[1][:5], 0)
+
+        bars = normalize_shioaji_kbars("2330", FakeKbars(padded))
+
+        self.assertEqual([bar.start_at for bar in bars],
+                         ["2026-08-17T09:00:00", "2026-08-17T09:02:00"])
+
     def test_columnar_kbars_become_canonical_1m_bars(self):
         bars = normalize_shioaji_kbars("2330", FakeKbars(kbar_rows(3, volume=10)))
 

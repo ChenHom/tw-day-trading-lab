@@ -102,6 +102,17 @@ def normalize_shioaji_kbars(
         # The one exception is the closing-auction bar (stamped 13:30, really
         # covering 13:25-13:30); it lands at 13:29, which is the same 5m bucket.
         start = marked.replace(second=0, microsecond=0) - timedelta(minutes=1)
+        # A recent day comes back padded: 13:25-13:28 arrive as flat bars at the
+        # last traded price with zero volume, while the same day fetched months
+        # later does not have them. Keeping them would make a day's stored bar
+        # count depend on when it was fetched, and would put prices nobody
+        # traded into the store. Tick-aggregated bars already omit a minute with
+        # no trades, so dropping these is what makes the two sources agree.
+        try:
+            if int(volumes[index]) == 0:
+                continue
+        except (IndexError, TypeError, ValueError):
+            continue
         try:
             bars.append(
                 MarketBar(
