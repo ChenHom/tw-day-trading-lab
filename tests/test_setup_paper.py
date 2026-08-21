@@ -593,6 +593,45 @@ class MarketDataHealthResolutionTest(unittest.TestCase):
         self.assertEqual(result["source"], "assumed_healthy")
 
 
+class CostGateTest(unittest.TestCase):
+    """A signal whose friction exceeds its risk is not a signal.
+
+    Reuses the ablation entry-bar-low stop so the stop distance is set by the
+    bar's low, which makes a one tick stop easy to construct.
+    """
+
+    def _signal(self, low, **options):
+        engine = BreakoutRetestEngine(
+            require_retest=False, require_trigger=False,
+            stop_rule=STOP_ENTRY_BAR_LOW, **options
+        )
+        _, events = feed(build([(115, low, 114)]), {5: rvol(2.0)}, engine)
+        return events[-1]
+
+    def test_a_stop_costing_more_than_it_risks_is_not_signalled(self):
+        # 114 with a one tick stop: cost_r is 1.54, so the 2R target is gone
+        # before the market moves. No hit rate repairs that.
+        event = self._signal(113.5)
+
+        self.assertEqual(event.state, INVALIDATED)
+        self.assertEqual(event.reason, "cost_exceeds_risk")
+
+    def test_a_wide_enough_stop_still_signals(self):
+        event = self._signal(108)
+
+        self.assertEqual(event.state, SIGNAL)
+        self.assertEqual(event.stop_price, 108)
+
+    def test_the_gate_can_be_turned_off_for_ablation(self):
+        event = self._signal(113.5, max_cost_r=None)
+
+        self.assertEqual(event.state, SIGNAL)
+
+    def test_a_non_positive_threshold_is_rejected(self):
+        with self.assertRaises(ValueError):
+            BreakoutRetestEngine(max_cost_r=0)
+
+
 class AblationFlagsTest(unittest.TestCase):
     """Stages can be switched off for the Research Rule ablation, and only that.
 

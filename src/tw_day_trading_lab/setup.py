@@ -61,6 +61,11 @@ STOP_ENTRY_BAR_LOW = "entry_bar_low"
 STOP_FIXED_TICKS = "fixed_ticks"
 STOP_RULES = (STOP_RETEST_LOW, STOP_ENTRY_BAR_LOW, STOP_FIXED_TICKS)
 DEFAULT_STOP_TICKS = 4.0
+# Round-trip friction must not exceed the risk being taken. At 1.0 a trade
+# pays as much to open and close as it stands to lose at the stop, so the 2R
+# target is already down to 1R before the market does anything. The number is
+# fixed on that principle, not picked off a table of what backtests best.
+DEFAULT_MAX_COST_R = 1.0
 
 
 @dataclass(frozen=True)
@@ -128,6 +133,7 @@ class BreakoutRetestEngine:
         require_trigger: bool = True,
         stop_rule: str = STOP_RETEST_LOW,
         stop_ticks: float = DEFAULT_STOP_TICKS,
+        max_cost_r: float | None = DEFAULT_MAX_COST_R,
     ) -> None:
         if stop_rule not in STOP_RULES:
             raise ValueError(f"unknown stop_rule: {stop_rule}")
@@ -139,6 +145,8 @@ class BreakoutRetestEngine:
             raise ValueError("stop_rule=retest_low needs require_retest")
         if stop_rule == STOP_FIXED_TICKS and stop_ticks <= 0:
             raise ValueError("stop_ticks must be > 0")
+        if max_cost_r is not None and max_cost_r <= 0:
+            raise ValueError("max_cost_r must be > 0 or None")
         self._swing_n = swing_n
         self._swing_rule = swing_rule
         self._breakout_rvol = breakout_rvol
@@ -151,6 +159,7 @@ class BreakoutRetestEngine:
         self._require_trigger = require_trigger
         self._stop_rule = stop_rule
         self._stop_ticks = stop_ticks
+        self._max_cost_r = max_cost_r
         self._cost_model = TaiwanDayTradeCostModel()
         self._symbols: dict[str, _SymbolSetup] = {}
         self.corrections_applied = 0
@@ -345,6 +354,14 @@ class BreakoutRetestEngine:
         risk = entry - stop if stop is not None else 0.0
         if risk <= 0:
             return self._invalidate(state, bar, "non_positive_risk")
+        # Cost is knowable here, before the outcome is: it falls out of the
+        # entry price and the stop distance. A two tick stop on a high priced
+        # stock pays more in friction than it risks, which no hit rate can
+        # repair, so the setup should not produce the signal at all.
+        if self._max_cost_r is not None:
+            cost_r = self._cost_model.cost_r(entry, stop)
+            if cost_r >= self._max_cost_r:
+                return self._invalidate(state, bar, "cost_exceeds_risk")
         event = SetupEvent(
             setup_id=state.setup_id,
             symbol=bar.symbol,

@@ -3378,22 +3378,32 @@ ABLATION_ARMS = {
     # changing underneath them. `production` is the reference, not a member of
     # the ladder: its stop is the retest low, so its numbers are not
     # interchangeable with the rest.
+    #
+    # The ladder and the distance controls pin max_cost_r=None so they keep
+    # reproducing the numbers recorded on 2026-08-19. They are experiments
+    # about the Research Rule; letting a later gate change them underneath
+    # would make the write-up unreproducible. `production` carries the gate
+    # because it is meant to be what the live engine does; `production_nogate`
+    # is its paired control.
     "breakout": dict(require_rvol=False, require_retest=False, require_trigger=False,
-                     stop_rule=STOP_ENTRY_BAR_LOW),
+                     stop_rule=STOP_ENTRY_BAR_LOW, max_cost_r=None),
     "rvol": dict(require_rvol=True, require_retest=False, require_trigger=False,
-                 stop_rule=STOP_ENTRY_BAR_LOW),
+                 stop_rule=STOP_ENTRY_BAR_LOW, max_cost_r=None),
     "retest": dict(require_rvol=True, require_retest=True, require_trigger=False,
-                   stop_rule=STOP_ENTRY_BAR_LOW),
+                   stop_rule=STOP_ENTRY_BAR_LOW, max_cost_r=None),
     "trigger": dict(require_rvol=True, require_retest=True, require_trigger=True,
-                    stop_rule=STOP_ENTRY_BAR_LOW),
+                    stop_rule=STOP_ENTRY_BAR_LOW, max_cost_r=None),
     "production": dict(require_rvol=True, require_retest=True, require_trigger=True,
                        stop_rule=STOP_RETEST_LOW),
+    "production_nogate": dict(require_rvol=True, require_retest=True, require_trigger=True,
+                              stop_rule=STOP_RETEST_LOW, max_cost_r=None),
     # Distance controls. Same signals as production, structureless stop. If one
     # of these matches production at a comparable distance, the retest low was
     # doing nothing that a ruler could not.
     **{
         f"fixed{ticks}": dict(require_rvol=True, require_retest=True, require_trigger=True,
-                              stop_rule=STOP_FIXED_TICKS, stop_ticks=float(ticks))
+                              stop_rule=STOP_FIXED_TICKS, stop_ticks=float(ticks),
+                              max_cost_r=None)
         for ticks in (2, 3, 4, 6, 8, 12)
     },
 }
