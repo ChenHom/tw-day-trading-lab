@@ -15,6 +15,7 @@ from tw_day_trading_lab.paper import (
     run_paper_trading_day,
     summarize_expectancy,
 )
+from tw_day_trading_lab.cost import TaiwanDayTradeCostModel, is_etf_symbol
 from tw_day_trading_lab.rvol import RvolResult
 from tw_day_trading_lab.setup import (
     INVALIDATED,
@@ -591,6 +592,34 @@ class MarketDataHealthResolutionTest(unittest.TestCase):
 
         self.assertTrue(result["healthy"])
         self.assertEqual(result["source"], "assumed_healthy")
+
+
+class EtfCostTest(unittest.TestCase):
+    """ETF 的稅率與升降單位都和股票不同，而成本是這個專案的主導項。"""
+
+    def setUp(self):
+        self.model = TaiwanDayTradeCostModel()
+
+    def test_only_double_zero_codes_are_etfs(self):
+        self.assertEqual(
+            [is_etf_symbol(s) for s in ("0050", "00878", "009816", "00631L", "2330", "6805")],
+            [True, True, True, True, False, False],
+        )
+
+    def test_the_etf_ladder_has_two_steps_not_six(self):
+        # 0050 at 78 lands on 0.10 under the stock ladder and 0.05 under the
+        # ETF one, which doubles the assumed slippage if it is got wrong.
+        self.assertEqual(self.model.tick_size(78.0), 0.10)
+        self.assertEqual(self.model.tick_size(78.0, etf=True), 0.05)
+        self.assertEqual(self.model.tick_size(22.0, etf=True), 0.01)
+        self.assertEqual(self.model.tick_size(2410.0, etf=True), 0.05)
+
+    def test_an_etf_pays_the_lower_tax_and_the_smaller_tick(self):
+        stock = self.model.round_trip_cost(78.0)
+        etf = self.model.round_trip_cost(78.0, etf=True)
+
+        self.assertLess(etf, stock)
+        self.assertAlmostEqual(etf, stock - 78.0 * 0.0005 - 0.05, places=6)
 
 
 class CostGateTest(unittest.TestCase):

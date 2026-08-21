@@ -83,6 +83,7 @@ from .storage import (
     TiDBConfig,
     apply_schema_file,
     connect_tidb,
+    create_sqlite_schema,
     load_candidate_payload,
     load_import_payload,
     persist_candidate_run,
@@ -3800,10 +3801,21 @@ def cmd_ingest_finmind(args: argparse.Namespace) -> None:
                 start_date=args.start_date,
             )
         ]
-    config = TiDBConfig.from_env()
-    connection = connect_tidb(config, use_database=True)
+    # The ledger only tracks which requests were already spent against the
+    # daily quota. That does not need a TiDB cluster running, and requiring one
+    # is what has kept the daily backfill blocked, so a local SQLite file is
+    # allowed to stand in.
+    if args.ledger_sqlite:
+        import sqlite3
+
+        connection = sqlite3.connect(args.ledger_sqlite)
+        create_sqlite_schema(connection)
+        dialect = "sqlite"
+    else:
+        connection = connect_tidb(TiDBConfig.from_env(), use_database=True)
+        dialect = "tidb"
     try:
-        storage = DatabaseStorage(connection, dialect="tidb")
+        storage = DatabaseStorage(connection, dialect=dialect)
         client = FinMindDataLoaderClient(token) if token else _TokenMissingFinMindClient()
         summary = ingest_finmind_requests(
             repository=storage,
@@ -4235,6 +4247,7 @@ def build_parser() -> argparse.ArgumentParser:
     finmind.add_argument("--cache-dir", default="data/raw")
     finmind.add_argument("--quota-limit", type=int, default=540)
     finmind.add_argument("--token")
+    finmind.add_argument("--ledger-sqlite", help="use a local SQLite quota ledger instead of TiDB")
     finmind.set_defaults(func=cmd_ingest_finmind)
 
     return parser

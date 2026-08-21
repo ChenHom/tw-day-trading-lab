@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from .bars import MarketBar, TIMEFRAME_5M
-from .cost import TaiwanDayTradeCostModel
+from .cost import TaiwanDayTradeCostModel, is_etf_symbol
 from .rvol import RvolResult, STATUS_OK
 from .structure import DEFAULT_SWING_N, DEFAULT_SWING_RULE, detect_swing_points
 
@@ -345,10 +345,11 @@ class BreakoutRetestEngine:
         decided here, on this bar, so nothing about the trade is settled later.
         """
         entry = bar.close
+        etf = is_etf_symbol(bar.symbol)
         if self._stop_rule == STOP_RETEST_LOW:
             stop = state.retest_low
         elif self._stop_rule == STOP_FIXED_TICKS:
-            stop = entry - self._stop_ticks * self._cost_model.tick_size(entry)
+            stop = entry - self._stop_ticks * self._cost_model.tick_size(entry, etf=etf)
         else:
             stop = bar.low
         risk = entry - stop if stop is not None else 0.0
@@ -359,7 +360,7 @@ class BreakoutRetestEngine:
         # stock pays more in friction than it risks, which no hit rate can
         # repair, so the setup should not produce the signal at all.
         if self._max_cost_r is not None:
-            cost_r = self._cost_model.cost_r(entry, stop)
+            cost_r = self._cost_model.cost_r(entry, stop, etf=etf)
             if cost_r >= self._max_cost_r:
                 return self._invalidate(state, bar, "cost_exceeds_risk")
         event = SetupEvent(

@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .bars import MarketBar
-from .cost import TaiwanDayTradeCostModel
+from .cost import TaiwanDayTradeCostModel, is_etf_symbol
 from .ledger import DuplicateIntentError, OrderIntent, PaperLedger
 from .rvol import RvolResult
 from .setup import SIGNAL, BreakoutRetestEngine, SetupEvent
@@ -280,8 +280,9 @@ def _close(
     # Cost is charged in R so it stays comparable across a 47 dollar stock and a
     # 3870 dollar one. At these stop distances it is not a rounding term: a two
     # tick stop on a 5 dollar tick pays more than one R just to open and close.
-    cost_r = state.cost_model.cost_r(position.entry_price, position.stop_price)
-    tick = state.cost_model.tick_size(position.entry_price)
+    etf = is_etf_symbol(position.symbol)
+    cost_r = state.cost_model.cost_r(position.entry_price, position.stop_price, etf=etf)
+    tick = state.cost_model.tick_size(position.entry_price, etf=etf)
     state.trades.append(
         PaperTrade(
             setup_id=position.setup_id,
