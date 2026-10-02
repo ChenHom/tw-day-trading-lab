@@ -4444,5 +4444,5 @@ PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 378 tests, OK
 - 股票合約查找集中於相容層：優先使用 1.7.5 的 `api.contracts.stocks.get(symbol)`，舊 API 才 fallback 至 `api.Contracts.Stocks[symbol]`；不會跨到期貨或選擇權容器。
 - enum 優先使用 1.7 頂層 API，舊 `sj.constant` 只作 fallback；order factory 可在單元測試注入，避免測試結果依賴 ambient SDK 版本。
 - 驗證證據：相容性 / simulation / market-data / RVOL 目標組合 156 項通過；repo-local 1.7.5 環境完整測試 385 項通過（原 378 項加 7 項相容性測試）。
-- 本次沒有真實登入、行情訂閱、委託、取消、Telegram 傳送或 GitHub 發布副作用。
+- 離線升級與測試沒有觸發真實登入、行情訂閱、委託、取消、Telegram 傳送或 GitHub report 發布；完成驗證後僅依交付規範推送原始碼。
 - 殘餘風險：真實 SDK 的 simulation provider 行為仍需在交易時段、明確開 gate 後另跑 smoke；本次離線升級結果不能取代 PA Gate B 或策略 edge 證據。
