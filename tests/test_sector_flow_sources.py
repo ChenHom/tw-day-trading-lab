@@ -1,0 +1,151 @@
+import copy
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from tw_day_trading_lab.sector_flow_sources import (
+    ProviderSchemaError,
+    UrllibJsonHttpClient,
+    build_daily_requests,
+    ingest_sector_flow,
+    parse_tdcc_holdings,
+    parse_tpex_closes,
+    parse_tpex_institutional,
+    parse_twse_closes,
+    parse_twse_institutional,
+)
+
+
+FIXTURES = Path(__file__).parents[1] / "fixtures" / "sector-flow"
+
+
+def load_fixture(name):
+    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+class SectorFlowSourceParserTest(unittest.TestCase):
+    def test_twse_t86_parses_exact_components_and_filters_non_common(self):
+        rows = parse_twse_institutional(load_fixture("twse-t86.json"), "2026-09-24")
+        self.assertEqual([row.symbol for row in rows], ["2330"])
+        self.assertEqual(rows[0].institutional_net_shares, 1_250_000)
+
+    def test_tpex_group_layout_parses_components_and_filters_non_common(self):
+        rows = parse_tpex_institutional(load_fixture("tpex-institutional.json"), "2026-09-24")
+        self.assertEqual([row.symbol for row in rows], ["6488"])
+        self.assertEqual(rows[0].foreign_net_shares, 900_000)
+        self.assertEqual(rows[0].dealer_net_shares, -25_000)
+        self.assertEqual(rows[0].institutional_net_shares, 975_000)
+
+    def test_close_parsers_find_daily_table_and_close_column(self):
+        twse = parse_twse_closes(load_fixture("twse-mi-index.json"), "2026-09-24")
+        tpex = parse_tpex_closes(load_fixture("tpex-daily-close.json"), "2026-09-24")
+        self.assertEqual([(row.symbol, row.close) for row in twse], [("2330", 820.0)])
+        self.assertEqual([(row.symbol, row.close) for row in tpex], [("6488", 450.0)])
+
+    def test_invalid_numeric_value_is_schema_error_not_zero(self):
+        payload = copy.deepcopy(load_fixture("twse-t86.json"))
+        payload["data"][0][4] = "--"
+        with self.assertRaises(ProviderSchemaError):
+            parse_twse_institutional(payload, "2026-09-24")
+
+    def test_component_total_mismatch_is_schema_error(self):
+        payload = copy.deepcopy(load_fixture("tpex-institutional.json"))
+        payload["tables"][0]["data"][0][23] = "1"
+        with self.assertRaises(ProviderSchemaError):
+            parse_tpex_institutional(payload, "2026-09-24")
+
+    def test_provider_date_mismatch_is_schema_error(self):
+        with self.assertRaises(ProviderSchemaError):
+            parse_twse_closes(load_fixture("twse-mi-index.json"), "2026-09-25")
+
+    def test_tdcc_date_and_levels_are_normalized(self):
+        rows = parse_tdcc_holdings(load_fixture("tdcc-holding-distribution.json"))
+        self.assertEqual(rows[0].as_of_date, "2026-09-24")
+        self.assertEqual(rows[0].shares, 400_000)
+        self.assertEqual(rows[0].level, 12)
+
+
+class FakeHttpClient:
+    def __init__(self):
+        self.calls = []
+
+    def get_json(self, url):
+        self.calls.append(url)
+        if "T86" in url:
+            return load_fixture("twse-t86.json")
+        if "MI_INDEX" in url:
+            return load_fixture("twse-mi-index.json")
+        if "dailyTrade" in url:
+            return load_fixture("tpex-institutional.json")
+        if "afterTrading/otc" in url:
+            return load_fixture("tpex-daily-close.json")
+        return load_fixture("tdcc-holding-distribution.json")
+
+
+class FakeResponse:
+    def __init__(self, body, content_length=None):
+        self.body = body
+        self.headers = {}
+        if content_length is not None:
+            self.headers["Content-Length"] = str(content_length)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self, _limit):
+        return self.body
+
+
+class SectorFlowIngestionTest(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.cache_dir = Path(self.tmpdir.name)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_endpoint_builders_include_requested_date(self):
+        requests = build_daily_requests(self.cache_dir, "2026-09-24")
+        self.assertIn("date=20260924", requests[0].url)
+        self.assertIn("date=2026%2F09%2F24", requests[2].url)
+
+    def test_existing_successful_cache_is_not_fetched_again(self):
+        first_client = FakeHttpClient()
+        first = ingest_sector_flow(cache_dir=self.cache_dir, start_date="2026-09-24", end_date="2026-09-24", client=first_client)
+        second_client = FakeHttpClient()
+        second = ingest_sector_flow(cache_dir=self.cache_dir, start_date="2026-09-24", end_date="2026-09-24", client=second_client)
+        self.assertEqual(first["fetched"], 5)
+        self.assertEqual(second["cached"], 5)
+        self.assertEqual(len(second_client.calls), 1)
+
+    def test_schema_error_does_not_write_cache(self):
+        class BrokenClient(FakeHttpClient):
+            def get_json(self, url):
+                payload = super().get_json(url)
+                if "T86" in url:
+                    payload["date"] = "20260923"
+                return payload
+
+        summary = ingest_sector_flow(cache_dir=self.cache_dir, start_date="2026-09-24", end_date="2026-09-24", client=BrokenClient())
+        path = self.cache_dir / "twse" / "T86" / "2026-09-24" / "market.json"
+        self.assertFalse(path.exists())
+        self.assertTrue(any(item["state"] == "schema_error" for item in summary["sources"]))
+
+    def test_range_is_capped_at_31_calendar_days(self):
+        with self.assertRaisesRegex(ValueError, "31 calendar days"):
+            ingest_sector_flow(cache_dir=self.cache_dir, start_date="2026-01-01", end_date="2026-02-01", client=FakeHttpClient())
+
+    def test_declared_oversize_response_is_rejected(self):
+        response = FakeResponse(b"{}", content_length=101)
+        with patch("urllib.request.urlopen", return_value=response):
+            with self.assertRaisesRegex(ProviderSchemaError, "size limit"):
+                UrllibJsonHttpClient(max_bytes=100).get_json("https://example.invalid")
+
+
+if __name__ == "__main__":
+    unittest.main()
