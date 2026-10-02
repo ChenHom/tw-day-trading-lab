@@ -459,5 +459,11 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
   TDCC 只有一期所以 `large_holder.status=insufficient_data`。
 - 驗證：418 tests passed，離線重播 checksum 一致，無未解 Critical /
   Important review finding。
+- 真實 provider payload 調整已落地：無交易日舊日期回應、`--` / `----`
+  無價 placeholder、TPEx 尾端空 table、cache 重驗證、no-data / schema-error
+  分型、TDCC 百分點欄位語意、金額 round，以及金額排名正負側一致性。
+- 交付 commit：`4b011ce34fb9bc289d432f581aa578b244f75f9d`（`master` /
+  `origin/master`）；JSON checksum `4327908605fb031dd8ac289288cbc5525ec806da145076f27dd66b26bc4dda31`，
+  Markdown checksum `e2e812a23d581ed9b7063aae6c0a051a54a924ad5a9300f829ccaee2eb1ce418`。
 - Dashboard、candidate score、scheduler 與通知整合均留待後續，不影響現有
   PA 或 Trading Day Cycle phase 狀態。

@@ -4487,3 +4487,34 @@ PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 378 tests, OK
 - 殘餘風險：taxonomy snapshot 比報告期間舊約四個月，且 7 rows 未分類；
   TDCC 尚不足兩期。報告可回答法人 / 外資族群淨買賣，但不能回答逐日大戶
   精確淨流入。
+
+### 2026-10-03 implementation adjustment log
+
+這一輪不是依 fixture 一次寫完；先完成 cache-first 主路徑，再以官方公開 API
+實跑 2026-09-24～2026-10-01，依真實 payload 差異逐項收斂。調整紀錄如下：
+
+| 發現 | 調整 | 落地 commit / 驗證 |
+| --- | --- | --- |
+| TWSE 無交易日可能回傳前一交易日資料，而不是空陣列 | 驗證 payload 內嵌日期；與 requested date 不同時分類為 `no_data`，禁止把舊資料算入當日 | `dfb2753`；09-25～09-28 正確排除 |
+| TWSE / TPEx 無成交價分別可能是 `--` / `----` | 僅將官方無價 placeholder 視為不可估價列；其他非法數字仍 fail closed 為 schema error | `dfb2753`；有效日 price coverage 100% |
+| TPEx `tables` 可能同時包含有效 table 與尾端空 `{}` | 只接受唯一具有 `fields` 與 `data` 的有效 table，不再假設陣列只有一個元素 | `dfb2753`；四個有效日 TPEx 來源皆成功 |
+| CLI 新 handler 曾插入既有 `report close` 尾端 | 還原原 handler 邊界，sector-flow handler 保持獨立，補 CLI regression | `dfb2753`；完整 CLI suite 通過 |
+| 已存在 cache 原本會直接跳過，無法偵測損壞或 schema 漂移 | skip 前先重讀並驗證 cache；無效 cache 重新抓取，並以 `ProviderNoData` / `ProviderSchemaError` 明確區分無資料與契約破壞 | `b1b1f2c`；重跑 ingest `failed=0` |
+| TDCC 百分比欄位名稱容易被誤讀為單一比例 | 改名為 `sum_stock_percent_point_delta`，明示是各股票百分點變化的加總；不足兩期仍不產生數值 | `b1b1f2c`；本期輸出 `insufficient_data` |
+| 浮點估算金額可能留下不穩定尾數 | 所有 TWD 估算值固定 round 至小數二位，確保離線 replay 可重現 | `b1b1f2c`；兩次 render checksum 一致 |
+| 金額排名模式曾以「股數正負」篩選流入 / 流出，會使高價股族群被歸錯側 | `estimated_amount` 模式的篩選與排序統一使用估算金額；只有 fallback 才使用股數 | `734d551`；電子工業與半導體業正確列入金額淨流出 |
+
+交付鏈為 `54ffc97`（官方來源 parser/cache）→ `2c727c3`（族群聚合）→
+`6d0e059`（JSON / Markdown 報告）→ `d335dfb`（CLI）→ `5a7ffa6`
+（契約與操作文件）→ `dfb2753` / `b1b1f2c` / `734d551`（真實資料與 review
+修正）→ `4b011ce`（固定期間產物）。`master` 與 `origin/master` 最終皆為
+`4b011ce34fb9bc289d432f581aa578b244f75f9d`。
+
+最終產物 checksum：
+
+- JSON：`4327908605fb031dd8ac289288cbc5525ec806da145076f27dd66b26bc4dda31`
+- Markdown：`e2e812a23d581ed9b7063aae6c0a051a54a924ad5a9300f829ccaee2eb1ce418`
+
+安全邊界維持不變：本次所有外部呼叫皆為 TWSE、TPEx、TDCC 公開資料的
+read-only GET；沒有 Shioaji login / quote subscription / order / cancel，也沒有
+Telegram 傳送或 GitHub report publication side effect。
