@@ -16,7 +16,7 @@ from typing import Any, Protocol
 from .ledger import DuplicateIntentError, OrderIntent, PaperLedger
 from .models import CandidateScore
 from .performance import RollingPerformanceTracker
-from .shioaji_compat import login_simulation_api
+from .shioaji_compat import login_simulation_api, stock_contract
 
 
 @dataclass(frozen=True)
@@ -667,7 +667,7 @@ class ShioajiSdkSimulationGateway:
 
     def fetch_contract_details(self, symbol: str) -> dict[str, Any] | None:
         try:
-            contract = self._api.Contracts.Stocks[symbol]
+            contract = stock_contract(self._api, symbol)
             if contract is None:
                 return None
             return {
@@ -688,7 +688,7 @@ class ShioajiSdkSimulationGateway:
         session: dict[str, str],
         request: ShioajiOrderRequest,
     ) -> dict[str, Any]:
-        contract = self._api.Contracts.Stocks[request.symbol]
+        contract = stock_contract(self._api, request.symbol)
 
         # Check if StockOrder class exists directly on shioaji module (Shioaji 1.5+)
         # Otherwise fallback to the deprecated api.Order class (Shioaji 1.3)

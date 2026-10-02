@@ -31,6 +31,7 @@ from .bars import (
     latest_bars,
 )
 from .market_data import SHARES_PER_LOT
+from .shioaji_compat import stock_contract
 
 BAR_SOURCE_KBARS = "shioaji_kbars"
 # Continuous trading is 09:00-13:24 (265 one-minute bars) plus one closing
@@ -218,7 +219,7 @@ def run_gated_shioaji_kbars_backfill(
     for symbol in symbol_list:
         entry: dict[str, Any] = {"symbol": symbol}
         try:
-            contract = api.Contracts.Stocks[symbol]
+            contract = stock_contract(api, symbol)
             fetched = []
             for span_start, span_end in spans:
                 raw = fetch_kbars(api, contract, span_start, span_end)

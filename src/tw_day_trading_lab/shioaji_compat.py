@@ -47,3 +47,11 @@ def login_simulation_api(
             f"Shioaji login does not accept required credentials: {sorted(missing)}"
         )
     return login(**kwargs)
+
+
+def stock_contract(api: Any, symbol: str) -> Any:
+    contracts = getattr(api, "contracts", None)
+    get_contract = getattr(contracts, "get", None)
+    if callable(get_contract):
+        return get_contract(symbol)
+    return api.Contracts.Stocks[symbol]

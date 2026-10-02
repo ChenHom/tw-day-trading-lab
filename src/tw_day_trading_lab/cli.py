@@ -78,6 +78,7 @@ from .simulation import (
     generate_alerts_from_run,
     RegressionCase,
 )
+from .shioaji_compat import stock_contract
 from .storage import (
     DatabaseStorage,
     TiDBConfig,
@@ -2492,7 +2493,7 @@ def cmd_simulate_ops_run(args: argparse.Namespace) -> None:
             if simulation_on:
                 try:
                     symbol = plan_item.signal.symbol
-                    contract = api.Contracts.Stocks[symbol]
+                    contract = stock_contract(api, symbol)
                     kbars = api.kbars(contract, start_date=trading_date_str, end_date=trading_date_str)
                     if kbars and hasattr(kbars, "time") and len(kbars.time) > 0:
                         for i in range(len(kbars.time)):

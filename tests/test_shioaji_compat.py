@@ -1,9 +1,24 @@
 import unittest
+from types import SimpleNamespace
 
-from tw_day_trading_lab.shioaji_compat import login_simulation_api
+from tw_day_trading_lab.shioaji_compat import login_simulation_api, stock_contract
 
 
 class ShioajiCompatibilityTest(unittest.TestCase):
+    def test_stock_contract_supports_legacy_mapping(self):
+        api = SimpleNamespace(Contracts=SimpleNamespace(Stocks={"2330": "legacy"}))
+
+        self.assertEqual(stock_contract(api, "2330"), "legacy")
+
+    def test_stock_contract_prefers_new_service(self):
+        service = SimpleNamespace(get=lambda symbol: f"new-{symbol}")
+        api = SimpleNamespace(
+            contracts=service,
+            Contracts=SimpleNamespace(Stocks={"2330": "legacy"}),
+        )
+
+        self.assertEqual(stock_contract(api, "2330"), "new-2330")
+
     def test_login_omits_removed_fetch_contract_keyword(self):
         calls = []
 

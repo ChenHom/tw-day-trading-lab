@@ -31,6 +31,8 @@ from queue import Empty, Full, Queue
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping, Sequence
 
+from .shioaji_compat import stock_contract
+
 SHARES_PER_LOT = 1000
 TICK_SOURCE = "shioaji_tick"
 RAW_TICK_PROVIDER = "shioaji"
@@ -254,7 +256,7 @@ class ShioajiTickStream:
         try:
             for symbol in self._symbols:
                 try:
-                    contract = self._api.Contracts.Stocks[symbol]
+                    contract = stock_contract(self._api, symbol)
                 except Exception:
                     contract = None
                 if contract is None:
