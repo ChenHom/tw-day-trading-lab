@@ -888,6 +888,41 @@ data/raw/finmind/{dataset}/{trading_date}/{stock_id}.jsonl
 skip 條件必須同時滿足 `fetch_ledger.status = success` 與 raw cache 檔案存在。
 若 request 帶 `start_date`，raw cache 還必須覆蓋 `start_date -> trading_date` 的日期窗口；舊單日 cache 不可直接視為完整窗口。
 
+## Sector Flow V1
+
+`ingest sector-flow` 保存經日期與 schema 驗證的官方原始 JSON：
+
+```text
+data/raw/twse/T86/{date}/market.json
+data/raw/twse/MI_INDEX/{date}/market.json
+data/raw/tpex/institutional/{date}/market.json
+data/raw/tpex/daily_close/{date}/market.json
+data/raw/tdcc/holding_distribution/{as_of_date}/market.json
+```
+
+`report sector-flow` 不連網，輸出 schema version 1：
+
+| 欄位 | 說明 |
+|---|---|
+| `requested_period` | 使用者要求的 ISO 日期範圍，最多 31 個 calendar days |
+| `observed_trading_dates` | 至少有合法法人 row 的日期，不用假資料補休市日 |
+| `status` | `ok` / `degraded` / `blocked` |
+| `source_status` | 每個日期與 provider 的 cache path、狀態、row count |
+| `taxonomy` | `TaiwanStockInfo` raw-cache snapshot date 與 mapping coverage |
+| `daily` | 每日族群的法人、外資、投信、自營商淨股數與估算金額 |
+| `period_summary` | 僅加總 observed days 的區間結果與個股貢獻 |
+| `large_holder` | TDCC 週 snapshot levels 12-15 的 `holding_change_proxy` |
+
+只有符合 `^[1-9][0-9]{3}$` 的普通股樣式代號進入 V1。分類採不晚於
+報告截止日的最新 `TaiwanStockInfo/{snapshot_date}` 目錄；row-level `date`
+不是 metadata 版本。精確量為 shares；金額欄位固定標示
+`amount_method=net_shares_times_close`。任一交易日價格 coverage 低於 90%
+時，整份排行改用精確淨股數並標為 `degraded`。
+
+TDCC 必須有兩個不晚於截止日的 snapshot 才計算差值；不足時回
+`status=insufficient_data` 且不產生數值。此欄是持股變化代理，不是下單流
+或精確淨流入。
+
 ## Old Log Import Output
 
 `tw-daytrade old-logs import` 會輸出：

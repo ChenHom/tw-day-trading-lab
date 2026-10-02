@@ -90,6 +90,16 @@ python3 -m tw_day_trading_lab.cli ingest finmind \
   --date 2026-05-28 \
   --requests examples/finmind.requests.sample.json \
   --cache-dir data/raw
+python3 -m tw_day_trading_lab.cli ingest sector-flow \
+  --start-date 2026-09-24 \
+  --end-date 2026-10-01 \
+  --cache-dir data/raw
+python3 -m tw_day_trading_lab.cli report sector-flow \
+  --start-date 2026-09-24 \
+  --end-date 2026-10-01 \
+  --cache-dir data/raw \
+  --output reports/2026-09-24_2026-10-01-sector-flow.json \
+  --report-output reports/2026-09-24_2026-10-01-sector-flow.md
 python3 -m tw_day_trading_lab.cli candidates build-from-raw \
   --date 2026-05-28 \
   --cache-dir data/raw \
@@ -146,6 +156,11 @@ python3 -m tw_day_trading_lab.cli simulate trading-day-cycle \
   --trading-data-input data/raw/finmind/TaiwanStockPrice/2026-06-04/0050.jsonl \
   --run-all-stages
 ```
+
+`sector-flow` 的 ingest 只讀取 TWSE、TPEx、TDCC 公開資料，不登入
+Shioaji；report 完全離線。法人、外資、投信與自營商的淨股數是官方精確
+值，但金額是 `淨股數 × 收盤價` 的估算，不是實際成交現金流。TDCC 大戶
+資料是週 snapshot 的持股變化代理，不能解讀為逐日大戶淨流入。
 
 ### 一鍵執行當沖模擬 (Simplified Daily Ops Run)
 

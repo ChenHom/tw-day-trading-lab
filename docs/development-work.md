@@ -4446,3 +4446,17 @@ PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 378 tests, OK
 - 驗證證據：相容性 / simulation / market-data / RVOL 目標組合 156 項通過；repo-local 1.7.5 環境完整測試 385 項通過（原 378 項加 7 項相容性測試）。
 - 離線升級與測試沒有觸發真實登入、行情訂閱、委託、取消、Telegram 傳送或 GitHub report 發布；完成驗證後僅依交付規範推送原始碼。
 - 殘餘風險：真實 SDK 的 simulation provider 行為仍需在交易時段、明確開 gate 後另跑 smoke；本次離線升級結果不能取代 PA Gate B 或策略 edge 證據。
+
+## 2026-10-02 Sector Flow V1
+
+- 實作官方來源優先的族群資金流：TWSE T86 / MI_INDEX、TPEx 法人明細 /
+  每日收盤、TDCC 持股分級；FinMind 只提供已快取的產業分類 metadata。
+- `ingest sector-flow` 是唯一網路邊界；`report sector-flow` 可由 raw cache
+  完全離線重播。沒有 Shioaji、下單、Telegram 或 GitHub publication side
+  effect。
+- 法人 / 外資 / 投信 / 自營商以 shares 精確加總；金額使用
+  `net_shares_times_close`，報告禁止稱為精確資金流。
+- 大戶使用 TDCC levels 12-15 的週 snapshot 差值；少於兩期時 fail closed
+  為 `insufficient_data`。
+- Code-complete 驗證與 2026-09-24～2026-10-01 實際 provider run 證據分開
+  記錄；本段在實際抓取與完整 gate 前不宣告 data-run validated。

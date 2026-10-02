@@ -445,3 +445,14 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
 3. 上述通過後，PA-P6/P7/P8 的 Gate B 才有意義。
 
 在那之前 paper trade 結果只證明 determinism 與規則遵循，不是 strategy edge。
+
+## Sector Flow V1（2026-10-02）
+
+狀態：`CODE_COMPLETE`；實際資料範圍驗證待執行。
+
+- 官方 TWSE / TPEx 日法人與收盤資料聚合成產業族群。
+- 輸出法人、外資、投信、自營商精確淨股數與收盤價估算金額。
+- TDCC 大戶為週持股變化代理，兩期不足時 `insufficient_data`。
+- 第一版固定驗證期間：2026-09-24～2026-10-01。
+- Dashboard、candidate score、scheduler 與通知整合均留待後續，不影響現有
+  PA 或 Trading Day Cycle phase 狀態。
