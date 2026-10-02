@@ -612,6 +612,7 @@ class ShioajiSdkSimulationGateway:
         account: Any = None,
         fetch_contract: bool = True,
         subscribe_trade: bool = True,
+        order_factory: Callable[..., Any] | None = None,
     ) -> None:
         if getattr(api, "simulation", True) is not True:
             raise ValueError("ShioajiSdkSimulationGateway requires api.simulation=True")
@@ -621,6 +622,7 @@ class ShioajiSdkSimulationGateway:
         self._account = account
         self._fetch_contract = fetch_contract
         self._subscribe_trade = subscribe_trade
+        self._order_factory = order_factory
         self._raw_trade_by_order_id: dict[str, Any] = {}
 
     def login(self) -> dict[str, str]:
@@ -693,7 +695,7 @@ class ShioajiSdkSimulationGateway:
         # Check if StockOrder class exists directly on shioaji module (Shioaji 1.5+)
         # Otherwise fallback to the deprecated api.Order class (Shioaji 1.3)
         import shioaji as sj  # type: ignore
-        order_factory = getattr(sj, "StockOrder", None)
+        order_factory = self._order_factory or getattr(sj, "StockOrder", None)
         if order_factory is None:
             order_factory = self._api.Order
 

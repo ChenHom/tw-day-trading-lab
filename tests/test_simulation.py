@@ -311,6 +311,7 @@ class SimulationAdapterTest(unittest.TestCase):
             api=api,
             api_key="test-key",
             secret_key="test-secret",
+            order_factory=api.Order,
         )
         request = build_shioaji_order_request(
             self.make_signal().to_order_intent(),
