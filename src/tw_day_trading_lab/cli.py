@@ -13,6 +13,9 @@ from .finmind_ingestion import (
     ingest_finmind_requests,
     read_request_file,
 )
+from .sector_flow import build_sector_flow_report
+from .sector_flow_report import render_sector_flow_markdown
+from .sector_flow_sources import UrllibJsonHttpClient, ingest_sector_flow
 from .backfill import run_gated_shioaji_kbars_backfill
 from .bars import (
     FiveMinuteBarAggregator,
@@ -324,6 +327,21 @@ def cmd_report_close(args: argparse.Namespace) -> None:
     output = Path(args.output) if args.output else Path("reports") / f"{args.date}-close.md"
     write_text(output, content)
     print(output)
+
+
+def cmd_report_sector_flow(args: argparse.Namespace) -> None:
+    """Build deterministic JSON and Markdown sector-flow artifacts from cache."""
+    payload = build_sector_flow_report(
+        cache_dir=Path(args.cache_dir),
+        start_date=args.start_date,
+        end_date=args.end_date,
+    )
+    output = Path(args.output)
+    report_output = Path(args.report_output)
+    write_json(output, payload)
+    write_text(report_output, render_sector_flow_markdown(payload))
+    print(output)
+    print(report_output)
     if args.telegram_summary_output:
         summary_output = Path(args.telegram_summary_output)
         write_text(
@@ -3831,6 +3849,17 @@ def cmd_ingest_finmind(args: argparse.Namespace) -> None:
         connection.close()
 
 
+def cmd_ingest_sector_flow(args: argparse.Namespace) -> None:
+    """Fetch public official sector-flow sources into the raw cache."""
+    summary = ingest_sector_flow(
+        cache_dir=Path(args.cache_dir),
+        start_date=args.start_date,
+        end_date=args.end_date,
+        client=UrllibJsonHttpClient(),
+    )
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
 class _TokenMissingFinMindClient:
     def fetch_dataset(self, request):
         raise RuntimeError("FinMind token is required")
@@ -3882,6 +3911,13 @@ def build_parser() -> argparse.ArgumentParser:
     close.add_argument("--output")
     close.add_argument("--telegram-summary-output")
     close.set_defaults(func=cmd_report_close)
+    sector_flow_report = report_sub.add_parser("sector-flow")
+    sector_flow_report.add_argument("--start-date", required=True)
+    sector_flow_report.add_argument("--end-date", required=True)
+    sector_flow_report.add_argument("--cache-dir", default="data/raw")
+    sector_flow_report.add_argument("--output", required=True)
+    sector_flow_report.add_argument("--report-output", required=True)
+    sector_flow_report.set_defaults(func=cmd_report_sector_flow)
 
     notify = subparsers.add_parser("notify")
     notify_sub = notify.add_subparsers(required=True)
@@ -4250,6 +4286,11 @@ def build_parser() -> argparse.ArgumentParser:
     finmind.add_argument("--token")
     finmind.add_argument("--ledger-sqlite", help="use a local SQLite quota ledger instead of TiDB")
     finmind.set_defaults(func=cmd_ingest_finmind)
+    sector_flow_ingest = ingest_sub.add_parser("sector-flow")
+    sector_flow_ingest.add_argument("--start-date", required=True)
+    sector_flow_ingest.add_argument("--end-date", required=True)
+    sector_flow_ingest.add_argument("--cache-dir", default="data/raw")
+    sector_flow_ingest.set_defaults(func=cmd_ingest_sector_flow)
 
     return parser
 

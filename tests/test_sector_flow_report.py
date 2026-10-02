@@ -1,5 +1,6 @@
 import unittest
 
+from tw_day_trading_lab.cli import build_parser
 from tw_day_trading_lab.sector_flow_report import render_sector_flow_markdown
 
 
@@ -33,6 +34,15 @@ def sample_payload():
 
 
 class SectorFlowReportTest(unittest.TestCase):
+    def test_parser_accepts_sector_flow_commands(self):
+        ingest = build_parser().parse_args(["ingest", "sector-flow", "--start-date", "2026-09-24", "--end-date", "2026-10-01"])
+        report = build_parser().parse_args([
+            "report", "sector-flow", "--start-date", "2026-09-24", "--end-date", "2026-10-01",
+            "--output", "out.json", "--report-output", "out.md",
+        ])
+        self.assertEqual(ingest.func.__name__, "cmd_ingest_sector_flow")
+        self.assertEqual(report.func.__name__, "cmd_report_sector_flow")
+
     def test_report_distinguishes_exact_shares_from_estimated_amount(self):
         markdown = render_sector_flow_markdown(sample_payload())
         self.assertIn("精確淨買賣股數", markdown)
