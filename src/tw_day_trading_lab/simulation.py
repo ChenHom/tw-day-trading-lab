@@ -16,6 +16,7 @@ from typing import Any, Protocol
 from .ledger import DuplicateIntentError, OrderIntent, PaperLedger
 from .models import CandidateScore
 from .performance import RollingPerformanceTracker
+from .shioaji_compat import login_simulation_api
 
 
 @dataclass(frozen=True)
@@ -623,7 +624,8 @@ class ShioajiSdkSimulationGateway:
         self._raw_trade_by_order_id: dict[str, Any] = {}
 
     def login(self) -> dict[str, str]:
-        accounts = self._api.login(
+        accounts = login_simulation_api(
+            self._api.login,
             api_key=self._api_key,
             secret_key=self._secret_key,
             fetch_contract=self._fetch_contract,
