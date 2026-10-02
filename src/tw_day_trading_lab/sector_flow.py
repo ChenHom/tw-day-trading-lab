@@ -103,7 +103,7 @@ def _load_source(
         return [], status
     try:
         rows = parser(read_json(path), trading_date)
-        status.update({"state": "ok" if rows else "no_data", "row_count": len(rows)})
+        status.update({"state": "ok" if rows else "no_data", "row_count": len(rows), "embedded_date": trading_date})
         return rows, status
     except (OSError, json.JSONDecodeError, ProviderSchemaError) as exc:
         status.update({"state": "schema_error", "row_count": 0, "error": str(exc)})
@@ -133,6 +133,16 @@ def _finalize_categories(categories: Mapping[str, dict[str, Any]], ranking_metho
     for value in categories.values():
         item = dict(value)
         contributors = item.pop("_contributors")
+        for field in (
+            "estimated_foreign_net_amount_twd",
+            "estimated_investment_trust_net_amount_twd",
+            "estimated_dealer_net_amount_twd",
+            "estimated_institutional_net_amount_twd",
+        ):
+            item[field] = round(float(item[field]), 2)
+        for contributor in contributors:
+            if contributor["estimated_net_amount_twd"] is not None:
+                contributor["estimated_net_amount_twd"] = round(float(contributor["estimated_net_amount_twd"]), 2)
         positives = sorted((row for row in contributors if row["institutional_net_shares"] > 0), key=lambda row: (row["institutional_net_shares"], row["symbol"]), reverse=True)
         negatives = sorted((row for row in contributors if row["institutional_net_shares"] < 0), key=lambda row: (row["institutional_net_shares"], row["symbol"]))
         item["top_positive_contributors"] = positives[:5]
@@ -261,15 +271,18 @@ def build_large_holder_proxy(
     categories: dict[str, dict[str, Any]] = {}
     for symbol in sorted(set(old) | set(new)):
         category = taxonomy[symbol].category if symbol in taxonomy else "未分類"
-        item = categories.setdefault(category, {"category": category, "large_holder_share_delta": 0, "large_holder_percent_delta": 0.0, "estimated_change_twd": 0.0, "missing_price_count": 0})
+        item = categories.setdefault(category, {"category": category, "large_holder_share_delta": 0, "sum_stock_percent_point_delta": 0.0, "estimated_change_twd": 0.0, "missing_price_count": 0})
         share_delta = new.get(symbol, (0, 0.0))[0] - old.get(symbol, (0, 0.0))[0]
         percent_delta = new.get(symbol, (0, 0.0))[1] - old.get(symbol, (0, 0.0))[1]
         item["large_holder_share_delta"] += share_delta
-        item["large_holder_percent_delta"] += percent_delta
+        item["sum_stock_percent_point_delta"] += percent_delta
         if symbol in closes:
             item["estimated_change_twd"] += share_delta * closes[symbol]
         else:
             item["missing_price_count"] += 1
+    for item in categories.values():
+        item["sum_stock_percent_point_delta"] = round(float(item["sum_stock_percent_point_delta"]), 6)
+        item["estimated_change_twd"] = round(float(item["estimated_change_twd"]), 2)
     return {
         "status": "ok",
         "method": "holding_change_proxy",

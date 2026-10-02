@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tw_day_trading_lab.sector_flow_sources import (
+    ProviderNoData,
     ProviderSchemaError,
     UrllibJsonHttpClient,
     build_daily_requests,
@@ -63,6 +64,14 @@ class SectorFlowSourceParserTest(unittest.TestCase):
         rows = parse_tpex_institutional(payload, "2026-09-24")
 
         self.assertEqual([row.symbol for row in rows], ["6488"])
+
+    def test_tpex_empty_tables_are_no_data_but_nonempty_malformed_table_is_schema_error(self):
+        empty = {"date": "20260924", "stat": "ok", "tables": [{}, {}]}
+        malformed = {"date": "20260924", "stat": "ok", "tables": [{"date": "115/09/24", "fields": ["代號"], "unexpected": []}]}
+        with self.assertRaises(ProviderNoData):
+            parse_tpex_institutional(empty, "2026-09-24")
+        with self.assertRaises(ProviderSchemaError):
+            parse_tpex_institutional(malformed, "2026-09-24")
 
     def test_invalid_numeric_value_is_schema_error_not_zero(self):
         payload = copy.deepcopy(load_fixture("twse-t86.json"))
@@ -142,6 +151,21 @@ class SectorFlowIngestionTest(unittest.TestCase):
         self.assertEqual(first["fetched"], 5)
         self.assertEqual(second["cached"], 5)
         self.assertEqual(len(second_client.calls), 1)
+        daily_items = [item for item in second["sources"] if item["provider"] != "tdcc"]
+        self.assertTrue(all(item["embedded_date"] == "2026-09-24" for item in daily_items))
+
+    def test_invalid_existing_cache_is_refetched_and_replaced(self):
+        path = self.cache_dir / "twse" / "T86" / "2026-09-24" / "market.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"broken":true}\n', encoding="utf-8")
+        client = FakeHttpClient()
+
+        summary = ingest_sector_flow(cache_dir=self.cache_dir, start_date="2026-09-24", end_date="2026-09-24", client=client)
+
+        item = next(row for row in summary["sources"] if row["dataset"] == "T86")
+        self.assertEqual(item["state"], "ok")
+        self.assertEqual(item["via"], "network")
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["date"], "20260924")
 
     def test_schema_error_does_not_write_cache(self):
         class BrokenClient(FakeHttpClient):

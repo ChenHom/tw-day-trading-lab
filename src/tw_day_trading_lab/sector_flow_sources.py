@@ -19,6 +19,10 @@ class ProviderSchemaError(ValueError):
     """Raised when an official payload no longer matches its validated schema."""
 
 
+class ProviderNoData(ProviderSchemaError):
+    """Raised when a provider explicitly has no data for the requested date."""
+
+
 @dataclass(frozen=True)
 class InstitutionalFlowRow:
     trading_date: str
@@ -143,7 +147,7 @@ def _roc_to_iso(value: object) -> str:
 
 def _validate_payload_date(payload: Mapping[str, Any], requested_date: str) -> None:
     if str(payload.get("date", "")) != _compact_date(requested_date):
-        raise ProviderSchemaError("provider date does not match requested date")
+        raise ProviderNoData("provider date does not match requested date")
 
 
 def _rows(payload: Mapping[str, Any], fields: Sequence[Any], data: Any) -> list[Sequence[Any]]:
@@ -228,6 +232,8 @@ def _tpex_table(payload: Mapping[str, Any], requested_date: str) -> Mapping[str,
     if not isinstance(tables, list):
         raise ProviderSchemaError("TPEx table missing or ambiguous")
     candidates = [table for table in tables if isinstance(table, dict) and isinstance(table.get("fields"), list) and isinstance(table.get("data"), list)]
+    if not candidates and (not tables or all(table == {} for table in tables)):
+        raise ProviderNoData("TPEx has no table for requested date")
     if len(candidates) != 1:
         raise ProviderSchemaError("TPEx table missing or ambiguous")
     if _roc_to_iso(candidates[0].get("date")) != requested_date:
@@ -353,31 +359,34 @@ def ingest_sector_flow(
         for request in build_daily_requests(cache_dir, cursor.isoformat()):
             item = {"provider": request.provider, "dataset": request.dataset, "requested_date": request.requested_date, "cache_path": str(request.cache_path)}
             if request.cache_path.exists():
-                item["state"] = "ok"
-                item["via"] = "cache"
-                summary["cached"] += 1
-            else:
                 try:
-                    payload = client.get_json(request.url)
-                    row_count = _validate_request_payload(request, payload)
-                    if row_count == 0:
-                        item["state"] = "no_data"
-                        summary["no_data"] += 1
-                    else:
-                        _atomic_json(request.cache_path, payload)
-                        item.update({"state": "ok", "via": "network", "row_count": row_count})
-                        summary["fetched"] += 1
-                except ProviderSchemaError as exc:
-                    text = str(exc)
-                    if "fields missing" in text or "table missing" in text or "data is not a list" in text or "provider date does not match requested date" in text:
-                        item.update({"state": "no_data", "reason": text})
-                        summary["no_data"] += 1
-                    else:
-                        item.update({"state": "schema_error", "error": text})
-                        summary["failed"] += 1
-                except Exception as exc:
-                    item.update({"state": "error", "error": str(exc)})
-                    summary["failed"] += 1
+                    row_count = _validate_request_payload(request, read_json(request.cache_path))
+                except (OSError, json.JSONDecodeError, ProviderSchemaError):
+                    row_count = 0
+                if row_count:
+                    item.update({"state": "ok", "via": "cache", "row_count": row_count, "embedded_date": request.requested_date})
+                    summary["cached"] += 1
+                    summary["sources"].append(item)
+                    continue
+            try:
+                payload = client.get_json(request.url)
+                row_count = _validate_request_payload(request, payload)
+                if row_count == 0:
+                    item["state"] = "no_data"
+                    summary["no_data"] += 1
+                else:
+                    _atomic_json(request.cache_path, payload)
+                    item.update({"state": "ok", "via": "network", "row_count": row_count, "embedded_date": request.requested_date})
+                    summary["fetched"] += 1
+            except ProviderNoData as exc:
+                item.update({"state": "no_data", "reason": str(exc)})
+                summary["no_data"] += 1
+            except ProviderSchemaError as exc:
+                item.update({"state": "schema_error", "error": str(exc)})
+                summary["failed"] += 1
+            except Exception as exc:
+                item.update({"state": "error", "error": str(exc)})
+                summary["failed"] += 1
             summary["sources"].append(item)
         cursor += timedelta(days=1)
 

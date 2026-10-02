@@ -89,7 +89,7 @@ def render_sector_flow_markdown(payload: Mapping[str, Any]) -> str:
             "|---|---:|---:|---:|",
         ])
         for row in large_holder.get("categories", []):
-            lines.append(f"| {row['category']} | {_integer(row['large_holder_share_delta'])} | {float(row['large_holder_percent_delta']):.4f}% | {_amount(row['estimated_change_twd'])} |")
+            lines.append(f"| {row['category']} | {_integer(row['large_holder_share_delta'])} | {float(row['sum_stock_percent_point_delta']):.4f} 個百分點加總 | {_amount(row['estimated_change_twd'])} |")
     lines.extend(["", "## 資料品質與限制", ""])
     warnings = payload.get("warnings", [])
     if warnings:

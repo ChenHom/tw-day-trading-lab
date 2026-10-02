@@ -58,12 +58,34 @@ class SectorFlowAggregationTest(unittest.TestCase):
         self.assertEqual(category["amount_method"], "net_shares_times_close")
         self.assertEqual(payload["observed_trading_dates"], ["2026-09-24"])
         self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["source_status"]["2026-09-24"]["twse_institutional"]["embedded_date"], "2026-09-24")
 
     def test_top_contributors_keep_market_and_symbol(self):
         payload = build_sector_flow_report(cache_dir=self.cache_dir, start_date="2026-09-24", end_date="2026-10-01")
         positive = payload["daily"][0]["categories"][0]["top_positive_contributors"]
         self.assertEqual(positive[0]["symbol"], "2330")
         self.assertEqual({row["market"] for row in positive}, {"twse", "tpex"})
+
+    def test_estimated_amounts_are_rounded_to_two_decimal_places(self):
+        close_path = self.cache_dir / "tpex/daily_close/2026-09-24/market.json"
+        close_payload = json.loads(close_path.read_text(encoding="utf-8"))
+        close_payload["tables"][0]["data"][0][2] = "0.1"
+        close_path.write_text(json.dumps(close_payload, ensure_ascii=False), encoding="utf-8")
+        flow_path = self.cache_dir / "tpex/institutional/2026-09-24/market.json"
+        flow_payload = json.loads(flow_path.read_text(encoding="utf-8"))
+        row = flow_payload["tables"][0]["data"][0]
+        for index, value in {4: "3", 7: "0", 10: "3", 13: "0", 16: "0", 19: "0", 22: "0", 23: "3"}.items():
+            row[index] = value
+        flow_path.write_text(json.dumps(flow_payload, ensure_ascii=False), encoding="utf-8")
+        taxonomy_path = self.cache_dir / "finmind/TaiwanStockInfo/2026-09-23/market.jsonl"
+        taxonomy_rows = [json.loads(line) for line in taxonomy_path.read_text(encoding="utf-8").splitlines()]
+        taxonomy_rows[1]["industry_category"] = "測試族群"
+        taxonomy_path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in taxonomy_rows) + "\n", encoding="utf-8")
+
+        report = build_sector_flow_report(cache_dir=self.cache_dir, start_date="2026-09-24", end_date="2026-09-24")
+        amount = next(row for row in report["period_summary"] if row["category"] == "測試族群")["estimated_institutional_net_amount_twd"]
+
+        self.assertEqual(amount, 0.3)
 
     def test_missing_close_keeps_shares_and_degrades_amount_ranking(self):
         (self.cache_dir / "tpex/daily_close/2026-09-24/market.json").unlink()
@@ -98,6 +120,8 @@ class SectorFlowLargeHolderTest(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["method"], "holding_change_proxy")
         self.assertEqual(result["categories"][0]["large_holder_share_delta"], 50_000)
+        self.assertEqual(result["categories"][0]["sum_stock_percent_point_delta"], 0.5)
+        self.assertNotIn("large_holder_percent_delta", result["categories"][0])
         self.assertEqual(result["categories"][0]["estimated_change_twd"], 41_000_000.0)
 
     def test_one_snapshot_is_explicitly_insufficient(self):
