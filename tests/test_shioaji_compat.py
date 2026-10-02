@@ -1,10 +1,29 @@
 import unittest
 from types import SimpleNamespace
 
-from tw_day_trading_lab.shioaji_compat import login_simulation_api, stock_contract
+from tw_day_trading_lab.shioaji_compat import (
+    login_simulation_api,
+    shioaji_enum_value,
+    stock_contract,
+)
 
 
 class ShioajiCompatibilityTest(unittest.TestCase):
+    def test_enum_value_prefers_new_top_level_enum(self):
+        sdk = SimpleNamespace(
+            Action=SimpleNamespace(Buy="new-buy"),
+            constant=SimpleNamespace(Action=SimpleNamespace(Buy="legacy-buy")),
+        )
+
+        self.assertEqual(shioaji_enum_value(sdk, "Action", "Buy"), "new-buy")
+
+    def test_enum_value_supports_legacy_constant_namespace(self):
+        sdk = SimpleNamespace(
+            constant=SimpleNamespace(Action=SimpleNamespace(Buy="legacy-buy")),
+        )
+
+        self.assertEqual(shioaji_enum_value(sdk, "Action", "Buy"), "legacy-buy")
+
     def test_stock_contract_supports_legacy_mapping(self):
         api = SimpleNamespace(Contracts=SimpleNamespace(Stocks={"2330": "legacy"}))
 

@@ -55,3 +55,10 @@ def stock_contract(api: Any, symbol: str) -> Any:
     if callable(get_contract):
         return get_contract(symbol)
     return api.Contracts.Stocks[symbol]
+
+
+def shioaji_enum_value(sdk: Any, enum_name: str, member_name: str) -> Any:
+    enum_cls = getattr(sdk, enum_name, None)
+    if enum_cls is None:
+        enum_cls = getattr(sdk.constant, enum_name)
+    return getattr(enum_cls, member_name)

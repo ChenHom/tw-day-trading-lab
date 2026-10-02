@@ -16,7 +16,7 @@ from typing import Any, Protocol
 from .ledger import DuplicateIntentError, OrderIntent, PaperLedger
 from .models import CandidateScore
 from .performance import RollingPerformanceTracker
-from .shioaji_compat import login_simulation_api, stock_contract
+from .shioaji_compat import login_simulation_api, shioaji_enum_value, stock_contract
 
 
 @dataclass(frozen=True)
@@ -736,8 +736,7 @@ class ShioajiSdkSimulationGateway:
         try:
             import shioaji as sj  # type: ignore
 
-            enum_cls = getattr(sj.constant, enum_name)
-            return getattr(enum_cls, member_name)
+            return shioaji_enum_value(sj, enum_name, member_name)
         except Exception:
             return member_name
 
