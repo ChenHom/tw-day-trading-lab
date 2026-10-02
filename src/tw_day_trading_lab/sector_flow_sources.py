@@ -211,11 +211,13 @@ def parse_twse_closes(payload: Mapping[str, Any], requested_date: str) -> list[C
         raise ProviderSchemaError("TWSE close fields missing")
     symbol_idx = _field_index(fields, "證券代號")
     close_idx = _field_index(fields, "收盤價")
-    return [
-        ClosePriceRow(requested_date, "twse", str(row[symbol_idx]).strip(), _parse_float(row[close_idx]))
-        for row in _rows(payload, fields, table.get("data"))
-        if COMMON_STOCK_RE.fullmatch(str(row[symbol_idx]).strip())
-    ]
+    result = []
+    for row in _rows(payload, fields, table.get("data")):
+        symbol = str(row[symbol_idx]).strip()
+        close_text = str(row[close_idx]).strip()
+        if COMMON_STOCK_RE.fullmatch(symbol) and close_text not in {"", "--", "---", "----"}:
+            result.append(ClosePriceRow(requested_date, "twse", symbol, _parse_float(close_text)))
+    return result
 
 
 def _tpex_table(payload: Mapping[str, Any], requested_date: str) -> Mapping[str, Any]:
@@ -223,11 +225,14 @@ def _tpex_table(payload: Mapping[str, Any], requested_date: str) -> Mapping[str,
     if payload.get("stat") != "ok":
         raise ProviderSchemaError("TPEx status is not ok")
     tables = payload.get("tables")
-    if not isinstance(tables, list) or len(tables) != 1 or not isinstance(tables[0], dict):
+    if not isinstance(tables, list):
         raise ProviderSchemaError("TPEx table missing or ambiguous")
-    if _roc_to_iso(tables[0].get("date")) != requested_date:
+    candidates = [table for table in tables if isinstance(table, dict) and isinstance(table.get("fields"), list) and isinstance(table.get("data"), list)]
+    if len(candidates) != 1:
+        raise ProviderSchemaError("TPEx table missing or ambiguous")
+    if _roc_to_iso(candidates[0].get("date")) != requested_date:
         raise ProviderSchemaError("TPEx embedded date does not match requested date")
-    return tables[0]
+    return candidates[0]
 
 
 def parse_tpex_institutional(
@@ -266,11 +271,13 @@ def parse_tpex_closes(payload: Mapping[str, Any], requested_date: str) -> list[C
         raise ProviderSchemaError("TPEx close fields missing")
     symbol_idx = _field_index(fields, "代號")
     close_idx = _field_index(fields, "收盤")
-    return [
-        ClosePriceRow(requested_date, "tpex", str(row[symbol_idx]).strip(), _parse_float(row[close_idx]))
-        for row in _rows(payload, fields, table.get("data"))
-        if COMMON_STOCK_RE.fullmatch(str(row[symbol_idx]).strip())
-    ]
+    result = []
+    for row in _rows(payload, fields, table.get("data")):
+        symbol = str(row[symbol_idx]).strip()
+        close_text = str(row[close_idx]).strip()
+        if COMMON_STOCK_RE.fullmatch(symbol) and close_text not in {"", "--", "---", "----"}:
+            result.append(ClosePriceRow(requested_date, "tpex", symbol, _parse_float(close_text)))
+    return result
 
 
 def parse_tdcc_holdings(payload: Sequence[Mapping[str, Any]]) -> list[HoldingDistributionRow]:
@@ -362,7 +369,7 @@ def ingest_sector_flow(
                         summary["fetched"] += 1
                 except ProviderSchemaError as exc:
                     text = str(exc)
-                    if "fields missing" in text or "table missing" in text or "data is not a list" in text:
+                    if "fields missing" in text or "table missing" in text or "data is not a list" in text or "provider date does not match requested date" in text:
                         item.update({"state": "no_data", "reason": text})
                         summary["no_data"] += 1
                     else:

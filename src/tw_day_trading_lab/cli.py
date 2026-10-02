@@ -327,6 +327,18 @@ def cmd_report_close(args: argparse.Namespace) -> None:
     output = Path(args.output) if args.output else Path("reports") / f"{args.date}-close.md"
     write_text(output, content)
     print(output)
+    if args.telegram_summary_output:
+        summary_output = Path(args.telegram_summary_output)
+        write_text(
+            summary_output,
+            render_close_report_telegram_summary(
+                args.date,
+                candidates,
+                replay_summary=replay_summary,
+                simulation_summary=simulation_summary,
+            ),
+        )
+        print(summary_output)
 
 
 def cmd_report_sector_flow(args: argparse.Namespace) -> None:
@@ -342,18 +354,6 @@ def cmd_report_sector_flow(args: argparse.Namespace) -> None:
     write_text(report_output, render_sector_flow_markdown(payload))
     print(output)
     print(report_output)
-    if args.telegram_summary_output:
-        summary_output = Path(args.telegram_summary_output)
-        write_text(
-            summary_output,
-            render_close_report_telegram_summary(
-                args.date,
-                candidates,
-                replay_summary=replay_summary,
-                simulation_summary=simulation_summary,
-            ),
-        )
-        print(summary_output)
 
 
 def cmd_notify_telegram(args: argparse.Namespace) -> None:

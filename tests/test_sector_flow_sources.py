@@ -44,6 +44,26 @@ class SectorFlowSourceParserTest(unittest.TestCase):
         self.assertEqual([(row.symbol, row.close) for row in twse], [("2330", 820.0)])
         self.assertEqual([(row.symbol, row.close) for row in tpex], [("6488", 450.0)])
 
+    def test_close_parsers_skip_official_no_trade_placeholders(self):
+        twse_payload = copy.deepcopy(load_fixture("twse-mi-index.json"))
+        twse_payload["tables"][1]["data"].append(["2340", "台亞", "0", "0", "0", "--", "--", "--", "--"])
+        tpex_payload = copy.deepcopy(load_fixture("tpex-daily-close.json"))
+        tpex_payload["tables"][0]["data"].append(["5209", "新鼎", "----", "---", "----", "----", "----", "0", "0"])
+
+        twse = parse_twse_closes(twse_payload, "2026-09-24")
+        tpex = parse_tpex_closes(tpex_payload, "2026-09-24")
+
+        self.assertEqual([row.symbol for row in twse], ["2330"])
+        self.assertEqual([row.symbol for row in tpex], ["6488"])
+
+    def test_tpex_parser_ignores_trailing_empty_table_object(self):
+        payload = copy.deepcopy(load_fixture("tpex-institutional.json"))
+        payload["tables"].append({})
+
+        rows = parse_tpex_institutional(payload, "2026-09-24")
+
+        self.assertEqual([row.symbol for row in rows], ["6488"])
+
     def test_invalid_numeric_value_is_schema_error_not_zero(self):
         payload = copy.deepcopy(load_fixture("twse-t86.json"))
         payload["data"][0][4] = "--"
@@ -128,13 +148,26 @@ class SectorFlowIngestionTest(unittest.TestCase):
             def get_json(self, url):
                 payload = super().get_json(url)
                 if "T86" in url:
-                    payload["date"] = "20260923"
+                    payload["data"][0][18] = "1"
                 return payload
 
         summary = ingest_sector_flow(cache_dir=self.cache_dir, start_date="2026-09-24", end_date="2026-09-24", client=BrokenClient())
         path = self.cache_dir / "twse" / "T86" / "2026-09-24" / "market.json"
         self.assertFalse(path.exists())
         self.assertTrue(any(item["state"] == "schema_error" for item in summary["sources"]))
+
+    def test_prior_date_response_is_classified_as_no_data(self):
+        class PriorDateClient(FakeHttpClient):
+            def get_json(self, url):
+                payload = super().get_json(url)
+                if "T86" in url or "MI_INDEX" in url:
+                    payload["date"] = "20260923"
+                return payload
+
+        summary = ingest_sector_flow(cache_dir=self.cache_dir, start_date="2026-09-24", end_date="2026-09-24", client=PriorDateClient())
+        twse = [item for item in summary["sources"] if item["provider"] == "twse"]
+        self.assertEqual([item["state"] for item in twse], ["no_data", "no_data"])
+        self.assertEqual(summary["failed"], 0)
 
     def test_range_is_capped_at_31_calendar_days(self):
         with self.assertRaisesRegex(ValueError, "31 calendar days"):

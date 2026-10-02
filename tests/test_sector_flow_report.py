@@ -1,6 +1,9 @@
+import argparse
+import tempfile
 import unittest
+from pathlib import Path
 
-from tw_day_trading_lab.cli import build_parser
+from tw_day_trading_lab.cli import build_parser, cmd_report_sector_flow
 from tw_day_trading_lab.sector_flow_report import render_sector_flow_markdown
 
 
@@ -42,6 +45,22 @@ class SectorFlowReportTest(unittest.TestCase):
         ])
         self.assertEqual(ingest.func.__name__, "cmd_ingest_sector_flow")
         self.assertEqual(report.func.__name__, "cmd_report_sector_flow")
+
+    def test_report_command_writes_outputs_without_close_report_arguments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = argparse.Namespace(
+                start_date="2026-09-24",
+                end_date="2026-09-24",
+                cache_dir=str(root / "cache"),
+                output=str(root / "report.json"),
+                report_output=str(root / "report.md"),
+            )
+
+            cmd_report_sector_flow(args)
+
+            self.assertTrue(Path(args.output).exists())
+            self.assertTrue(Path(args.report_output).exists())
 
     def test_report_distinguishes_exact_shares_from_estimated_amount(self):
         markdown = render_sector_flow_markdown(sample_payload())
