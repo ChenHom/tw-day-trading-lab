@@ -3,7 +3,7 @@
 ## Goal
 
 Build a cache-first CLI report that answers, for each available trading day in
-`2026-09-25` through `2026-10-01`:
+`2026-09-24` through `2026-10-01`:
 
 - which industry categories had the largest institutional net buying;
 - how much of that came from foreign investors, investment trusts, and dealers;
@@ -42,16 +42,16 @@ External access and deterministic reporting stay separate:
 
 ```bash
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli ingest sector-flow \
-  --start-date 2026-09-25 \
+  --start-date 2026-09-24 \
   --end-date 2026-10-01 \
   --cache-dir data/raw
 
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli report sector-flow \
-  --start-date 2026-09-25 \
+  --start-date 2026-09-24 \
   --end-date 2026-10-01 \
   --cache-dir data/raw \
-  --output reports/2026-09-25_2026-10-01-sector-flow.json \
-  --report-output reports/2026-09-25_2026-10-01-sector-flow.md
+  --output reports/2026-09-24_2026-10-01-sector-flow.json \
+  --report-output reports/2026-09-24_2026-10-01-sector-flow.md
 ```
 
 `ingest sector-flow` performs HTTP GET requests and writes raw responses.
@@ -201,7 +201,7 @@ The JSON artifact has this top-level shape:
 {
   "schema_version": 1,
   "requested_period": {
-    "start_date": "2026-09-25",
+    "start_date": "2026-09-24",
     "end_date": "2026-10-01"
   },
   "observed_trading_dates": [],
@@ -280,7 +280,7 @@ turnover, ownership change, or an estimated amount as an exact net cash flow.
    network access.
 2. The original test suite plus new sector-flow tests passes in the repository
    `.venv`.
-3. A gated real read-only ingestion for `2026-09-25` through `2026-10-01`
+3. A gated real read-only ingestion for `2026-09-24` through `2026-10-01`
    writes raw caches and reports actual provider availability.
 4. Re-running report generation with networking disabled produces identical
    JSON and Markdown.
