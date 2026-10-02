@@ -30,9 +30,9 @@ class ShioajiCompatibilityTest(unittest.TestCase):
         self.assertEqual(stock_contract(api, "2330"), "legacy")
 
     def test_stock_contract_prefers_new_service(self):
-        service = SimpleNamespace(get=lambda symbol: f"new-{symbol}")
+        stocks = SimpleNamespace(get=lambda symbol: f"new-{symbol}")
         api = SimpleNamespace(
-            contracts=service,
+            contracts=SimpleNamespace(stocks=stocks),
             Contracts=SimpleNamespace(Stocks={"2330": "legacy"}),
         )
 

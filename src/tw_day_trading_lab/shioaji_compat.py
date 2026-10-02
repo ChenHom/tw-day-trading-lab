@@ -51,7 +51,8 @@ def login_simulation_api(
 
 def stock_contract(api: Any, symbol: str) -> Any:
     contracts = getattr(api, "contracts", None)
-    get_contract = getattr(contracts, "get", None)
+    stocks = getattr(contracts, "stocks", None)
+    get_contract = getattr(stocks, "get", None)
     if callable(get_contract):
         return get_contract(symbol)
     return api.Contracts.Stocks[symbol]
