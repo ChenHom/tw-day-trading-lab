@@ -352,7 +352,7 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
 
 ### PA-P1: Shioaji Tick → normalized MarketTick
 
-目前狀態：`PA-P1_CODE_COMPLETE` 已完成，`PA-P1_LIVE_VALIDATED` 未完成。
+目前狀態：`PA-P1_CODE_COMPLETE` 與 `PA-P1_LIVE_VALIDATED` 皆已完成。
 
 - provider adapter 與 normalization 都在 `market_data.py`，該模組不 import Shioaji SDK。
 - provider callback 只入佇列，raw 寫入 / normalize / dedupe / sink 在 worker thread。
@@ -364,11 +364,11 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
 驗收：
 
 - Gate A：21 項 checklist 全數完成，unit / adversarial tests 通過。已完成，見 `docs/price-action-p1-design.md`。
-- Gate B：交易時段 smoke 的 report 需 `live_validation.passed=true`。未完成。
+- Gate B：交易時段 smoke 的 report 需 `live_validation.passed=true`。已完成：2026-08-17 60 秒 smoke 通過；2026-08-19 / 08-20 / 08-21 三個完整場次 12 檔亦通過，遺失 counter 全為 0。
 
 ### PA-P2: MarketTick → canonical 1m MarketBar
 
-目前狀態：`PA-P2_CODE_COMPLETE` 已完成，`PA-P2_LIVE_VALIDATED` 未完成。
+目前狀態：`PA-P2_CODE_COMPLETE` 與 `PA-P2_LIVE_VALIDATED` 皆已完成。
 
 - 半開 bucket `[09:00:00, 09:01:00)`，事件時間 watermark，多股票各自狀態。
 - late tick：窗內併入、窗外 `CORRECTED` rev+1、超窗 `dropped_late`。
@@ -378,11 +378,11 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
 驗收：
 
 - Gate A：OHLCV / bucket / rollover / multi-symbol / late / missing / replay determinism 測試通過。已完成。
-- Gate B：真實 tick 聚合出的 1m 與盤後 provider 1m 比對 OHLC / volume / bar count / missing minute。未完成，且卡在 FinMind 分 K 單位未查證。
+- Gate B：真實 tick 聚合出的 1m 與盤後 provider 1m 比對 OHLC / volume / bar count / missing minute。已完成（2026-08-17）：比對基準是 Shioaji kbars，不是 FinMind（FinMind 分 K 需付費）；volume ratio 0.997–1.000，kbars 改以 bar 結束時間標記後雙方無獨有分鐘。
 
 ### PA-P3: canonical 1m → canonical 5m
 
-目前狀態：`PA-P3_CODE_COMPLETE` 已完成，`PA-P3_LIVE_VALIDATED` 未完成。
+目前狀態：`PA-P3_CODE_COMPLETE` 與 `PA-P3_LIVE_VALIDATED` 皆已完成。
 
 - 半開 bucket `[09:00, 09:05)`；5m 永遠不向 provider 取得，只接受 `timeframe="1m"` 輸入。
 - bucket 是時間區間不是「五根 1m」；缺分鐘照樣產生 5m，不補假資料、不借下一個 bucket 湊數。
@@ -391,7 +391,7 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
 驗收：
 
 - Gate A：bucket boundary / OHLCV / 缺分鐘 / correction / deterministic replay 五項測試通過。已完成。
-- Gate B：與盤後 provider 5m 比對。未完成。
+- Gate B：與盤後 provider 5m 比對。已完成（2026-08-17）：唯一差異是收盤集合競價的 bucket 標記（provider 13:25、我方 13:30），成交量相等。
 
 ### PA-P4: Bar Persistence / Replay
 
@@ -406,7 +406,7 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
 
 ### PA-P5: TOD-RVOL / Cumulative RVOL
 
-目前狀態：`PA-P5_CODE_COMPLETE` 已完成，`PA-P5_LIVE_VALIDATED` 未完成。
+目前狀態：`PA-P5_CODE_COMPLETE` 與 `PA-P5_LIVE_VALIDATED` 皆已完成。
 
 - baseline 按相同 time slot 比較，取 median（mean 保留供對照），窗口 20 個交易日。
 - 缺 bar 的日子不貢獻樣本，**不當成 0**；否則 baseline 會被拉低並製造假的量能突破。
@@ -416,11 +416,11 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
 驗收：
 
 - Gate A：7 項 checklist 全數完成。已完成。
-- Gate B：真實 backfill 跑過、kbar volume 單位以日 K 定案、每日 bar 數合理、20 日 baseline 建立完成。未完成。
+- Gate B：真實 backfill 跑過、kbar volume 單位以日 K 定案、每日 bar 數合理、20 日 baseline 建立完成。已完成（2026-08-17）：kbar 單位為張（對日 K ratio 0.89–0.96），`baseline_days = 20`，TOD-RVOL 手算與程式一致。kbars 單次請求上限 30 天，`backfill.py` 已在單次登入內分段抓取。
 
 ### PA-P6 / PA-P7 / PA-P8
 
-目前狀態：三者皆 `CODE_COMPLETE`，共用一個未達成的 Gate B。
+目前狀態：三者皆 `CODE_COMPLETE`；`PA-P7_LIVE_VALIDATED` / `PA-P8_LIVE_VALIDATED` 於 2026-08-19 達成。PA-P6 swing 是同一條鏈的輸入，未另行宣告 `PA-P6_LIVE_VALIDATED`。
 
 - PA-P6 `structure.py`：swing 需兩側各 N 根確認，最新 N 根不算 swing；嚴格不等，不依賴 tie-break。HH/HL/LH/LL 與 BOS 規則明確，swing 不足回 `UNKNOWN` 而非猜測。
 - PA-P7 `setup.py`：Breakout → Retest → Trigger 狀態機。RVOL 缺失或 `insufficient_data` 一律不 breakout；同一 breakout level 每個 symbol 只用一次；entry / stop / target 在 signal 當下全部確定。
@@ -428,23 +428,41 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
 
 驗收：三份 checklist 全數完成（共 39 tests）。詳見 `docs/price-action-p6-p8-design.md`。
 
-**Gate B 未達成前，paper trade 結果只證明 determinism 與規則遵循，不得解讀成 strategy edge。**
+2026-08-19 首次完整場次中，SIGNAL → entry → stop → exit 完整鏈在當日 tick 聚合的 bar 上跑完，`market_data_healthy` 取自 session report。
+
+**Gate B 驗證的是機制會動，不是機制會賺。** paper trade 結果只證明 determinism 與規則遵循，不得解讀成 strategy edge。
+
+後續定案、不可回退的規則：
+
+- PA-P6 採 plateau-aware swing 規則（`structure.DEFAULT_SWING_RULE`）；strict 只留作 ablation。
+- 成交時間標在 `bar.end_at`（以已收盤 K 棒收盤價成交）。
+- 13:25 強制平倉是原則不是參數：不留倉，因為留倉需 T+2 全額交割，本金不足。
+- `setup.py` 進場前成本閘門 `DEFAULT_MAX_COST_R = 1.0`：摩擦不小於風險的 setup 以 `cost_exceeds_risk` 作廢。
 
 ### PA-P9
 
-未開始：daily performance report、expectancy report、ablation comparison（Breakout vs +RVOL vs +Retest vs +Trigger），並把既有 `cost.py` 的成本 / 滑價接進 paper trade 的 R 計算。
+目前狀態：已完成（2026-08-19）。
+
+- 成本進入 R：`PaperTrade` 帶 `cost_r` / `net_r` / `risk_ticks`；`summarize_expectancy` 輸出 expectancy / win rate / PF / MDD，毛淨永遠並列。
+- Research Rule ablation 已實跑（ablation flags）。
+- 成本模型區分 ETF（`is_etf_symbol`：代號 `00` 開頭；稅 0.1% 不減半、兩級 tick）。`etf_tax_rate` 尚未對照實際交割單。
+- 研究標的定版為 `config/universe.txt` 37 檔（使用者指定 50 檔，排除 ETF/ETN 10、`DayTrade.No` 2、`DayTrade.OnlyBuy` 1），2024-01-02 起 kbars 已回補。
 
 判定 feature 是否真的增加 edge 時使用 net expectancy / profit factor / win rate / MFE / MAE / trade count / drawdown，不能因為回測變漂亮就保留。
 
-### 整條 PA 線的共同阻斷
+### 整條 PA 線目前的阻斷：沒有 edge
 
-所有 `LIVE_VALIDATED` 都卡在同一件事：一次交易時段的真實行情驗證。
+資料鏈與 paper 鏈的 Gate B 都已關閉，阻斷不再是 plumbing。研究結論（2026-08-21～08-22，詳見 `docs/development-work.md`）：
 
-1. `simulate shioaji-tick-smoke` → 關 PA-P1/P2/P3 Gate B。
-2. `bars backfill-kbars` + `check_backfill_against_daily` 定案 kbar volume 單位 → 關 PA-P5 Gate B。
-3. 上述通過後，PA-P6/P7/P8 的 Gate B 才有意義。
+- 突破訊號相對無條件基準的 alpha 約為零。有成本閘門的 production 規則在擴標的前的 12 檔 × 639 天上為 -0.628 R/筆（744 筆）。
+- 37 檔有持續的盤中下飄（約 -0.058%，2024–2026 每個半年皆顯著為負，價差假象只佔約 5%），而引擎寫死只做多（`paper.py` `side="buy"`）。
+- 無條件做空 + 全掛單：毛 +0.070 R、淨 -0.066 R。虧損變小，仍非獲利；尚缺約 0.13% 的 alpha。
 
-在那之前 paper trade 結果只證明 determinism 與規則遵循，不是 strategy edge。
+下一步依序：
+
+1. 引擎改雙向或做空。進入做空 simulation 前，先查證先賣後買當沖的資格（是否需信用帳戶）與平盤下放空豁免——兩者都未查證。
+2. 改用限價掛單（約省 39% 成本）；掛單 0 滑價是樂觀上界，需實測成交率與逆選擇代價。
+3. 在 1、2 之上找剩下約 0.13% 的 alpha。
 
 ## Sector Flow V1（2026-10-02）
 
@@ -467,3 +485,18 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
   Markdown checksum `e2e812a23d581ed9b7063aae6c0a051a54a924ad5a9300f829ccaee2eb1ce418`。
 - Dashboard、candidate score、scheduler 與通知整合均留待後續，不影響現有
   PA 或 Trading Day Cycle phase 狀態。
+- 後續維護：累積第二期 TDCC 週 snapshot 後才能產出大戶變化；更新 FinMind
+  產業分類 snapshot。
+
+## Shioaji 1.7.5 Upgrade（2026-10-02）
+
+狀態：離線升級完成；真實 SDK smoke 未跑。
+
+- `pyproject.toml` 精確鎖定 `shioaji==1.7.5`；登入 signature、股票合約查找與
+  enum 集中在 `shioaji_compat.py` 相容層。
+- 離線驗證：repo-local 1.7.5 環境完整測試 385 項通過；未觸發任何登入、
+  訂閱、委託或通知。
+- 2026-10-03 查核：本 checkout 沒有 `.venv`，系統 `python3` 仍是 shioaji
+  1.3.2。下次真實 smoke 前須先依 README 建立 1.7.5 環境。
+- 未完成：1.7.5 在交易時段、明確開 gate 的 simulation smoke。離線結果不能
+  取代 PA Gate B 或策略 edge 證據。

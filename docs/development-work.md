@@ -4518,3 +4518,18 @@ PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 378 tests, OK
 安全邊界維持不變：本次所有外部呼叫皆為 TWSE、TPEx、TDCC 公開資料的
 read-only GET；沒有 Shioaji login / quote subscription / order / cancel，也沒有
 Telegram 傳送或 GitHub report publication side effect。
+
+## 2026-10-03 文件狀態同步
+
+`AGENTS.md`、`docs/mvp-roadmap.md` 與 `README.md` 的 PA 狀態停在 2026-08-16（Gate B 全部「未達成」、下一步是「跑第一次 tick smoke」），與本文件 2026-08-17 之後的紀錄矛盾。本次只改文件，不改程式。
+
+- PA-P1 / P2 / P3 / P5 Gate B 標為 2026-08-17 達成，PA-P7 / P8 標為 2026-08-19 達成；PA-P6 照實寫「為同一條鏈的輸入，未另行宣告」。
+- PA-P2 比對基準更正為 Shioaji kbars；「先查證 FinMind 分 K 單位」的舊前置條件移除。
+- PA-P9 由「未開始」改為已完成，並把 2026-08-21～08-22 的研究結論（無 edge、只做多、盤中下飄、做空 + 掛單仍淨 -0.066 R）寫進三份入口文件的下一步。
+- 補上 Shioaji 1.7.5 升級與 Sector Flow V1 的狀態與維護事項。
+- 各 PA 設計文件的 Gate B checklist 同步勾選並附證據指向；`docs/price-action-p5-design.md` 的「`backfill.py` 未做分段」更正為已分段。
+
+查核時發現的殘餘風險：
+
+- 本 checkout 沒有 `.venv`，系統 `python3` 的 shioaji 是 1.3.2，不是 `pyproject.toml` 鎖定的 1.7.5。下次真實 smoke 前須先依 README 建 1.7.5 環境。
+- `report sector-flow` 輸出 JSON 的 `cache_path` 會照抄 `--cache-dir` 的寫法（相對或絕對路徑），因此同一份 cache 以不同寫法重播，JSON checksum 會不同；Markdown 不受影響。第一版交付產物（期間 2026-09-24～10-01）用的是絕對路徑。

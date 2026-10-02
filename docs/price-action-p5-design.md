@@ -155,12 +155,12 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli bars rvol \
 [x] 每日 bar 數 266，與連續交易 265 + 收盤 1 相符
 [x] 22 個交易日 backfill 完成
 [x] OHLC 與 FinMind 日 K 完全相符（三檔的 open / close / high / low 全對）
-[ ] 今日 canonical 5m 的 RVOL 實算（等收盤後的 tick 聚合）
+[x] 今日 canonical 5m 的 RVOL 實算：`baseline_days = 20`，2330 slot 10:50 中位數 230500 與 TOD-RVOL 0.143167 手算與程式一致
 ```
 
 日 K 交叉驗證缺的 4–10% 是日 K 含零股 / 盤後 / 鉅額而分 K 不含,屬預期差異。
 
-實測用的區間限制:**Shioaji kbars 單次請求不得超過 30 天**（`Kbars date range must not exceed 30 days.`）。要拿超過 30 天必須自行分段,目前 `backfill.py` 未做分段。
+實測用的區間限制:**Shioaji kbars 單次請求不得超過 30 天**（`Kbars date range must not exceed 30 days.`）。`backfill.py` 已依 `MAX_KBARS_RANGE_DAYS = 30` 在單次登入內分段抓取（2026-08-19）。
 
 ## 不屬於 P5
 

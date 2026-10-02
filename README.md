@@ -382,10 +382,14 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 - Price Action Intraday PA-P1 已完成：`market_data.py` 提供 `MarketTick`、`normalize_shioaji_tick`、`ShioajiTickStream` 與 `data/raw/shioaji/ticks/{date}/{symbol}.jsonl` raw store。`simtrade` / 盤中零股 / 暫停交易 tick 一律拒絕，成交量統一換算成股。strategy 層不依賴 Shioaji SDK，`market_data.py` 也不 import SDK。當時 PA-P2 tick → 1m 尚未實作。
 - PA-P1 code review 修正已完成：provider callback 只入佇列不做 I/O（避免卡住行情 feed），壞掉的 `volume` 一律 `needs_review` 不再靜默轉成 0，ingestion 端二次檢查 candidate scope，duplicate tick 以 `(symbol, timestamp, cumulative_volume)` 去重，`code` 缺失的 tick 保存到 `_unknown.jsonl`，subscribe 例外與觀察窗中斷都保證 unsubscribe / logout。
 - PA-P1 market data health 已完成：`dropped_queue_full` / `worker_errors` / `raw_write_errors` / `sink_errors` / `worker_failed` / `worker_stop_timeout` 皆可觀察，聚合成 `HEALTHY` / `DEGRADED` / `FAILED`。系統不保證永不掉 tick，但掉了一定知道；health 非 `HEALTHY` 時 smoke fail closed 並回傳非 0，下游禁止產生新進場訊號。另有逐檔 volume sanity check 交叉驗證 `cumulative_volume` 差值與 `trade_volume` 加總。
-- Price Action Intraday PA-P2 已達 Gate A `PA-P2_CODE_COMPLETE`：`bars.py` 提供 `MarketBar` 與 `OneMinuteBarAggregator`，半開 bucket `[09:00:00, 09:01:00)`、事件時間 watermark、多股票各自狀態、late tick 窗內併入／窗外 `CORRECTED` rev+1／超窗 `dropped_late`、sequence gap 逐 bar 標記。**沒有成交的分鐘不補 synthetic bar**，以保持「真的量 0 / 沒人交易 / feed 漏資料」三者可分辨。`bars build` 可從 PA-P1 raw tick 重建 1m bar，replay 與 live 共用同一套 aggregator。Gate B `PA-P2_LIVE_VALIDATED` 未達成，需真實 tick 聚合結果與盤後 provider 分 K 比對。詳見 `docs/price-action-p2-design.md`。
-- Price Action Intraday PA-P3 已達 Gate A `PA-P3_CODE_COMPLETE`：`FiveMinuteBarAggregator` 由 canonical 1m 聚合出 canonical 5m，bucket `[09:00, 09:05)`。**5m 永遠不向 provider 取得**，只接受 `timeframe="1m"` 輸入。bucket 是時間區間不是「五根 1m」，缺分鐘照樣產生 5m 且不補假資料、不借下一個 bucket 湊數。1m correction 會 **replace 該分鐘並重算整根 5m**（不是加總），發出 `CORRECTED` 且 revision +1，舊 revision 物件不變。Gate B `PA-P3_LIVE_VALIDATED` 未達成。詳見 `docs/price-action-p3-design.md`。
-- Price Action Intraday PA-P4~P8 已達 Gate A：`bars.py` 的 append-only bar event store、`rvol.py` 的 TOD-RVOL / Cum-RVOL、`backfill.py` 的 gated Shioaji kbars 盤前 backfill、`structure.py` 的 swing 與市場結構、`setup.py` 的 Breakout → Retest → Trigger 狀態機、`paper.py` 的 paper trading 日循環。**RVOL 缺失或樣本不足一律不通過 volume gate**、**同一根 bar 內先判 stop 再判 target**、**market data 不健康時禁止新進場**、**收盤前一定清倉**。Gate B 未達成前，paper trade 結果只證明 determinism 與規則遵循，不是 strategy edge。
-- **PA-P1 驗收分兩段**：Gate A `PA-P1_CODE_COMPLETE` 已達成（50 個 unit / adversarial tests）；Gate B `PA-P1_LIVE_VALIDATED` 未達成，仍缺一次交易時段的真實 simulation quote smoke。smoke report 的 `live_validation.passed` 會自己算出有沒有達標，不需人工核對欄位。Gate B 通過前不得宣告 Tick → 1m pipeline 已可用於每日 paper trading。詳見 `docs/price-action-p1-design.md`。
+- Price Action Intraday PA-P2 已達 Gate A `PA-P2_CODE_COMPLETE`：`bars.py` 提供 `MarketBar` 與 `OneMinuteBarAggregator`，半開 bucket `[09:00:00, 09:01:00)`、事件時間 watermark、多股票各自狀態、late tick 窗內併入／窗外 `CORRECTED` rev+1／超窗 `dropped_late`、sequence gap 逐 bar 標記。**沒有成交的分鐘不補 synthetic bar**，以保持「真的量 0 / 沒人交易 / feed 漏資料」三者可分辨。`bars build` 可從 PA-P1 raw tick 重建 1m bar，replay 與 live 共用同一套 aggregator。Gate B `PA-P2_LIVE_VALIDATED` 已於 2026-08-17 達成：真實 tick 聚合的 1m 與 Shioaji kbars 比對，volume ratio 0.997–1.000、雙方無獨有分鐘。詳見 `docs/price-action-p2-design.md`。
+- Price Action Intraday PA-P3 已達 Gate A `PA-P3_CODE_COMPLETE`：`FiveMinuteBarAggregator` 由 canonical 1m 聚合出 canonical 5m，bucket `[09:00, 09:05)`。**5m 永遠不向 provider 取得**，只接受 `timeframe="1m"` 輸入。bucket 是時間區間不是「五根 1m」，缺分鐘照樣產生 5m 且不補假資料、不借下一個 bucket 湊數。1m correction 會 **replace 該分鐘並重算整根 5m**（不是加總），發出 `CORRECTED` 且 revision +1，舊 revision 物件不變。Gate B `PA-P3_LIVE_VALIDATED` 已於 2026-08-17 達成。詳見 `docs/price-action-p3-design.md`。
+- Price Action Intraday PA-P4~P8 已達 Gate A：`bars.py` 的 append-only bar event store、`rvol.py` 的 TOD-RVOL / Cum-RVOL、`backfill.py` 的 gated Shioaji kbars 盤前 backfill、`structure.py` 的 swing 與市場結構、`setup.py` 的 Breakout → Retest → Trigger 狀態機、`paper.py` 的 paper trading 日循環。**RVOL 缺失或樣本不足一律不通過 volume gate**、**同一根 bar 內先判 stop 再判 target**、**market data 不健康時禁止新進場**、**收盤前一定清倉**。PA-P5 Gate B 於 2026-08-17 達成，PA-P7 / PA-P8 Gate B 於 2026-08-19 達成。Gate B 只證明機制會動，paper trade 結果仍只證明 determinism 與規則遵循，不是 strategy edge。
+- Price Action Intraday PA-P9 已完成（2026-08-19）：成本進入 R（`cost_r` / `net_r` / `risk_ticks`），`summarize_expectancy` 輸出 expectancy / win rate / PF / MDD，毛淨並列；進場前成本閘門 `DEFAULT_MAX_COST_R = 1.0`；ETF 成本另計；研究標的定版為 `config/universe.txt` 37 檔。
+- **PA 研究結論（2026-08-21～08-22）：目前沒有 edge。** 突破訊號 alpha 約為零；37 檔有持續盤中下飄而引擎寫死只做多；無條件做空 + 全掛單仍為淨 -0.066 R。13:25 強制平倉是原則，不留倉。詳見 `docs/development-work.md`。
+- Shioaji 1.7.5 離線升級已完成（2026-10-02）：`shioaji_compat.py` 集中登入、合約查找與 enum 相容層；交易時段的真實 simulation smoke 尚未跑。
+- Sector Flow V1 已交付（2026-10-02～03）：官方 TWSE / TPEx / TDCC 公開資料的族群法人資金流報告，與交易線分離、無 Shioaji / 通知副作用；第一版報告為 `degraded`（產業分類 snapshot 偏舊、TDCC 僅一期）。
+- **PA-P1 驗收分兩段**：Gate A `PA-P1_CODE_COMPLETE` 已達成（50 個 unit / adversarial tests）；Gate B `PA-P1_LIVE_VALIDATED` 已於 2026-08-17 達成（交易時段 smoke `live_validation.passed=true`），08-19～08-21 三個完整場次 12 檔亦通過。smoke report 的 `live_validation.passed` 會自己算出有沒有達標，不需人工核對欄位。詳見 `docs/price-action-p1-design.md`。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。
 - P6 已支援 `SignalIntent -> RiskDecision -> OrderIntent -> BrokerTrade -> LedgerPosition` dry-run，simulation sample 與 replay expectancy 分開，重送同一 intent 不會重複開倉。
@@ -402,26 +406,31 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 | Sprint 3-A/B/C | 流動性、ops pre-flight、market regime hardening | 已完成 |
 | Sprint 4-A/B/C | Telegram gate、HMAC approval、TiDB migration | 已完成 |
 | Trading Day Autonomous Cycle v1 | 交易日 scheduler / intraday watch loop / 13:20 force-exit / 15:00 GitHub report / 17:30 next candidates | 第 1-8 步已完成 dry-run；side-effect gate 未做 |
-| PA-P1 Shioaji Tick → MarketTick | provider adapter、normalization、market data health、gated tick smoke | Gate A 完成 / Gate B 待實跑 |
-| PA-P2 MarketTick → canonical 1m | 固定 bucket、OHLCV、late tick、不補 synthetic、replay | Gate A 完成 / Gate B 待實跑 |
-| PA-P3 canonical 1m → canonical 5m | 固定 bucket、correction replace 重算、deterministic replay | Gate A 完成 / Gate B 待實跑 |
+| PA-P1 Shioaji Tick → MarketTick | provider adapter、normalization、market data health、gated tick smoke | Gate A / Gate B 完成（2026-08-17） |
+| PA-P2 MarketTick → canonical 1m | 固定 bucket、OHLCV、late tick、不補 synthetic、replay | Gate A / Gate B 完成（2026-08-17） |
+| PA-P3 canonical 1m → canonical 5m | 固定 bucket、correction replace 重算、deterministic replay | Gate A / Gate B 完成（2026-08-17） |
+| PA-P4 Bar persistence | append-only bar event store | 完成（無 Gate B） |
+| PA-P5 TOD-RVOL / kbars backfill | time-slot baseline、gated 盤前 backfill | Gate A / Gate B 完成（2026-08-17） |
+| PA-P6/P7/P8 結構 / setup / paper | swing、breakout → retest → trigger、paper trading 日循環 | Gate A 完成；P7/P8 Gate B 完成（2026-08-19） |
+| PA-P9 成本 / expectancy / ablation | 成本進 R、expectancy / PF / MDD、成本閘門 | 已完成；結論為目前無 edge |
+| Shioaji 1.7.5 upgrade | 版本鎖定與 SDK 相容層 | 離線完成；真實 smoke 未跑 |
+| Sector Flow V1 | 官方來源族群法人資金流報告 | 已交付（報告 `degraded`） |
 
 `PA-Pn` 是 `docs/price-action-intraday-plan.md` 的階段編號，與上表的 P8-P11 是兩套不同編號。
 
 ## Next Development Priority
 
-目前有兩條線，不要混在一起。
+目前有三條線，不要混在一起。
 
-### Track 1：Price Action Intraday（進行中）
+### Track 1：Price Action Intraday（進行中，研究階段）
 
-PA-P1 / PA-P2 / PA-P3 都已達 Gate A。**下一步不是再寫程式，是在交易時段跑一次真實 smoke**，一次關掉三個 Gate B：
+PA-P1～PA-P9 程式皆完成，資料鏈與 paper 鏈已通過真實行情驗證。**阻斷已不是 plumbing，而是沒有 edge。** 依 2026-08-22 的方向依序：
 
-1. `simulate shioaji-tick-smoke --symbols 2330 --duration-seconds 60 --enable-tick-stream`，檢查 report 的 `live_validation.passed`。
-2. 做 1m 比對前，先驗證 FinMind `TaiwanStockPriceMinute` 的 volume 單位——**目前未查證，且本機一天分 K 都沒有**。不先解決會把單位差異誤判成 ×1000 錯誤。
-3. 用 `bars build` 的輸出與盤後 provider 分 K 比對 OHLC / volume / bar count / missing minute，再比 5m。
-4. 三個 Gate B 全過之後，才進 PA-P4（persistence / bar revision store）或 PA-P5（TOD-RVOL）。
+1. 引擎改雙向或做空（`paper.py` / `setup.py` 目前只找做多突破）。進入做空 simulation 前，先查證先賣後買當沖資格與平盤下放空豁免，兩者都未查證。
+2. 改用限價掛單（約省 39% 成本）；掛單 0 滑價是樂觀上界，需實測成交率與逆選擇代價。
+3. 在 1、2 之上找剩下約 0.13% 的 alpha。
 
-PA-P5 需要每檔候選股 20-30 個交易日的歷史 1m，補資料前置時間要提早排。
+另外：依賴 Shioaji 1.7.5 收行情前，先建立 1.7.5 環境，並在交易時段跑一次 gated simulation tick smoke。
 
 ### Track 2：Trading Day Autonomous Cycle v1（暫停，仍有效）
 
@@ -433,6 +442,12 @@ PA-P5 需要每檔候選股 20-30 個交易日的歷史 1m，補資料前置時�
 
 核心邊界固定不變：simulation / readiness 只能證明執行鏈可控，不能當成 strategy edge 或獲利證明；smoke OK 也不等於 live-order readiness。
 
+### Track 3：Sector Flow V1（已交付，維護中）
+
+- 累積第二期 TDCC 週 snapshot 後，才能產出大戶持股變化。
+- 更新 FinMind 產業分類 snapshot（目前為 2026-06-03，7 筆未分類）。
+- 維持只讀公開資料：不碰 Shioaji、Telegram 或 GitHub report publication。
+
 ## Documentation Map
 
 - `docs/development-work.md`：開發歷程、驗證命令、P8-P11 / Phase B / hardening sprint close-out。
@@ -442,10 +457,12 @@ PA-P5 需要每檔候選股 20-30 個交易日的歷史 1m，補資料前置時�
 - `docs/rebuild-baseline.md`：舊專案重建基線。
 - `docs/six-problems-review-and-ops.md`：六大問題修正與自動化營運共識。
 - `docs/price-action-intraday-plan.md`：Price Action 策略計畫。**其 P1-P9 編號與本 repo 的 P0-P11 是兩套不同編號**，文件與 commit 一律用 `PA-Pn` 指涉前者。
-- `docs/price-action-p1-design.md`：PA-P1 tick adapter 設計、兩段驗收與待跑的 live smoke。
+- `docs/price-action-p1-design.md`：PA-P1 tick adapter 設計、兩段驗收與 live smoke 證據。
 - `docs/price-action-p2-design.md`：PA-P2 1m 聚合，含「canonical layer 不補 synthetic bar」的理由。
 - `docs/price-action-p3-design.md`：PA-P3 5m 聚合與 1m correction 規則。
 - `docs/price-action-p4-design.md`：PA-P4 append-only bar event store。
 - `docs/price-action-p5-design.md`：PA-P5 RVOL、Shioaji kbars backfill 與 FinMind 分 K 付費限制。
 - `docs/price-action-p6-p8-design.md`：PA-P6 結構、PA-P7 setup 狀態機、PA-P8 paper trading。
+- `docs/superpowers/specs/2026-10-02-shioaji-1-7-5-upgrade-design.md`：Shioaji 1.7.5 相容層設計。
+- `docs/superpowers/specs/2026-10-02-sector-flow-v1-design.md`：Sector Flow V1 來源、語意與 fail-closed 規則。
 - `docs/old-log-importer.md`、`docs/tidb-integration.md`、`docs/finmind-ingestion.md`、`docs/candidate-engine-v1.md`：各子系統說明。

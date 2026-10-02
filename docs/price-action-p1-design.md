@@ -275,7 +275,7 @@ P1_CODE_COMPLETE          ← 已達成
         ↓
 跑 P1 real-tick smoke
         ↓
-P1_LIVE_VALIDATED         ← 未達成
+P1_LIVE_VALIDATED         ← 已達成（2026-08-17）
         ↓
 P2 real-stream integration test
 ```
@@ -309,23 +309,25 @@ P2 real-stream integration test
 → P2 Tick -> canonical 1m 可以開始
 ```
 
-### Gate B：P1_LIVE_VALIDATED（未達成）
+### Gate B：P1_LIVE_VALIDATED（已達成，2026-08-17）
 
 ```text
-[ ] real simulation login + subscribe 成功
-[ ] real simulation quote smoke receives ticks
-[ ] dropped_queue_full == 0 in smoke
-[ ] worker_errors == 0 in smoke
-[ ] queue_backlog == 0 after stop
-[ ] volume sanity check consistent
-[ ] raw tick artifact can be inspected/replayed
+[x] real simulation login + subscribe 成功
+[x] real simulation quote smoke receives ticks
+[x] dropped_queue_full == 0 in smoke
+[x] worker_errors == 0 in smoke
+[x] queue_backlog == 0 after stop
+[x] volume sanity check consistent
+[x] raw tick artifact can be inspected/replayed
 
-→ P1 NOT CLOSED
+→ P1 CLOSED
 ```
 
-**限制：在 Gate B 通過前，不得宣告 Tick → 1m pipeline 已可用於每日 paper trading。** P2 可以寫、可以測、可以合併，但不能上線收單。
+證據見 `docs/development-work.md`：2026-08-17 交易時段 60 秒 smoke `live_validation.passed = true`、所有遺失 counter 為 0；同日長時段 session 因 `volume_gaps: 3` 判為 DEGRADED，是 health 機制抓到真實斷線（真陽性）。2026-08-19 / 08-20 / 08-21 三個完整場次 12 檔皆 `passed = true`、遺失 counter 全為 0。
 
-### 待跑的 smoke
+Gate B 只證明行情資料鏈可用，不代表 paper trade 結果是 strategy edge。
+
+### smoke 指令（Gate B 驗收用，可重跑）
 
 ```bash
 PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate shioaji-tick-smoke \

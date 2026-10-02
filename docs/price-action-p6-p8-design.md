@@ -194,11 +194,13 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli paper run-day \
 ## 三個階段共同的 Gate B
 
 ```text
-[ ] PA-P6/P7/P8_LIVE_VALIDATED
+[x] PA-P7/P8_LIVE_VALIDATED（2026-08-19）
 ```
 
-未達成，且與 PA-P1/P2/P3/P5 的 Gate B 是同一條線。**在真實行情驗證之前，這裡的 paper trade 結果不得解讀成 strategy edge。** 目前只證明「同一份輸入永遠產生同一份輸出，且每條規則都照定義執行」。
+2026-08-19 第一次完整場次（12 檔、08:58 由 cron 啟動收至 13:31）中，SIGNAL → entry → stop → exit 的完整鏈在當日 tick 聚合出的 bar 上跑完，`market_data_healthy=true` 取自當日 session report 而非人工旗標。PA-P6 的 swing 是這條鏈的輸入，但 `docs/development-work.md` 沒有另外宣告 `PA-P6_LIVE_VALIDATED`。
+
+**Gate B 驗證的是機制會動，不是機制會賺。** 當日兩筆皆停損（`total_r = -2.00`）。後續 PA-P9 接上成本後的研究結論見 `docs/development-work.md` 2026-08-19 (3) 起各節與 2026-08-22「方向翻轉」：突破訊號 alpha 約為零，且引擎只做多。
 
 ## 不屬於 P6–P8
 
-setup scoring、多空雙向（目前只做多）、部位大小 / 資金管理、ablation 比較與 expectancy 報表（PA-P9）、成本與滑價套用（`cost.py` 已存在，接上屬於 PA-P9）。
+setup scoring、多空雙向（目前只做多）、部位大小 / 資金管理。ablation 比較、expectancy 報表與成本 / 滑價套用屬於 PA-P9，已於 2026-08-19 完成。

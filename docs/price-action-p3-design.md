@@ -75,14 +75,14 @@ bucket 尚未 close 前收到修正，只是換掉 component，不會多算一�
 → P3_CODE_COMPLETE（20 tests）
 ```
 
-### Gate B：P3_LIVE_VALIDATED（未達成）
+### Gate B：P3_LIVE_VALIDATED（已達成，2026-08-17）
 
 ```text
-[ ] Real Shioaji Tick -> P1 -> P2 -> P3 端到端
-[ ] 自行聚合的 5m 與盤後 provider 5m 比對合理
+[x] Real Shioaji Tick -> P1 -> P2 -> P3 端到端
+[x] 自行聚合的 5m 與盤後 provider 5m 比對合理
 ```
 
-與 P1 / P2 Gate B 同一條線。
+2026-08-17 端到端產出 95 根 5m，無 correction、stale 或 dropped。2026-08-18 比對時，13:20 bucket 兩邊完全相等；provider 把收盤集合競價放進 13:25 bucket，我方放在 13:30，該筆成交量相等，屬標記位置差異而非資料差異。paper 在 13:25 強制平倉，不受影響。證據見 `docs/development-work.md`。
 
 ## P3 刻意不做
 

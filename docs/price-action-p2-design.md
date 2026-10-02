@@ -138,20 +138,20 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli bars build \
 → P3 1m -> 5m 可以開始
 ```
 
-### Gate B：P2_LIVE_VALIDATED（未達成）
+### Gate B：P2_LIVE_VALIDATED（已達成，2026-08-17）
 
 ```text
-[ ] Real Shioaji Tick -> P1 -> P2 端到端跑過
-[ ] 自行聚合的 1m 與盤後 provider 1m 比對合理
+[x] Real Shioaji Tick -> P1 -> P2 端到端跑過
+[x] 自行聚合的 1m 與盤後 provider 1m 比對合理
     - OHLC
     - volume
     - bar count
     - missing minute
 ```
 
-比對基準來源：FinMind `TaiwanStockPriceMinute`（單位需先驗證，見 P1 design 的 D4）。
+比對基準來源改為 **Shioaji kbars**，不是 FinMind：FinMind 分 K 需付費等級，free tier 直接回 400（見 `docs/price-action-p5-design.md`），原本「先驗證 FinMind 分 K 單位」的前置條件因此不再適用。
 
-**限制：Gate B 通過前，不得宣告 Tick → 1m pipeline 已可用於每日 paper trading。** 這與 P1 Gate B 是同一條線——`P1_LIVE_VALIDATED` 未過，P2 的 live 比對也不可能成立。
+2026-08-17 三檔（2330 / 2317 / 2454）重疊段 155–157 根，OHLC 幾乎逐根相同，volume ratio 0.998–1.000，kbars 改以 bar 結束時間標記後「我方獨有 = 0」。2026-08-20 對 2615 再比一次：265 根重疊分鐘 OHLC 零差異。唯一的標記差異是 13:30 收盤集合競價（provider 放在 13:25–13:29，我方放在 13:30），兩邊成交量相等。證據見 `docs/development-work.md`。
 
 ## 不屬於 P2
 
