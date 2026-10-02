@@ -4529,7 +4529,21 @@ Telegram 傳送或 GitHub report publication side effect。
 - 補上 Shioaji 1.7.5 升級與 Sector Flow V1 的狀態與維護事項。
 - 各 PA 設計文件的 Gate B checklist 同步勾選並附證據指向；`docs/price-action-p5-design.md` 的「`backfill.py` 未做分段」更正為已分段。
 
-查核時發現的殘餘風險：
+查核時發現兩個問題，同日修正（見下一節）：
 
-- 本 checkout 沒有 `.venv`，系統 `python3` 的 shioaji 是 1.3.2，不是 `pyproject.toml` 鎖定的 1.7.5。下次真實 smoke 前須先依 README 建 1.7.5 環境。
-- `report sector-flow` 輸出 JSON 的 `cache_path` 會照抄 `--cache-dir` 的寫法（相對或絕對路徑），因此同一份 cache 以不同寫法重播，JSON checksum 會不同；Markdown 不受影響。第一版交付產物（期間 2026-09-24～10-01）用的是絕對路徑。
+- 本 checkout 沒有 `.venv`，系統 `python3` 的 shioaji 是 1.3.2，不是 `pyproject.toml` 鎖定的 1.7.5。
+- `report sector-flow` 輸出 JSON 的 `cache_path` 會照抄 `--cache-dir` 的寫法（相對或絕對路徑），因此同一份 cache 以不同寫法重播，JSON checksum 會不同；Markdown 不受影響。第一版交付產物（期間 2026-09-24～10-01）用的是絕對路徑，等於把本機路徑寫進了 commit 的報告。
+
+## 2026-10-03 (2) 修正文件同步時發現的兩個問題
+
+**Shioaji 1.7.5 環境。** 依 README 建立 repo-local `.venv` 並 `pip install -e .`，`.venv/bin/python` 確認 `shioaji 1.7.5`。`.venv/` 已在 `.gitignore`。完整測試 419 項在 `.venv`（1.7.5）與系統 `python3`（1.3.2）下皆通過。系統 user-site 未改動；Shioaji 相關命令一律用 `.venv/bin/python`。未觸發任何登入、訂閱或委託，交易時段的 1.7.5 真實 smoke 仍未跑。
+
+**sector-flow `cache_path`。** `sector_flow._load_source` 改收 `cache_dir`，`cache_path` 記為相對於 `cache_dir` 的 POSIX 路徑（例如 `twse/T86/2026-09-24/market.json`）。新增測試 `test_report_does_not_depend_on_how_cache_dir_is_spelled`：同一份 cache 以絕對與相對路徑各建一次報告，JSON 必須完全相同；先確認修正前失敗、修正後通過。
+
+重產第一版報告：
+
+- 以絕對與相對 `--cache-dir` 各跑一次，JSON checksum 皆為 `63168ca59ba8244dcb4d766f86ae78c309bdc2a52c770507563c5360fefd3f5f`。
+- Markdown checksum 不變：`e2e812a23d581ed9b7063aae6c0a051a54a924ad5a9300f829ccaee2eb1ce418`。
+- 與原交付 JSON（`4327908605fb…`）逐欄比對，除 `cache_path` 外完全相同；新檔不再含本機絕對路徑。
+
+範圍外、未改：`ingest sector-flow` 印到 stdout 的 summary 仍是 `str(request.cache_path)`，那是操作輸出，不寫入報告也不進 commit。

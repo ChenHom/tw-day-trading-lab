@@ -16,28 +16,28 @@
     "2026-09-24": {
       "twse_institutional": {
         "requested_date": "2026-09-24",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/twse/T86/2026-09-24/market.json",
+        "cache_path": "twse/T86/2026-09-24/market.json",
         "state": "ok",
         "row_count": 1067,
         "embedded_date": "2026-09-24"
       },
       "tpex_institutional": {
         "requested_date": "2026-09-24",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/tpex/institutional/2026-09-24/market.json",
+        "cache_path": "tpex/institutional/2026-09-24/market.json",
         "state": "ok",
         "row_count": 775,
         "embedded_date": "2026-09-24"
       },
       "twse_close": {
         "requested_date": "2026-09-24",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/twse/MI_INDEX/2026-09-24/market.json",
+        "cache_path": "twse/MI_INDEX/2026-09-24/market.json",
         "state": "ok",
         "row_count": 1079,
         "embedded_date": "2026-09-24"
       },
       "tpex_close": {
         "requested_date": "2026-09-24",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/tpex/daily_close/2026-09-24/market.json",
+        "cache_path": "tpex/daily_close/2026-09-24/market.json",
         "state": "ok",
         "row_count": 870,
         "embedded_date": "2026-09-24"
@@ -46,25 +46,25 @@
     "2026-09-25": {
       "twse_institutional": {
         "requested_date": "2026-09-25",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/twse/T86/2026-09-25/market.json",
+        "cache_path": "twse/T86/2026-09-25/market.json",
         "state": "missing",
         "row_count": 0
       },
       "tpex_institutional": {
         "requested_date": "2026-09-25",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/tpex/institutional/2026-09-25/market.json",
+        "cache_path": "tpex/institutional/2026-09-25/market.json",
         "state": "missing",
         "row_count": 0
       },
       "twse_close": {
         "requested_date": "2026-09-25",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/twse/MI_INDEX/2026-09-25/market.json",
+        "cache_path": "twse/MI_INDEX/2026-09-25/market.json",
         "state": "missing",
         "row_count": 0
       },
       "tpex_close": {
         "requested_date": "2026-09-25",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/tpex/daily_close/2026-09-25/market.json",
+        "cache_path": "tpex/daily_close/2026-09-25/market.json",
         "state": "missing",
         "row_count": 0
       }
@@ -72,25 +72,25 @@
     "2026-09-26": {
       "twse_institutional": {
         "requested_date": "2026-09-26",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/twse/T86/2026-09-26/market.json",
+        "cache_path": "twse/T86/2026-09-26/market.json",
         "state": "missing",
         "row_count": 0
       },
       "tpex_institutional": {
         "requested_date": "2026-09-26",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/tpex/institutional/2026-09-26/market.json",
+        "cache_path": "tpex/institutional/2026-09-26/market.json",
         "state": "missing",
         "row_count": 0
       },
       "twse_close": {
         "requested_date": "2026-09-26",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/twse/MI_INDEX/2026-09-26/market.json",
+        "cache_path": "twse/MI_INDEX/2026-09-26/market.json",
         "state": "missing",
         "row_count": 0
       },
       "tpex_close": {
         "requested_date": "2026-09-26",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/tpex/daily_close/2026-09-26/market.json",
+        "cache_path": "tpex/daily_close/2026-09-26/market.json",
         "state": "missing",
         "row_count": 0
       }
@@ -98,25 +98,25 @@
     "2026-09-27": {
       "twse_institutional": {
         "requested_date": "2026-09-27",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/twse/T86/2026-09-27/market.json",
+        "cache_path": "twse/T86/2026-09-27/market.json",
         "state": "missing",
         "row_count": 0
       },
       "tpex_institutional": {
         "requested_date": "2026-09-27",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/tpex/institutional/2026-09-27/market.json",
+        "cache_path": "tpex/institutional/2026-09-27/market.json",
         "state": "missing",
         "row_count": 0
       },
       "twse_close": {
         "requested_date": "2026-09-27",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/twse/MI_INDEX/2026-09-27/market.json",
+        "cache_path": "twse/MI_INDEX/2026-09-27/market.json",
         "state": "missing",
         "row_count": 0
       },
       "tpex_close": {
         "requested_date": "2026-09-27",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/tpex/daily_close/2026-09-27/market.json",
+        "cache_path": "tpex/daily_close/2026-09-27/market.json",
         "state": "missing",
         "row_count": 0
       }
@@ -124,25 +124,25 @@
     "2026-09-28": {
       "twse_institutional": {
         "requested_date": "2026-09-28",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/twse/T86/2026-09-28/market.json",
+        "cache_path": "twse/T86/2026-09-28/market.json",
         "state": "missing",
         "row_count": 0
       },
       "tpex_institutional": {
         "requested_date": "2026-09-28",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/tpex/institutional/2026-09-28/market.json",
+        "cache_path": "tpex/institutional/2026-09-28/market.json",
         "state": "missing",
         "row_count": 0
       },
       "twse_close": {
         "requested_date": "2026-09-28",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/twse/MI_INDEX/2026-09-28/market.json",
+        "cache_path": "twse/MI_INDEX/2026-09-28/market.json",
         "state": "missing",
         "row_count": 0
       },
       "tpex_close": {
         "requested_date": "2026-09-28",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/tpex/daily_close/2026-09-28/market.json",
+        "cache_path": "tpex/daily_close/2026-09-28/market.json",
         "state": "missing",
         "row_count": 0
       }
@@ -150,28 +150,28 @@
     "2026-09-29": {
       "twse_institutional": {
         "requested_date": "2026-09-29",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/twse/T86/2026-09-29/market.json",
+        "cache_path": "twse/T86/2026-09-29/market.json",
         "state": "ok",
         "row_count": 1075,
         "embedded_date": "2026-09-29"
       },
       "tpex_institutional": {
         "requested_date": "2026-09-29",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/tpex/institutional/2026-09-29/market.json",
+        "cache_path": "tpex/institutional/2026-09-29/market.json",
         "state": "ok",
         "row_count": 796,
         "embedded_date": "2026-09-29"
       },
       "twse_close": {
         "requested_date": "2026-09-29",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/twse/MI_INDEX/2026-09-29/market.json",
+        "cache_path": "twse/MI_INDEX/2026-09-29/market.json",
         "state": "ok",
         "row_count": 1084,
         "embedded_date": "2026-09-29"
       },
       "tpex_close": {
         "requested_date": "2026-09-29",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/tpex/daily_close/2026-09-29/market.json",
+        "cache_path": "tpex/daily_close/2026-09-29/market.json",
         "state": "ok",
         "row_count": 868,
         "embedded_date": "2026-09-29"
@@ -180,28 +180,28 @@
     "2026-09-30": {
       "twse_institutional": {
         "requested_date": "2026-09-30",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/twse/T86/2026-09-30/market.json",
+        "cache_path": "twse/T86/2026-09-30/market.json",
         "state": "ok",
         "row_count": 1080,
         "embedded_date": "2026-09-30"
       },
       "tpex_institutional": {
         "requested_date": "2026-09-30",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/tpex/institutional/2026-09-30/market.json",
+        "cache_path": "tpex/institutional/2026-09-30/market.json",
         "state": "ok",
         "row_count": 792,
         "embedded_date": "2026-09-30"
       },
       "twse_close": {
         "requested_date": "2026-09-30",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/twse/MI_INDEX/2026-09-30/market.json",
+        "cache_path": "twse/MI_INDEX/2026-09-30/market.json",
         "state": "ok",
         "row_count": 1087,
         "embedded_date": "2026-09-30"
       },
       "tpex_close": {
         "requested_date": "2026-09-30",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/tpex/daily_close/2026-09-30/market.json",
+        "cache_path": "tpex/daily_close/2026-09-30/market.json",
         "state": "ok",
         "row_count": 877,
         "embedded_date": "2026-09-30"
@@ -210,28 +210,28 @@
     "2026-10-01": {
       "twse_institutional": {
         "requested_date": "2026-10-01",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/twse/T86/2026-10-01/market.json",
+        "cache_path": "twse/T86/2026-10-01/market.json",
         "state": "ok",
         "row_count": 1074,
         "embedded_date": "2026-10-01"
       },
       "tpex_institutional": {
         "requested_date": "2026-10-01",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/tpex/institutional/2026-10-01/market.json",
+        "cache_path": "tpex/institutional/2026-10-01/market.json",
         "state": "ok",
         "row_count": 793,
         "embedded_date": "2026-10-01"
       },
       "twse_close": {
         "requested_date": "2026-10-01",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/twse/MI_INDEX/2026-10-01/market.json",
+        "cache_path": "twse/MI_INDEX/2026-10-01/market.json",
         "state": "ok",
         "row_count": 1085,
         "embedded_date": "2026-10-01"
       },
       "tpex_close": {
         "requested_date": "2026-10-01",
-        "cache_path": "/home/hom/services/stock/tw-day-trading-lab/data/raw/tpex/daily_close/2026-10-01/market.json",
+        "cache_path": "tpex/daily_close/2026-10-01/market.json",
         "state": "ok",
         "row_count": 864,
         "embedded_date": "2026-10-01"

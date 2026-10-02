@@ -430,7 +430,7 @@ PA-P1～PA-P9 程式皆完成，資料鏈與 paper 鏈已通過真實行情驗�
 2. 改用限價掛單（約省 39% 成本）；掛單 0 滑價是樂觀上界，需實測成交率與逆選擇代價。
 3. 在 1、2 之上找剩下約 0.13% 的 alpha。
 
-另外：依賴 Shioaji 1.7.5 收行情前，先建立 1.7.5 環境，並在交易時段跑一次 gated simulation tick smoke。
+另外：依賴 Shioaji 1.7.5 收行情前，用 `.venv/bin/python` 在交易時段跑一次 gated simulation tick smoke（repo-local `.venv` 已於 2026-10-03 建立；系統 `python3` 仍是 1.3.2）。
 
 ### Track 2：Trading Day Autonomous Cycle v1（暫停，仍有效）
 

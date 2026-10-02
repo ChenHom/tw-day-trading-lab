@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -95,6 +96,17 @@ class SectorFlowAggregationTest(unittest.TestCase):
         self.assertEqual(category["missing_price_count"], 1)
         self.assertEqual(payload["status"], "degraded")
         self.assertEqual(payload["ranking_method"], "net_shares")
+
+    def test_report_does_not_depend_on_how_cache_dir_is_spelled(self):
+        absolute = build_sector_flow_report(cache_dir=self.cache_dir.resolve(), start_date="2026-09-24", end_date="2026-09-24")
+        relative = build_sector_flow_report(
+            cache_dir=Path(os.path.relpath(self.cache_dir)), start_date="2026-09-24", end_date="2026-09-24"
+        )
+        self.assertEqual(json.dumps(absolute, sort_keys=True), json.dumps(relative, sort_keys=True))
+        self.assertEqual(
+            absolute["source_status"]["2026-09-24"]["twse_institutional"]["cache_path"],
+            "twse/T86/2026-09-24/market.json",
+        )
 
     def test_no_valid_institutional_rows_marks_report_blocked(self):
         empty = Path(self.tmpdir.name) / "empty"

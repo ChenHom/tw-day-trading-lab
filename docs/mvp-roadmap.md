@@ -481,7 +481,7 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
   無價 placeholder、TPEx 尾端空 table、cache 重驗證、no-data / schema-error
   分型、TDCC 百分點欄位語意、金額 round，以及金額排名正負側一致性。
 - 交付 commit：`4b011ce34fb9bc289d432f581aa578b244f75f9d`（`master` /
-  `origin/master`）；JSON checksum `4327908605fb031dd8ac289288cbc5525ec806da145076f27dd66b26bc4dda31`，
+  `origin/master`）；JSON checksum `63168ca59ba8244dcb4d766f86ae78c309bdc2a52c770507563c5360fefd3f5f`（2026-10-03 `cache_path` 改為相對路徑後重產；原為 `4327908605fb…`），
   Markdown checksum `e2e812a23d581ed9b7063aae6c0a051a54a924ad5a9300f829ccaee2eb1ce418`。
 - Dashboard、candidate score、scheduler 與通知整合均留待後續，不影響現有
   PA 或 Trading Day Cycle phase 狀態。
@@ -496,7 +496,8 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
   enum 集中在 `shioaji_compat.py` 相容層。
 - 離線驗證：repo-local 1.7.5 環境完整測試 385 項通過；未觸發任何登入、
   訂閱、委託或通知。
-- 2026-10-03 查核：本 checkout 沒有 `.venv`，系統 `python3` 仍是 shioaji
-  1.3.2。下次真實 smoke 前須先依 README 建立 1.7.5 環境。
+- 2026-10-03 已依 README 建立 repo-local `.venv`（shioaji 1.7.5），419 項測試在
+  `.venv` 與系統 `python3`（仍為 1.3.2）下皆通過。Shioaji 相關命令一律用
+  `.venv/bin/python`。
 - 未完成：1.7.5 在交易時段、明確開 gate 的 simulation smoke。離線結果不能
   取代 PA Gate B 或策略 edge 證據。

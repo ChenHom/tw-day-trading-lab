@@ -87,11 +87,12 @@ If a task appears to require live execution, stop and design the gate/SOP first.
 - Price Action phase numbers collide with this repo's P0-P11: `docs/price-action-intraday-plan.md` P1 is the Shioaji tick adapter, not the old-log importer. Always write `PA-Pn` for Price Action phases.
 - The tick to 1m to 5m pipeline is live-validated as a data pipeline. That still does not make paper results strategy evidence.
 - `market_data.py` must stay free of Shioaji SDK imports, and any consumer of `ShioajiTickStream` must refuse to produce new entry signals unless `stream.is_healthy` is true.
-- Shioaji 1.7.5 upgrade is complete offline (2026-10-02). `pyproject.toml` pins `shioaji==1.7.5`, and `shioaji_compat.py` centralizes the login signature, stock contract lookup (`api.contracts.stocks.get` first, old `api.Contracts.Stocks` only as a fallback) and the enums. This checkout has no `.venv`, and the system `python3` still has shioaji 1.3.2 (checked 2026-10-03), so a real smoke needs an environment with 1.7.5 installed first. The real SDK's simulation behavior under 1.7.5 has not been smoke-tested during trading hours.
+- Shioaji 1.7.5 upgrade is complete offline (2026-10-02). `pyproject.toml` pins `shioaji==1.7.5`, and `shioaji_compat.py` centralizes the login signature, stock contract lookup (`api.contracts.stocks.get` first, old `api.Contracts.Stocks` only as a fallback) and the enums. The repo-local `.venv` has 1.7.5 (created 2026-10-03; 419 tests pass under it), but the system `python3` still has shioaji 1.3.2. Run anything that imports the Shioaji SDK with `.venv/bin/python`. The real SDK's simulation behavior under 1.7.5 has not been smoke-tested during trading hours.
 - Sector Flow V1 is delivered (2026-10-02 / 10-03). It is a separate reporting track that does not touch trading:
   - Network: `ingest sector-flow` (`sector_flow_sources.py`) is the only network boundary. It makes read-only GETs to TWSE T86 / MI_INDEX, TPEx and TDCC, and caches under `data/raw`.
   - Replay: `report sector-flow` (`sector_flow.py`, `sector_flow_report.py`) replays fully offline from that cache.
   - Amounts: values are estimated as `net_shares_times_close` and must never be called exact fund flows.
+  - `source_status[*][*].cache_path` is relative to `--cache-dir`, so the JSON is byte-identical however the cache dir is spelled. Do not put absolute paths back into the report.
   - TDCC large holders: levels 12-15 need two weekly snapshots. With fewer than two, the report says `insufficient_data`.
   - TWSE no-trade dates: TWSE can return the previous trading day's data on a no-trade date. A payload whose date differs from the requested date is `no_data`.
   - First report: `reports/2026-09-24_2026-10-01-sector-flow.{json,md}` is `degraded`, because the FinMind taxonomy snapshot is from 2026-06-03 with 7 rows unclassified and there is only one TDCC snapshot. See `docs/superpowers/specs/2026-10-02-sector-flow-v1-design.md`.
@@ -106,7 +107,7 @@ Three tracks are open. Do not confuse them.
 2. Switch to passive limit orders. This saves about 39% of cost, but zero slippage on passive orders is an optimistic upper bound. Measure the fill rate and the adverse-selection cost before trusting it.
 3. Look for the remaining ~0.13% alpha on top of 1 and 2.
 
-Separately, before relying on Shioaji 1.7.5 for live collection, install it and run a gated simulation tick smoke during trading hours.
+Separately, before relying on Shioaji 1.7.5 for live collection, run a gated simulation tick smoke during trading hours with `.venv/bin/python`.
 
 **Track 2 - Trading Day Autonomous Cycle v1 (paused, still valid).**
 

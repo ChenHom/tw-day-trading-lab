@@ -907,7 +907,7 @@ data/raw/tdcc/holding_distribution/{as_of_date}/market.json
 | `requested_period` | 使用者要求的 ISO 日期範圍，最多 31 個 calendar days |
 | `observed_trading_dates` | 至少有合法法人 row 的日期，不用假資料補休市日 |
 | `status` | `ok` / `degraded` / `blocked` |
-| `source_status` | 每個日期與 provider 的 cache path、狀態、row count |
+| `source_status` | 每個日期與 provider 的 cache path（相對於 `--cache-dir`，與其寫法無關）、狀態、row count |
 | `taxonomy` | `TaiwanStockInfo` raw-cache snapshot date 與 mapping coverage |
 | `daily` | 每日族群的法人、外資、投信、自營商淨股數與估算金額 |
 | `period_summary` | 僅加總 observed days 的區間結果與個股貢獻 |

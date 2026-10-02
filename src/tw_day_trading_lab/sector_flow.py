@@ -93,11 +93,15 @@ def _source_path(cache_dir: Path, provider: str, dataset: str, trading_date: str
 
 
 def _load_source(
-    path: Path,
+    cache_dir: Path,
+    provider: str,
+    dataset: str,
     parser: Any,
     trading_date: str,
 ) -> tuple[list[Any], dict[str, Any]]:
-    status: dict[str, Any] = {"requested_date": trading_date, "cache_path": str(path)}
+    path = _source_path(cache_dir, provider, dataset, trading_date)
+    # Relative to cache_dir, so the report is identical however --cache-dir is spelled.
+    status: dict[str, Any] = {"requested_date": trading_date, "cache_path": path.relative_to(cache_dir).as_posix()}
     if not path.exists():
         status.update({"state": "missing", "row_count": 0})
         return [], status
@@ -306,13 +310,13 @@ def build_sector_flow_report(*, cache_dir: Path, start_date: str, end_date: str)
 
     for trading_date in requested_dates:
         source_status[trading_date] = {}
-        twse_flow, status = _load_source(_source_path(cache_dir, "twse", "T86", trading_date), parse_twse_institutional, trading_date)
+        twse_flow, status = _load_source(cache_dir, "twse", "T86", parse_twse_institutional, trading_date)
         source_status[trading_date]["twse_institutional"] = status
-        tpex_flow, status = _load_source(_source_path(cache_dir, "tpex", "institutional", trading_date), parse_tpex_institutional, trading_date)
+        tpex_flow, status = _load_source(cache_dir, "tpex", "institutional", parse_tpex_institutional, trading_date)
         source_status[trading_date]["tpex_institutional"] = status
-        twse_close, status = _load_source(_source_path(cache_dir, "twse", "MI_INDEX", trading_date), parse_twse_closes, trading_date)
+        twse_close, status = _load_source(cache_dir, "twse", "MI_INDEX", parse_twse_closes, trading_date)
         source_status[trading_date]["twse_close"] = status
-        tpex_close, status = _load_source(_source_path(cache_dir, "tpex", "daily_close", trading_date), parse_tpex_closes, trading_date)
+        tpex_close, status = _load_source(cache_dir, "tpex", "daily_close", parse_tpex_closes, trading_date)
         source_status[trading_date]["tpex_close"] = status
         flows = list(twse_flow) + list(tpex_flow)
         if not flows:
