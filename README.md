@@ -52,6 +52,18 @@
 
 ## Quick Start
 
+### Python / Shioaji runtime
+
+Shioaji 精確鎖定為 `1.7.5`，並以 repo 內的 `.venv` 隔離驗證：
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
+.venv/bin/python -c 'import shioaji; print(shioaji.__version__)'
+```
+
+執行 Shioaji 相關命令時使用 `.venv/bin/python`。安裝本身不會啟用登入、行情訂閱或委託。
+
 ```bash
 python3 -m unittest discover -s tests
 python3 -m compileall -q src tests

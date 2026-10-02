@@ -4436,3 +4436,13 @@ PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 378 tests, OK
 3. **找 0.13% 的 alpha**（門檻已經比原本低 3.8 倍）
 
 前兩項不需要任何 alpha 就能把每筆虧損砍掉 77%,而且都是既有程式的修改,不是新研究。
+
+## 2026-10-02 Shioaji 1.7.5 isolated upgrade
+
+- `pyproject.toml` 已精確鎖定 `shioaji==1.7.5`；repo-local `.venv` 已確認安裝 1.7.5，未修改仍為 1.3.2 的 user-site 環境。
+- 登入改為依 callable signature 傳遞參數：1.7.5 不再接收的 `fetch_contract` 會省略，`api_key` / `secret_key` 不可被靜默過濾。
+- 股票合約查找集中於相容層：優先使用 `api.contracts.get(symbol)`，舊 API 才 fallback 至 `api.Contracts.Stocks[symbol]`；不會跨到期貨或選擇權容器。
+- enum 優先使用 1.7 頂層 API，舊 `sj.constant` 只作 fallback；order factory 可在單元測試注入，避免測試結果依賴 ambient SDK 版本。
+- 驗證證據：相容性 / simulation / market-data / RVOL 目標組合 154 項通過；repo-local 1.7.5 環境完整測試 385 項通過（原 378 項加 7 項相容性測試）。
+- 本次沒有真實登入、行情訂閱、委託、取消、Telegram 傳送或 GitHub 發布副作用。
+- 殘餘風險：真實 SDK 的 simulation provider 行為仍需在交易時段、明確開 gate 後另跑 smoke；本次離線升級結果不能取代 PA Gate B 或策略 edge 證據。
