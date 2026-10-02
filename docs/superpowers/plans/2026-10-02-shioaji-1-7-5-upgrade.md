@@ -171,9 +171,9 @@ from tw_day_trading_lab.shioaji_compat import stock_contract
         self.assertEqual(stock_contract(api, "2330"), "legacy")
 
     def test_stock_contract_prefers_new_service(self):
-        service = SimpleNamespace(get=lambda symbol: f"new-{symbol}")
+        stocks = SimpleNamespace(get=lambda symbol: f"new-{symbol}")
         api = SimpleNamespace(
-            contracts=service,
+            contracts=SimpleNamespace(stocks=stocks),
             Contracts=SimpleNamespace(Stocks={"2330": "legacy"}),
         )
         self.assertEqual(stock_contract(api, "2330"), "new-2330")
@@ -192,7 +192,8 @@ Expected: import error for `stock_contract`.
 ```python
 def stock_contract(api: Any, symbol: str) -> Any:
     contracts = getattr(api, "contracts", None)
-    get_contract = getattr(contracts, "get", None)
+    stocks = getattr(contracts, "stocks", None)
+    get_contract = getattr(stocks, "get", None)
     if callable(get_contract):
         return get_contract(symbol)
     return api.Contracts.Stocks[symbol]
@@ -211,10 +212,10 @@ stock_contract(self._api, request.symbol)
 Verify no direct lookup remains:
 
 ```bash
-rg -n 'Contracts\.Stocks' src/tw_day_trading_lab
+rg -n 'Contracts\.Stocks' src/tw_day_trading_lab --glob '!shioaji_compat.py'
 ```
 
-Expected: no output.
+Expected: no output; the legacy expression remains only inside the compatibility helper.
 
 - [ ] **Step 5: Run boundary-focused tests**
 

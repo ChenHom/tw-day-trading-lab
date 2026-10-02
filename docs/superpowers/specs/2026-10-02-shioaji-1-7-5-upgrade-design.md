@@ -18,7 +18,7 @@ environment.
   signature, which removed `fetch_contract`.
 - Centralize stock contract lookup behind a small compatibility helper that can
   use the legacy `api.Contracts.Stocks[...]` interface and the newer
-  `api.contracts` interface.
+  `api.contracts.stocks.get(...)` interface.
 - Preserve compatibility with existing fake APIs and older SDK-shaped test
   doubles.
 - Update operator documentation to use `.venv/bin/python` for Shioaji-related
@@ -59,7 +59,8 @@ APIs and future compatible SDKs may expose different subsets of keywords.
 
 All Shioaji stock-contract reads will use one helper. It will first support the
 legacy `api.Contracts.Stocks[symbol]` interface used by the current code. It
-will also support the newer `api.contracts` lookup interface when available.
+will also support the newer `api.contracts.stocks.get(symbol)` lookup interface
+when available, keeping the lookup restricted to stock contracts.
 Missing contracts and provider errors remain fail-closed at the existing
 caller boundaries.
 
