@@ -162,6 +162,12 @@ Shioaji；report 完全離線。法人、外資、投信與自營商的淨股數
 值，但金額是 `淨股數 × 收盤價` 的估算，不是實際成交現金流。TDCC 大戶
 資料是週 snapshot 的持股變化代理，不能解讀為逐日大戶淨流入。
 
+第一版實際產物：`reports/2026-09-24_2026-10-01-sector-flow.json` 與
+`reports/2026-09-24_2026-10-01-sector-flow.md`。有效交易日為 09-24、09-29、
+09-30、10-01；報告為 `degraded` 是因產業分類 7,445 / 7,452 rows 有 mapping，
+不是價格或交易所來源缺漏。TDCC 只有 2026-09-24 一期，故大戶欄位為
+`insufficient_data`。
+
 ### 一鍵執行當沖模擬 (Simplified Daily Ops Run)
 
 重構後的程式支持自動載入 `.env` 與憑證，並提供極簡的 Makefile 命令進行模擬下單交易測試：

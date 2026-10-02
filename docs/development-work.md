@@ -4459,4 +4459,31 @@ PYTHONPATH=src python3 -m unittest discover -s tests   # Ran 378 tests, OK
 - 大戶使用 TDCC levels 12-15 的週 snapshot 差值；少於兩期時 fail closed
   為 `insufficient_data`。
 - Code-complete 驗證與 2026-09-24～2026-10-01 實際 provider run 證據分開
-  記錄；本段在實際抓取與完整 gate 前不宣告 data-run validated。
+  記錄。
+
+### 2026-10-03 first data run evidence
+
+- 官方 ingest 完成且 `failed=0`。有效交易日是 2026-09-24、09-29、09-30、
+  10-01；09-25～09-28 四個 calendar dates 由兩市場一致回報無當日資料。
+- 每個有效日四個來源均成功：TWSE T86 rows = 1,067 / 1,075 / 1,080 /
+  1,074；TWSE closes = 1,079 / 1,084 / 1,087 / 1,085；TPEx institutional
+  = 775 / 796 / 792 / 793；TPEx closes = 870 / 868 / 877 / 864。
+- TDCC snapshot `2026-09-24` 有 50,269 normalized rows；因 repo 只有一期不
+  計算 delta，輸出 `insufficient_data`。
+- 報告價格 coverage 100%；FinMind taxonomy snapshot `2026-06-03` mapping
+  7,445 / 7,452 rows（99.906%），所以整體 status 依契約為 `degraded`，未分類
+  7 rows 沒有被偷偷丟棄。
+- deterministic replay 兩次 checksum 一致。最終 artifacts：
+  `reports/2026-09-24_2026-10-01-sector-flow.json`、
+  `reports/2026-09-24_2026-10-01-sector-flow.md`。
+- 最終 regression：418 tests passed；focused sector-flow 33 tests passed；
+  `compileall` 與 `git diff --check` 通過。
+- grill-me / code / data / security review 修正：既有 cache 重驗證、明確區分
+  `ProviderNoData` 與 schema drift、TPEx 空 table、無成交價 placeholder、CLI
+  handler 邊界、金額兩位小數，以及 TDCC 比例改名為各股票百分點變化加總。
+  金額模式下流入 / 流出章節的歸類與排序也統一使用估算金額，不再混用股數
+  符號。
+  無未解 Critical / Important finding。
+- 殘餘風險：taxonomy snapshot 比報告期間舊約四個月，且 7 rows 未分類；
+  TDCC 尚不足兩期。報告可回答法人 / 外資族群淨買賣，但不能回答逐日大戶
+  精確淨流入。
