@@ -13,9 +13,17 @@ def _amount(value: object) -> str:
     return f"NT$ {float(value):,.0f}"
 
 
-def _ranking(rows: Sequence[Mapping[str, Any]], metric: str, amount_metric: str, *, positive: bool) -> list[str]:
-    selected = [row for row in rows if (float(row.get(metric, 0)) > 0 if positive else float(row.get(metric, 0)) < 0)]
-    selected.sort(key=lambda row: (float(row.get(metric, 0)), str(row.get("category", ""))), reverse=positive)
+def _ranking(
+    rows: Sequence[Mapping[str, Any]],
+    metric: str,
+    amount_metric: str,
+    *,
+    positive: bool,
+    ranking_method: str,
+) -> list[str]:
+    ranking_field = amount_metric if ranking_method == "estimated_amount" else metric
+    selected = [row for row in rows if (float(row.get(ranking_field, 0)) > 0 if positive else float(row.get(ranking_field, 0)) < 0)]
+    selected.sort(key=lambda row: (float(row.get(ranking_field, 0)), str(row.get("category", ""))), reverse=positive)
     lines = ["| 排名 | 族群 | 精確淨買賣股數 | 估算金額（淨股數 × 收盤價） |", "|---:|---|---:|---:|"]
     for index, row in enumerate(selected[:10], 1):
         lines.append(f"| {index} | {row['category']} | {_integer(row.get(metric))} | {_amount(row.get(amount_metric))} |")
@@ -42,6 +50,7 @@ def render_sector_flow_markdown(payload: Mapping[str, Any]) -> str:
         "",
     ]
     period_rows = payload.get("period_summary", [])
+    ranking_method = str(payload.get("ranking_method", "net_shares"))
     metrics = [
         ("法人", "institutional_net_shares", "estimated_institutional_net_amount_twd"),
         ("外資", "foreign_net_shares", "estimated_foreign_net_amount_twd"),
@@ -50,9 +59,9 @@ def render_sector_flow_markdown(payload: Mapping[str, Any]) -> str:
     ]
     for label, metric, amount_metric in metrics:
         lines.extend([f"## 區間{label}流入排行", ""])
-        lines.extend(_ranking(period_rows, metric, amount_metric, positive=True))
+        lines.extend(_ranking(period_rows, metric, amount_metric, positive=True, ranking_method=ranking_method))
         lines.extend(["", f"## 區間{label}流出排行", ""])
-        lines.extend(_ranking(period_rows, metric, amount_metric, positive=False))
+        lines.extend(_ranking(period_rows, metric, amount_metric, positive=False, ranking_method=ranking_method))
         lines.append("")
 
     lines.extend(["## 每日族群排行", ""])

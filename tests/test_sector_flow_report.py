@@ -85,6 +85,23 @@ class SectorFlowReportTest(unittest.TestCase):
         payload = sample_payload()
         self.assertEqual(render_sector_flow_markdown(payload), render_sector_flow_markdown(payload))
 
+    def test_estimated_amount_ranking_uses_amount_sign_for_inflow_and_outflow(self):
+        payload = sample_payload()
+        contradictory = dict(payload["period_summary"][0])
+        contradictory.update({
+            "category": "股數正但金額負",
+            "institutional_net_shares": 9_000_000,
+            "estimated_institutional_net_amount_twd": -900_000_000.0,
+        })
+        payload["period_summary"] = [payload["period_summary"][0], contradictory]
+
+        markdown = render_sector_flow_markdown(payload)
+        inflow = markdown.split("## 區間法人流入排行", 1)[1].split("## 區間法人流出排行", 1)[0]
+        outflow = markdown.split("## 區間法人流出排行", 1)[1].split("## 區間外資流入排行", 1)[0]
+
+        self.assertNotIn("股數正但金額負", inflow)
+        self.assertIn("股數正但金額負", outflow)
+
 
 if __name__ == "__main__":
     unittest.main()
