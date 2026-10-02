@@ -115,9 +115,11 @@ class HoldingDistributionRow:
 ```
 
 Numeric strings may contain commas, whitespace, or parentheses. Invalid
-numeric fields are schema errors, not zero. Provider rows are matched by field
-name rather than fixed column position so column reordering cannot silently
-corrupt the report.
+numeric fields are schema errors, not zero. Unique provider fields are matched
+by normalized field name. TPEx institutional payloads repeat the same three
+labels for several investor groups, so that parser first validates the complete
+documented group order and field count before using group offsets; a changed
+layout is a schema error rather than a silent remap.
 
 Only common-stock-looking symbols matching `^[1-9][0-9]{3}$` enter V1. ETFs,
 ETNs, warrants, bonds, TDRs, indexes, and unclassified non-common instruments
@@ -150,12 +152,14 @@ labels the result as an estimate. It must not be described as exact cash flow.
 
 ## Taxonomy and aggregation
 
-V1 uses `TaiwanStockInfo.industry_category`, choosing for each stock the latest
-metadata row whose source date is at or before the requested end date. This
-produces one non-overlapping category per stock, avoids double-counting across
-multiple industry-chain memberships, and prevents historical reports from
-using future classification data. A stock with no eligible metadata row maps
-to `未分類`; the report records the taxonomy source dates and coverage.
+V1 uses `TaiwanStockInfo.industry_category`, choosing the latest raw-cache
+snapshot directory whose date is at or before the requested end date. The
+row-level `date` in `TaiwanStockInfo` is not treated as a metadata observation
+timestamp. This produces one non-overlapping category per stock, avoids
+double-counting across multiple industry-chain memberships, and prevents
+historical reports from using a future cache snapshot. A stock with no eligible
+metadata row maps to `未分類`; the report records the taxonomy snapshot date and
+coverage.
 
 For each trading date and category, aggregate:
 
