@@ -262,6 +262,23 @@ class SectorFlowIngestionTest(unittest.TestCase):
             with self.assertRaisesRegex(ProviderSchemaError, "size limit"):
                 UrllibJsonHttpClient(max_bytes=100).get_json("https://example.invalid")
 
+    def test_requests_are_spaced_by_min_interval(self):
+        now = [100.0]
+        slept = []
+
+        def sleep(seconds):
+            slept.append(seconds)
+            now[0] += seconds
+
+        client = UrllibJsonHttpClient(min_interval_seconds=3.0, clock=lambda: now[0], sleep=sleep)
+        with patch("urllib.request.urlopen", side_effect=lambda *a, **k: FakeResponse(b"{}")):
+            client.get_json("https://example.invalid/1")
+            now[0] += 1.0
+            client.get_json("https://example.invalid/2")
+            now[0] += 5.0
+            client.get_json("https://example.invalid/3")
+        self.assertEqual(slept, [2.0])
+
 
 if __name__ == "__main__":
     unittest.main()

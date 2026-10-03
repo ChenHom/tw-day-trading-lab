@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 
 # Four-digit common stocks; 91xx are Taiwan depositary receipts (TDRs) and are excluded.
@@ -71,11 +72,29 @@ class JsonHttpClient(Protocol):
 class UrllibJsonHttpClient:
     """Small bounded no-credential HTTP adapter for official public JSON."""
 
-    def __init__(self, timeout_seconds: float = 20, max_bytes: int = 20_000_000) -> None:
+    def __init__(
+        self,
+        timeout_seconds: float = 20,
+        max_bytes: int = 20_000_000,
+        min_interval_seconds: float = 3.0,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self.timeout_seconds = timeout_seconds
         self.max_bytes = max_bytes
+        # TWSE blocks IPs that send bursts; keep every request at least this far apart.
+        self.min_interval_seconds = min_interval_seconds
+        self._clock = clock
+        self._sleep = sleep
+        self._last_request: float | None = None
 
     def get_json(self, url: str) -> Any:
+        if self._last_request is not None:
+            wait = self.min_interval_seconds - (self._clock() - self._last_request)
+            if wait > 0:
+                self._sleep(wait)
+        self._last_request = self._clock()
         request = urllib.request.Request(url, headers={"User-Agent": "tw-day-trading-lab/sector-flow-v1"})
         with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
             declared = response.headers.get("Content-Length")
