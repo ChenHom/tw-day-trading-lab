@@ -13,7 +13,7 @@ from .finmind_ingestion import (
     ingest_finmind_requests,
     read_request_file,
 )
-from .sector_flow import build_sector_flow_report
+from .sector_flow import UnknownCategoryError, build_sector_flow_report
 from .sector_flow_report import render_sector_flow_markdown
 from .sector_flow_sources import UrllibJsonHttpClient, ingest_sector_flow
 from .backfill import run_gated_shioaji_kbars_backfill
@@ -341,13 +341,25 @@ def cmd_report_close(args: argparse.Namespace) -> None:
         print(summary_output)
 
 
+def _positive_int(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return number
+
+
 def cmd_report_sector_flow(args: argparse.Namespace) -> None:
     """Build deterministic JSON and Markdown sector-flow artifacts from cache."""
-    payload = build_sector_flow_report(
-        cache_dir=Path(args.cache_dir),
-        start_date=args.start_date,
-        end_date=args.end_date,
-    )
+    try:
+        payload = build_sector_flow_report(
+            cache_dir=Path(args.cache_dir),
+            start_date=args.start_date,
+            end_date=args.end_date,
+            detail_categories=getattr(args, "category", None) or (),
+            top=getattr(args, "top", 10),
+        )
+    except UnknownCategoryError as exc:
+        raise SystemExit(f"error: {exc}") from exc  # raised before any output file is written
     output = Path(args.output)
     report_output = Path(args.report_output)
     write_json(output, payload)
@@ -3921,6 +3933,8 @@ def build_parser() -> argparse.ArgumentParser:
     sector_flow_report.add_argument("--cache-dir", default="data/raw")
     sector_flow_report.add_argument("--output", required=True)
     sector_flow_report.add_argument("--report-output", required=True)
+    sector_flow_report.add_argument("--category", action="append", help="drill into one category (repeatable); synonyms are normalized")
+    sector_flow_report.add_argument("--top", type=_positive_int, default=10, help="stocks per inflow/outflow list in the drill-down")
     sector_flow_report.set_defaults(func=cmd_report_sector_flow)
 
     notify = subparsers.add_parser("notify")

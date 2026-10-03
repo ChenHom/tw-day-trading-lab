@@ -254,6 +254,31 @@ class SectorFlowAggregationTest(unittest.TestCase):
         self.assertEqual(report["status"], "degraded")
         self.assertIn("price coverage below 90% on 2026-09-24 (80.8%); rankings use exact net shares", report["warnings"])
 
+    # ---- per-category drill-down ----
+    def test_default_report_has_no_category_detail(self):
+        self.assertNotIn("category_detail", self._report())
+        self.assertNotIn("category_detail", build_sector_flow_report(cache_dir=self.cache_dir, start_date="2026-09-24", end_date="2026-09-24", detail_categories=()))
+
+    def test_report_with_detail_categories_only_adds_category_detail(self):
+        self._write_taxonomy_rows([("2330", "半導體業"), ("2330", "電子工業"), ("6488", "半導體業")])
+        self._copy_day("2026-09-25")
+        base = self._report(end="2026-09-25")
+        detailed = build_sector_flow_report(cache_dir=self.cache_dir, start_date="2026-09-24", end_date="2026-09-25", detail_categories=["電子工業", "半導體業"], top=3)
+        extra = dict(detailed)
+        detail = extra.pop("category_detail")
+        self.assertEqual(extra, base)
+        self.assertEqual([item["category"] for item in detail], ["電子工業", "半導體業"])
+        broad = detail[0]
+        self.assertEqual(broad["institutional_net_shares"], self._rows(base)["電子工業"]["institutional_net_shares"])
+        self.assertEqual([s["symbol"] for s in broad["top_inflows"]], ["2330"])
+        self.assertEqual([row["trading_date"] for row in broad["top_inflows"][0]["daily"]], ["2026-09-24", "2026-09-25"])
+        self.assertEqual([g["category"] for g in broad["subcategories"]], ["半導體業"])
+
+    def test_unknown_detail_category_raises_before_any_output(self):
+        with self.assertRaises(ValueError) as raised:
+            build_sector_flow_report(cache_dir=self.cache_dir, start_date="2026-09-24", end_date="2026-09-24", detail_categories=["不存在"])
+        self.assertIn("舊半導體", str(raised.exception))  # 2026-09-23 snapshot applies on 09-24
+
     def test_report_status_is_ok_when_every_day_has_enough_price_coverage(self):
         self.assertEqual(self._report()["status"], "ok")
 

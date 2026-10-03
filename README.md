@@ -100,6 +100,14 @@ python3 -m tw_day_trading_lab.cli report sector-flow \
   --cache-dir data/raw \
   --output reports/2026-09-24_2026-10-01-sector-flow.json \
   --report-output reports/2026-09-24_2026-10-01-sector-flow.md
+# 族群細看（可重複 --category；大類先列子類小計；--top 預設 10）
+python3 -m tw_day_trading_lab.cli report sector-flow \
+  --start-date 2026-09-24 \
+  --end-date 2026-10-01 \
+  --cache-dir data/raw \
+  --category 電子工業 --category 半導體業 --top 10 \
+  --output reports/2026-09-24_2026-10-01-sector-flow-detail.json \
+  --report-output reports/2026-09-24_2026-10-01-sector-flow-detail.md
 python3 -m tw_day_trading_lab.cli candidates build-from-raw \
   --date 2026-05-28 \
   --cache-dir data/raw \

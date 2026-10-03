@@ -52,6 +52,54 @@ def _daily_row(index: int, row: Mapping[str, Any]) -> str:
     )
 
 
+DAILY_TABLE_MAX_DATES = 10
+
+
+def _detail_stock_table(rows: Sequence[Mapping[str, Any]], share_label: str) -> list[str]:
+    lines = [f"| 排名 | 市場 | 代號 | 名稱 | 外資 | 投信 | 自營商 | 法人淨股數 | 估算金額 | {share_label} |", "|---:|---|---|---|---:|---:|---:|---:|---:|---:|"]
+    for index, row in enumerate(rows, 1):
+        lines.append(
+            f"| {index} | {row['market']} | {row['symbol']} | {row['name']} | {_integer(row['foreign_net_shares'])} | "
+            f"{_integer(row['investment_trust_net_shares'])} | {_integer(row['dealer_net_shares'])} | "
+            f"{_integer(row['institutional_net_shares'])} | {_amount(row.get('estimated_net_amount_twd'))} | {float(row['share_of_side_pct']):.2f}% |"
+        )
+    if not rows:
+        lines.append("| - | - | - | 無 | 0 | 0 | 0 | 0 | NT$ 0 | - |")
+    return lines
+
+
+def _detail_section(item: Mapping[str, Any], dates: Sequence[str]) -> list[str]:
+    method = str(item["ranking_method"])
+    top = item["top"]
+    lines = [
+        f"## 族群細看：{_name(item)}",
+        "",
+        f"成員 {item['member_count']} 檔；法人淨股數 {_integer(item['institutional_net_shares'])}；"
+        f"估算金額 {_amount(item['estimated_institutional_net_amount_twd'])}；排名方法 `{method}`。",
+        "",
+    ]
+    if item.get("is_broad"):
+        lines.extend(["### 子類小計", "", "| 子類 | 成員數 | 法人淨股數 | 外資 | 投信 | 自營商 | 估算金額 |", "|---|---:|---:|---:|---:|---:|---:|"])
+        for row in item.get("subcategories", []):
+            lines.append(
+                f"| {row['category']} | {row['member_count']} | {_integer(row['institutional_net_shares'])} | {_integer(row['foreign_net_shares'])} | "
+                f"{_integer(row['investment_trust_net_shares'])} | {_integer(row['dealer_net_shares'])} | {_amount(row['estimated_institutional_net_amount_twd'])} |"
+            )
+        lines.extend(["", f"註：一檔股票若屬於兩個子類，會同時出現在兩個群組，子類之間不可加總；本次同時計入 {item.get('subcategory_overlap_count', 0)} 檔股票的多個子類。", ""])
+    inflows, outflows = item.get("top_inflows", []), item.get("top_outflows", [])
+    lines.extend([f"### 流入前 {top} 名", "", *_detail_stock_table(inflows, "佔流入比重"), "", f"### 流出前 {top} 名", "", *_detail_stock_table(outflows, "佔流出比重"), ""])
+    if len(dates) > DAILY_TABLE_MAX_DATES:
+        lines.extend([f"交易日超過 {DAILY_TABLE_MAX_DATES} 天，不列每日明細；逐日數據見 JSON `category_detail[].top_*[].daily`。", ""])
+    elif inflows or outflows:
+        by_amount = method == "estimated_amount"
+        lines.extend([f"### 每日明細（{'估算金額' if by_amount else '法人淨股數'}）", "", "| 代號 | 名稱 | " + " | ".join(dates) + " |", "|---|---|" + "---:|" * len(dates)])
+        for row in [*inflows, *outflows]:
+            cells = [_amount(day["estimated_net_amount_twd"]) if by_amount else _integer(day["institutional_net_shares"]) for day in row["daily"]]
+            lines.append(f"| {row['symbol']} | {row['name']} | " + " | ".join(cells) + " |")
+        lines.append("")
+    return lines
+
+
 def render_sector_flow_markdown(payload: Mapping[str, Any]) -> str:
     """Render one deterministic human-readable sector-flow report."""
     period = payload["requested_period"]
@@ -125,6 +173,8 @@ def render_sector_flow_markdown(payload: Mapping[str, Any]) -> str:
         ])
         for row in large_holder.get("categories", []):
             lines.append(f"| {_name(row)} | {_integer(row['large_holder_share_delta'])} | {float(row['sum_stock_percent_point_delta']):.4f} 個百分點加總 | {_amount(row['estimated_change_twd'])} |")
+    for item in payload.get("category_detail", []):
+        lines.extend(["", *_detail_section(item, payload.get("observed_trading_dates", []))])
     lines.extend(["", "## 資料品質與限制", ""])
     warnings = payload.get("warnings", [])
     if warnings:

@@ -94,6 +94,7 @@ If a task appears to require live execution, stop and design the gate/SOP first.
   - Amounts: values are estimated as `net_shares_times_close` and must never be called exact fund flows.
   - Categories: a stock with several FinMind categories is counted in ALL of them after normalization (`CATEGORY_SYNONYMS` merges TPEx/older names; 創新板股票/創新版股票 are dropped; 其他 only when it is the sole category). Sectors overlap, so never sum across sectors. 電子工業 / 化學生技醫療 are `is_broad`. Do not go back to one category per stock: picking one made the sector depend on cache row order.
   - Universe: four-digit common stocks only; 91xx Taiwan depositary receipts are excluded.
+  - Drill-down: `report sector-flow --category NAME [--top N]` adds `category_detail` (top-N inflow/outflow stocks with foreign/trust/dealer split, share of side, daily series; broad categories first get sub-category subtotals). Without `--category` the output must stay byte-identical.
   - Trading days: a date with at least one `ok` source is a trading day, and any non-`ok` source on it degrades the report. A date whose sources are all `missing` / `no_data` goes to `dates_without_data` (holiday or not fetched; no holiday calendar). A `schema_error` always degrades.
   - `source_status[*][*].cache_path` is relative to `--cache-dir`, so the JSON is byte-identical however the cache dir is spelled. Do not put absolute paths back into the report.
   - TDCC large holders: levels 12-15 need two weekly snapshots. With fewer than two, the report says `insufficient_data`.

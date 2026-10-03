@@ -492,6 +492,8 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
   → 現行。
 - Dashboard、candidate score、scheduler 與通知整合均留待後續，不影響現有
   PA 或 Trading Day Cycle phase 狀態。
+- 2026-10-03 新增族群細看：`--category NAME [--top N]`，大類先列子類小計，再列流入／流出前 N 名個股
+  （外資／投信／自營商拆分、佔同方向比重、逐日進出）。不帶 `--category` 時輸出不變。
 - 後續維護：累積第二期 TDCC 週 snapshot 後才能產出大戶變化；更新 FinMind
   產業分類 snapshot。
 

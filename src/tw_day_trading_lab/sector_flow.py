@@ -360,7 +360,141 @@ def build_large_holder_proxy(
     }
 
 
-def build_sector_flow_report(*, cache_dir: Path, start_date: str, end_date: str) -> dict[str, Any]:
+ONLY_BROAD_GROUP = "（僅大類）"
+
+
+class UnknownCategoryError(ValueError):
+    """A requested drill-down category has no member stock with flow rows in the period."""
+
+
+_SHARE_FIELDS = ("foreign_net_shares", "investment_trust_net_shares", "dealer_net_shares", "institutional_net_shares")
+_TOTAL_FIELDS = _SHARE_FIELDS + (
+    "estimated_foreign_net_amount_twd",
+    "estimated_investment_trust_net_amount_twd",
+    "estimated_dealer_net_amount_twd",
+    "estimated_institutional_net_amount_twd",
+    "covered_symbol_count",
+    "missing_price_count",
+    "amount_method",
+)
+
+
+def build_category_detail(
+    *,
+    day_inputs: Sequence[tuple[str, list[InstitutionalFlowRow], dict[tuple[str, str], float]]],
+    taxonomy: Mapping[str, TaxonomyEntry],
+    ranking_method: str,
+    period_summary: Sequence[Mapping[str, Any]],
+    categories: Sequence[str],
+    top: int,
+) -> list[dict[str, Any]]:
+    """Per-category drill-down: every member stock over the period, not just the top-5 contributors."""
+    if top < 1:
+        raise ValueError("top must be >= 1")
+    summary = {row["category"]: row for row in period_summary}
+    requested = list(dict.fromkeys(CATEGORY_SYNONYMS.get(name.strip(), name.strip()) for name in categories))
+    unknown = [name for name in requested if name not in summary]
+    if unknown:
+        raise UnknownCategoryError(f"no flow rows for category: {', '.join(unknown)}; available categories: {', '.join(sorted(summary)) or '(none)'}")
+    dates = [item[0] for item in day_inputs]
+    stocks: dict[tuple[str, str], dict[str, Any]] = {}
+    for trading_date, flows, closes in day_inputs:
+        for row in flows:
+            metadata = taxonomy.get(row.symbol)
+            close = closes.get((row.market, row.symbol))
+            stock = stocks.setdefault((row.market, row.symbol), {
+                "market": row.market,
+                "symbol": row.symbol,
+                "name": metadata.name if metadata else row.name,
+                "_categories": _categories_of(metadata),
+                **{field: 0 for field in _SHARE_FIELDS},
+                "_priced_amount": 0.0,  # priced rows only, matching how period_summary sums amounts
+                "estimated_net_amount_twd": 0.0,  # None as soon as any observed day lacked a price
+                "_daily": {},
+            })
+            for field in _SHARE_FIELDS:
+                stock[field] += getattr(row, field)
+            amount = None if close is None else row.institutional_net_shares * close
+            day = stock["_daily"].setdefault(trading_date, [0, 0.0])
+            day[0] += row.institutional_net_shares
+            if amount is None:
+                stock["estimated_net_amount_twd"] = None
+                day[1] = None
+            else:
+                stock["_priced_amount"] += amount
+                if stock["estimated_net_amount_twd"] is not None:
+                    stock["estimated_net_amount_twd"] += amount
+                if day[1] is not None:
+                    day[1] += amount
+    by_amount = ranking_method == "estimated_amount"
+    metric = "estimated_net_amount_twd" if by_amount else "institutional_net_shares"
+
+    def daily_of(stock: Mapping[str, Any]) -> list[dict[str, Any]]:
+        cells = [stock["_daily"].get(d, (0, 0.0)) for d in dates]
+        return [
+            {"trading_date": d, "institutional_net_shares": cell[0], "estimated_net_amount_twd": None if cell[1] is None else round(float(cell[1]), 2)}
+            for d, cell in zip(dates, cells)
+        ]
+
+    result = []
+    for category in requested:
+        members = [stock for stock in stocks.values() if category in stock["_categories"]]
+        measured = [stock for stock in members if stock[metric] is not None]
+        sides = {
+            "top_inflows": sorted((s for s in measured if s[metric] > 0), key=lambda s: (-s[metric], s["symbol"])),
+            "top_outflows": sorted((s for s in measured if s[metric] < 0), key=lambda s: (s[metric], s["symbol"])),
+        }
+        item: dict[str, Any] = {
+            "category": category,
+            "is_broad": category in BROAD_CATEGORIES,
+            "ranking_method": ranking_method,
+            "top": top,
+            "member_count": len(members),
+            **{field: summary[category][field] for field in _TOTAL_FIELDS},
+        }
+        if category in BROAD_CATEGORIES:
+            groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+            overlap = 0
+            for stock in members:
+                # Another broad category is a sibling umbrella, never a sub-category.
+                subs = [name for name in stock["_categories"] if name not in BROAD_CATEGORIES] or [ONLY_BROAD_GROUP]
+                overlap += len(subs) > 1
+                for other in subs:
+                    groups[other].append(stock)
+            rows = [
+                {
+                    "category": name,
+                    "member_count": len(group),
+                    **{field: sum(s[field] for s in group) for field in _SHARE_FIELDS},
+                    "estimated_institutional_net_amount_twd": round(float(sum(s["_priced_amount"] for s in group)), 2),
+                }
+                for name, group in groups.items()
+            ]
+            key = "estimated_institutional_net_amount_twd" if by_amount else "institutional_net_shares"
+            item["subcategories"] = sorted(rows, key=lambda row: (-row[key], row["category"]))
+            item["subcategory_overlap"] = True
+            item["subcategory_overlap_count"] = overlap
+        for side, ordered in sides.items():
+            denominator = sum(s[metric] for s in ordered)
+            item[side] = [
+                {
+                    "market": s["market"],
+                    "symbol": s["symbol"],
+                    "name": s["name"],
+                    **{field: s[field] for field in _SHARE_FIELDS},
+                    "estimated_net_amount_twd": None if s["estimated_net_amount_twd"] is None else round(float(s["estimated_net_amount_twd"]), 2),
+                    "share_of_side_pct": round(s[metric] / denominator * 100, 2),
+                    "daily": daily_of(s),
+                }
+                for s in ordered[:top]
+            ]
+        result.append(item)
+    return result
+
+
+def build_sector_flow_report(
+    *, cache_dir: Path, start_date: str, end_date: str, detail_categories: Sequence[str] = (), top: int = 10
+) -> dict[str, Any]:
     requested_dates = _dates(start_date, end_date)
     taxonomy = load_taxonomy(cache_dir, end_date=end_date)
     source_status: dict[str, dict[str, Any]] = {}
@@ -441,7 +575,8 @@ def build_sector_flow_report(*, cache_dir: Path, start_date: str, end_date: str)
         status = "degraded" if status != "blocked" else status
     else:
         large_holder = build_large_holder_proxy(holdings_by_date=holdings, taxonomy=taxonomy, closes=all_closes_by_symbol, end_date=end_date, start_date=start_date, universe=universe)
-    return {
+    period_summary = _aggregate_period(day_inputs, taxonomy, ranking_method)
+    report = {
         "schema_version": 1,
         "requested_period": {"start_date": start_date, "end_date": end_date},
         "observed_trading_dates": [item[0] for item in day_inputs],
@@ -454,8 +589,14 @@ def build_sector_flow_report(*, cache_dir: Path, start_date: str, end_date: str)
         "taxonomy": {"snapshot_date": next(iter(taxonomy.values())).snapshot_date if taxonomy else None, "mapped_rows": mapped_rows, "total_rows": total_flow_rows, "coverage": taxonomy_coverage},
         "price_coverage": price_coverage,
         "daily": daily,
-        "period_summary": _aggregate_period(day_inputs, taxonomy, ranking_method),
+        "period_summary": period_summary,
         "large_holder": large_holder,
         "exclusions": {"symbol_rule": "^[1-9][0-9]{3}$; excludes ^91[0-9]{2}$ (Taiwan depositary receipts)"},
         "warnings": warnings,
     }
+    if detail_categories:
+        report["category_detail"] = build_category_detail(
+            day_inputs=day_inputs, taxonomy=taxonomy, ranking_method=ranking_method,
+            period_summary=period_summary, categories=detail_categories, top=top,
+        )
+    return report

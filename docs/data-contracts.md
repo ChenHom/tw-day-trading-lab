@@ -954,6 +954,34 @@ ingest 端視為無效 cache 並重新抓取，不會 traceback。TPEx table 內
 - `report sector-flow`：先寫出 JSON 與 Markdown，再於 `status == "blocked"` 時 exit 1；`degraded` 仍 exit 0。
 - `ingest sector-flow`：印出 summary 後，`failed > 0` 時 exit 1。
 
+### 族群細看（`--category` / `--top`）
+
+`report sector-flow --category NAME [--category NAME ...] [--top N]`（`--top` 預設 10，須 >= 1）。
+名稱先經 `CATEGORY_SYNONYMS` 正規化（`金融業` = `金融保險`），重複者去除、保留請求順序。
+若某分類在該期間沒有任何有法人資料的成員，exit 並印出可用分類名稱，**不寫任何輸出檔**。
+**未帶 `--category` 時 JSON 與 Markdown 與先前完全相同（沒有任何新 key）。**
+
+僅在帶 `--category` 時，頂層多一個 `category_detail`，每個請求分類一個物件：
+
+- `category`、`is_broad`、`ranking_method`、`top`、`member_count`（期間內有法人資料的相異 (market, symbol)），
+  以及與該分類 `period_summary` 列完全相同的股數／金額欄位（含 `covered_symbol_count`、`missing_price_count`、`amount_method`）。
+- `subcategories`（僅大類）：成員依其「其他分類」分組（其他大類不算子類，例如 `化學生技醫療` 不會出現在 `電子工業` 的子類），只屬大類者歸入 `（僅大類）`；
+  欄位 `category`、`member_count`、四種股數、`estimated_institutional_net_amount_twd`（僅計有收盤價的列，與 `period_summary` 算法一致），
+  依排名指標由大到小。`subcategory_overlap: true` 與 `subcategory_overlap_count`（落在多個群組的成員數）：
+  一檔股票有兩個子類時會同時計入兩組，子類之間不可加總。
+- `top_inflows` / `top_outflows`：最多 N 檔，選取與排序規則同 `period_summary` 的 contributors
+  （`estimated_amount` 模式用個股期間估算金額，任一觀察日缺收盤價者略過；`net_shares` 模式用法人淨股數；同值以代號排序）。
+  每檔含 `market`、`symbol`、`name`、外資／投信／自營商／法人淨股數、`estimated_net_amount_twd`（任一觀察日缺價為 `null`）、
+  `share_of_side_pct`、`daily`。
+- `share_of_side_pct` = 該股排名指標 ÷ 該分類**全部成員**中同號（流入為正、流出為負）指標總和 × 100，四捨五入到 2 位；
+  分母不限於前 N 檔，N 涵蓋全部成員時單邊加總為 100。
+- `daily`：每個觀察交易日一筆 `{trading_date, institutional_net_shares, estimated_net_amount_twd}`；
+  該日無資料列為 `0` / `0.0`，有資料列但缺收盤價時金額為 `null`。
+
+Markdown 在 `## 資料品質與限制` 之前為每個分類加 `## 族群細看：{名稱}`：摘要行、大類的子類小計表與重疊註記、
+流入／流出前 N 名表、以及前 N 名個股的逐日表（數值為排名指標）。觀察交易日超過 10 天時省略逐日表，
+改印一行說明逐日數據在 JSON `category_detail[].top_*[].daily`。
+
 ### Sector Flow V1 分類與降級規則
 
 - 多分類：`TaiwanStockInfo` 同一股票可有多列分類，該股票計入其全部（正規化後）分類，
