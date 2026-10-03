@@ -38,6 +38,20 @@ def _ranking(
     return lines
 
 
+def _daily_outflows(rows: Sequence[Mapping[str, Any]], ranking_method: str) -> list[Mapping[str, Any]]:
+    field = "estimated_institutional_net_amount_twd" if ranking_method == "estimated_amount" else "institutional_net_shares"
+    negatives = [row for row in rows if float(row.get(field, 0)) < 0]
+    return sorted(negatives, key=lambda row: (float(row[field]), str(row.get("category", ""))))[:10]
+
+
+def _daily_row(index: int, row: Mapping[str, Any]) -> str:
+    return (
+        f"| {index} | {_name(row)} | {_integer(row['institutional_net_shares'])} | "
+        f"{_integer(row['foreign_net_shares'])} | {_integer(row['investment_trust_net_shares'])} | "
+        f"{_integer(row['dealer_net_shares'])} | {_amount(row['estimated_institutional_net_amount_twd'])} |"
+    )
+
+
 def render_sector_flow_markdown(payload: Mapping[str, Any]) -> str:
     """Render one deterministic human-readable sector-flow report."""
     period = payload["requested_period"]
@@ -73,16 +87,18 @@ def render_sector_flow_markdown(payload: Mapping[str, Any]) -> str:
         lines.extend(["", f"## 區間{label}流出排行", ""])
         lines.extend(_ranking(period_rows, metric, amount_metric, positive=False, ranking_method=ranking_method))
         lines.append("")
+    if ranking_method == "estimated_amount":
+        lines.extend(["> 排名依估算金額（淨股數 × 收盤價），因此族群的淨股數與淨金額可能正負相反（例如低價股淨買超、高價股淨賣超）。", ""])
 
     lines.extend(["## 每日族群排行", ""])
     for day in payload.get("daily", []):
         lines.extend([f"### {day['trading_date']}", "", "| 排名 | 族群 | 法人淨股數 | 外資 | 投信 | 自營商 | 估算法人金額 |", "|---:|---|---:|---:|---:|---:|---:|"])
-        for index, row in enumerate(day.get("categories", [])[:10], 1):
-            lines.append(
-                f"| {index} | {_name(row)} | {_integer(row['institutional_net_shares'])} | "
-                f"{_integer(row['foreign_net_shares'])} | {_integer(row['investment_trust_net_shares'])} | "
-                f"{_integer(row['dealer_net_shares'])} | {_amount(row['estimated_institutional_net_amount_twd'])} |"
-            )
+        lines.extend(_daily_row(index, row) for index, row in enumerate(day.get("categories", [])[:10], 1))
+        lines.extend(["", "最大流出族群：", "", "| 排名 | 族群 | 法人淨股數 | 外資 | 投信 | 自營商 | 估算法人金額 |", "|---:|---|---:|---:|---:|---:|---:|"])
+        outflows = _daily_outflows(day.get("categories", []), ranking_method)
+        lines.extend(_daily_row(index, row) for index, row in enumerate(outflows, 1))
+        if not outflows:
+            lines.append("| - | 無 | 0 | 0 | 0 | 0 | NT$ 0 |")
         lines.append("")
 
     lines.extend(["## 主要個股貢獻", ""])

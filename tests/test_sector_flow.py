@@ -221,6 +221,96 @@ class SectorFlowAggregationTest(unittest.TestCase):
         self.assertEqual(row["missing_price_count"], 1)
         self.assertEqual(row["covered_symbol_count"], 1)
 
+    # ---- review fixes: coverage rule, TDCC cache errors, malformed cache ----
+    def _extend_day(self, trading_date, n_extra, n_priced):
+        names = {"twse/T86": "t86", "twse/MI_INDEX": "mi"}
+        t86_path = self.cache_dir / "twse/T86" / trading_date / "market.json"
+        mi_path = self.cache_dir / "twse/MI_INDEX" / trading_date / "market.json"
+        t86 = json.loads(t86_path.read_text(encoding="utf-8"))
+        mi = json.loads(mi_path.read_text(encoding="utf-8"))
+        table = next(item for item in mi["tables"] if "每日收盤行情" in item["title"])
+        for index in range(n_extra):
+            symbol = str(1101 + index)
+            t86["data"].append([symbol] + t86["data"][0][1:])
+            if index < n_priced:
+                table["data"].append([symbol, symbol, "1", "1", "1", "1", "1", "1", "10.0"])
+        t86_path.write_text(json.dumps(t86, ensure_ascii=False), encoding="utf-8")
+        mi_path.write_text(json.dumps(mi, ensure_ascii=False), encoding="utf-8")
+
+    def _taxonomy_for_extras(self, n):
+        rows = [{"stock_id": "2330", "stock_name": "台積電", "industry_category": "半導體業", "type": "twse"}, {"stock_id": "6488", "stock_name": "環球晶", "industry_category": "半導體業", "type": "tpex"}]
+        rows += [{"stock_id": str(1101 + i), "stock_name": str(1101 + i), "industry_category": "半導體業", "type": "twse"} for i in range(n)]
+        for snapshot in ("2026-09-23", "2026-09-30"):
+            (self.cache_dir / "finmind/TaiwanStockInfo" / snapshot / "market.jsonl").write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
+
+    def test_one_low_coverage_day_degrades_status_even_when_overall_coverage_is_high(self):
+        self._copy_day("2026-09-25")
+        self._extend_day("2026-09-24", 50, 40)
+        self._extend_day("2026-09-25", 100, 100)
+        self._taxonomy_for_extras(100)
+        report = self._report(end="2026-09-25")
+        self.assertGreaterEqual(report["price_coverage"], 0.9)
+        self.assertEqual(report["ranking_method"], "net_shares")
+        self.assertEqual(report["status"], "degraded")
+        self.assertIn("price coverage below 90% on 2026-09-24 (80.8%); rankings use exact net shares", report["warnings"])
+
+    def test_report_status_is_ok_when_every_day_has_enough_price_coverage(self):
+        self.assertEqual(self._report()["status"], "ok")
+
+    def _holdings_payload(self, as_of, rows):
+        compact = as_of.replace("-", "")
+        return [{"證券代號": symbol, "持股分級": "12", "人數": "1", "股數": str(shares), "占集保庫存數比例%": "1.0", "資料日期": compact} for symbol, shares in rows]
+
+    def _write_holdings(self, as_of, payload):
+        path = self.cache_dir / "tdcc/holding_distribution" / as_of / "market.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    def test_report_large_holder_counts_only_listed_symbols_present_in_both_snapshots(self):
+        self._write_holdings("2026-09-17", self._holdings_payload("2026-09-17", [("2330", 100), ("6488", 100), ("9999", 5_000_000)]))
+        self._write_holdings("2026-09-24", self._holdings_payload("2026-09-24", [("2330", 150), ("9999", 9_000_000), ("1234", 70)]))
+        holder = self._report(end="2026-10-01")["large_holder"]
+        self.assertEqual(holder["status"], "ok")
+        self.assertEqual(sum(row["large_holder_share_delta"] for row in holder["categories"]), 50)
+        self.assertEqual(holder["excluded_symbols"], {"outside_listed_universe": 2, "not_in_both_snapshots": 1})
+
+    def test_corrupt_tdcc_snapshot_in_cache_is_schema_error_not_skipped(self):
+        self._write_holdings("2026-09-17", "{not json")
+        report = self._report(end="2026-10-01")
+        holder = report["large_holder"]
+        self.assertEqual(holder["status"], "schema_error")
+        self.assertEqual([item["as_of_date"] for item in holder["errors"]], ["2026-09-17"])
+        self.assertNotIn("categories", holder)
+        self.assertEqual(report["status"], "degraded")
+        self.assertTrue(any("2026-09-17" in warning for warning in report["warnings"]))
+
+    def test_old_corrupt_tdcc_snapshot_not_compared_does_not_block_proxy(self):
+        self._write_holdings("2026-06-05", "{not json")
+        self._write_holdings("2026-09-17", self._holdings_payload("2026-09-17", [("2330", 100)]))
+        self._write_holdings("2026-09-24", self._holdings_payload("2026-09-24", [("2330", 150)]))
+        holder = self._report(end="2026-10-01")["large_holder"]
+        self.assertEqual(holder["status"], "ok")
+        self.assertEqual((holder["prior_as_of_date"], holder["latest_as_of_date"]), ("2026-09-17", "2026-09-24"))
+
+    def test_non_utf8_tdcc_snapshot_is_schema_error(self):
+        path = self.cache_dir / "tdcc/holding_distribution/2026-09-17/market.json"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"\xff\xfe\x00")
+        self.assertEqual(self._report(end="2026-10-01")["large_holder"]["status"], "schema_error")
+
+    def test_corrupt_tdcc_snapshot_after_end_date_or_with_non_date_name_is_ignored(self):
+        self._write_holdings("2026-10-09", "{not json")
+        self._write_holdings("scratch", "{not json")
+        self.assertNotEqual(self._report(end="2026-10-01")["large_holder"]["status"], "schema_error")
+
+    def test_malformed_daily_cache_files_become_schema_error_not_traceback(self):
+        for content in (b"[]", b"\xff\xfe\x00"):
+            with self.subTest(content=content):
+                (self.cache_dir / "twse/T86/2026-09-24/market.json").write_bytes(content)
+                report = self._report()
+                self.assertEqual(report["source_status"]["2026-09-24"]["twse_institutional"]["state"], "schema_error")
+                self.assertEqual(report["status"], "degraded")
+
 
 class SectorFlowLargeHolderTest(unittest.TestCase):
     def test_two_snapshots_use_levels_12_through_15_only(self):
@@ -235,7 +325,7 @@ class SectorFlowLargeHolderTest(unittest.TestCase):
             ],
         }
         taxonomy = {"2330": type("Entry", (), {"categories": ("半導體業",), "name": "台積電"})()}
-        result = build_large_holder_proxy(holdings_by_date=holdings, taxonomy=taxonomy, closes={"2330": 820.0}, end_date="2026-10-01")
+        result = build_large_holder_proxy(holdings_by_date=holdings, taxonomy=taxonomy, closes={"2330": 820.0}, end_date="2026-10-01", start_date="2026-09-24", universe={"2330"})
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["method"], "holding_change_proxy")
         self.assertEqual(result["categories"][0]["large_holder_share_delta"], 50_000)
@@ -244,12 +334,38 @@ class SectorFlowLargeHolderTest(unittest.TestCase):
         self.assertEqual(result["categories"][0]["estimated_change_twd"], 41_000_000.0)
 
     def test_one_snapshot_is_explicitly_insufficient(self):
-        result = build_large_holder_proxy(holdings_by_date={"2026-09-24": []}, taxonomy={}, closes={}, end_date="2026-10-01")
+        result = build_large_holder_proxy(holdings_by_date={"2026-09-24": []}, taxonomy={}, closes={}, end_date="2026-10-01", start_date="2026-09-24", universe=set())
         self.assertEqual(result, {"status": "insufficient_data", "reason": "fewer_than_two_eligible_snapshots", "latest_as_of_date": "2026-09-24"})
 
     def test_snapshot_after_requested_end_date_is_not_used(self):
-        result = build_large_holder_proxy(holdings_by_date={"2026-10-02": []}, taxonomy={}, closes={}, end_date="2026-10-01")
+        result = build_large_holder_proxy(holdings_by_date={"2026-10-02": []}, taxonomy={}, closes={}, end_date="2026-10-01", start_date="2026-09-24", universe=set())
         self.assertEqual(result["latest_as_of_date"], None)
+
+    def test_symbols_outside_universe_and_in_one_snapshot_are_excluded_and_counted(self):
+        holdings = {
+            "2026-09-17": [HoldingDistributionRow("2026-09-17", "2330", 12, 1, 100, 1.0), HoldingDistributionRow("2026-09-17", "9999", 12, 1, 7_000, 1.0), HoldingDistributionRow("2026-09-17", "1111", 12, 1, 50, 1.0)],
+            "2026-09-24": [HoldingDistributionRow("2026-09-24", "2330", 12, 1, 130, 1.5), HoldingDistributionRow("2026-09-24", "9999", 12, 1, 9_000, 1.0), HoldingDistributionRow("2026-09-24", "2222", 12, 1, 60, 1.0)],
+        }
+        taxonomy = {"2330": type("Entry", (), {"categories": ("半導體業",), "name": "台積電"})()}
+        result = build_large_holder_proxy(holdings_by_date=holdings, taxonomy=taxonomy, closes={}, end_date="2026-10-01", start_date="2026-09-24", universe={"2330", "1111", "2222"})
+        self.assertEqual(result["categories"][0]["large_holder_share_delta"], 30)
+        self.assertEqual(sum(row["large_holder_share_delta"] for row in result["categories"]), 30)
+        self.assertEqual(result["excluded_symbols"], {"outside_listed_universe": 1, "not_in_both_snapshots": 2})
+
+    def test_stale_latest_snapshot_is_insufficient_without_numbers(self):
+        holdings = {"2026-08-25": [], "2026-09-01": []}
+        result = build_large_holder_proxy(holdings_by_date=holdings, taxonomy={}, closes={}, end_date="2026-10-01", start_date="2026-09-24", universe=set())
+        self.assertEqual(result, {"status": "insufficient_data", "reason": "latest_snapshot_too_old", "latest_as_of_date": "2026-09-01", "prior_as_of_date": "2026-08-25"})
+
+    def test_snapshot_exactly_seven_days_before_start_is_still_fresh(self):
+        holdings = {"2026-09-10": [], "2026-09-17": []}
+        result = build_large_holder_proxy(holdings_by_date=holdings, taxonomy={}, closes={}, end_date="2026-10-01", start_date="2026-09-24", universe=set())
+        self.assertEqual(result["status"], "ok")
+
+    def test_non_consecutive_snapshots_are_insufficient_without_numbers(self):
+        holdings = {"2026-09-03": [], "2026-09-24": []}
+        result = build_large_holder_proxy(holdings_by_date=holdings, taxonomy={}, closes={}, end_date="2026-10-01", start_date="2026-09-24", universe=set())
+        self.assertEqual(result, {"status": "insufficient_data", "reason": "snapshots_not_consecutive_weeks", "latest_as_of_date": "2026-09-24", "prior_as_of_date": "2026-09-03"})
 
 
 if __name__ == "__main__":

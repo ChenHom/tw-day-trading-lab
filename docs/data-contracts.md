@@ -919,11 +919,40 @@ data/raw/tdcc/holding_distribution/{as_of_date}/market.json
 報告截止日的最新 `TaiwanStockInfo/{snapshot_date}` 目錄；row-level `date`
 不是 metadata 版本。精確量為 shares；金額欄位固定標示
 `amount_method=net_shares_times_close`。任一交易日價格 coverage 低於 90%
-時，整份排行改用精確淨股數並標為 `degraded`。
+時，整份排行改用精確淨股數並標為 `degraded`。單一規則：`prices_ok = 有觀察日 且 各日價格 coverage 的最小值 >= 0.9`；
+排名方法（`estimated_amount` / `net_shares`）與 `status` 都用它。任一日低於 90%（即使整體 `price_coverage` 高於 90%）
+→ `degraded`，並附 warning `price coverage below 90% on {date} ({pct}); rankings use exact net shares`。
+頂層 `price_coverage` 仍為整體比例。
 
-TDCC 必須有兩個不晚於截止日的 snapshot 才計算差值；不足時回
-`status=insufficient_data` 且不產生數值。此欄是持股變化代理，不是下單流
-或精確淨流入。
+原始 payload 完整性：官方計數欄位存在且與實際列數不同（TWSE T86 頂層 `total`；TPEx 各 table 的 `totalCount`）→
+`ProviderSchemaError`（訊息含兩個數字）；欄位不存在則不檢查（MI_INDEX 無計數欄位）。payload 不是 JSON object
+一律 `ProviderSchemaError`。cache 檔不是合法 JSON、不是 UTF-8、或為非 object，report 端記為 `schema_error`，
+ingest 端視為無效 cache 並重新抓取，不會 traceback。TPEx table 內嵌日期與請求日期不同仍是 `schema_error`
+（fail closed；離線無法驗證 TPEx 休市行為），不歸為 `no_data`。
+
+### `large_holder`（TDCC 持股變化代理）
+
+- 範圍：只計入該期間「上市櫃宇宙」＝任一觀察日法人 flow rows 出現過的代號；且只計入兩個 snapshot 都出現的代號
+  （期間內新上市／下市的股票不會把整筆持股算成變化）。排除數量輸出於
+  `excluded_symbols: {"outside_listed_universe": n, "not_in_both_snapshots": n}`。
+- 視窗：配對為「不晚於 `end_date` 的最新 snapshot」與其前一個。常數 `TDCC_MAX_STALENESS_DAYS = 7`、
+  `TDCC_MAX_SNAPSHOT_GAP_DAYS = 14`。`latest < start_date - 7 天` → `status=insufficient_data`,
+  `reason=latest_snapshot_too_old`；`latest - prior > 14 天` → `reason=snapshots_not_consecutive_weeks`。
+  這兩種情況都輸出 `latest_as_of_date` 與 `prior_as_of_date`，不輸出任何數值。不足兩個 snapshot 仍為
+  `fewer_than_two_eligible_snapshots`。
+- 壞 cache：目錄名為日期且不晚於 `end_date` 的 snapshot 若無法解析，不會被略過；`large_holder` 變成
+  `{"status": "schema_error", "errors": [{"as_of_date", "error"}]}`（無數值），報告加 warning 並降為 `degraded`。
+  晚於 `end_date` 或目錄名非日期者忽略。只有會被拿來比較的那兩期（依目錄日期取最新兩個，壞檔也算在內）
+  壞掉才會 `schema_error`；更舊的壞檔不影響，因為 ingest 只能抓最新一週、修不了舊檔。
+- ingest：TDCC cache 已存在時會重新解析；無法讀取／解析或 `as_of_date` 不符 → 以剛抓到並驗證過的 payload 覆寫，
+  記為 `via: "network"` 並附 `repaired_cache: true`；只有有效 cache 才算 `via: "cache"`。
+
+此欄是持股變化代理，不是下單流或精確淨流入。
+
+### CLI exit code
+
+- `report sector-flow`：先寫出 JSON 與 Markdown，再於 `status == "blocked"` 時 exit 1；`degraded` 仍 exit 0。
+- `ingest sector-flow`：印出 summary 後，`failed > 0` 時 exit 1。
 
 ### Sector Flow V1 分類與降級規則
 
@@ -943,6 +972,8 @@ TDCC 必須有兩個不晚於截止日的 snapshot 才計算差值；不足時�
   warning `incomplete sources on {date}: {source}={state}, ...`。四個來源皆為 `missing` 或
   `no_data` 的日期只列入 `dates_without_data`，不降級；只要有一個來源 `schema_error`，
   即使沒有任何 `ok` 也算 incomplete 並降級（格式錯誤不可能是休市）。
+- Markdown：`estimated_amount` 模式在區間排行下附註「排名依估算金額，淨股數與淨金額可能正負相反」；每日區塊除前 10
+  名外，另列最大流出（依同一排名指標，僅負值，最多 10 筆）。
 - 個股貢獻排序：`ranking_method=estimated_amount` 時以 `estimated_net_amount_twd`
   選正負並排序（無收盤價者不入榜）；`net_shares` 時以 `institutional_net_shares`。同值依代號。
 

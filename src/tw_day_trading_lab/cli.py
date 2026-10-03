@@ -354,6 +354,8 @@ def cmd_report_sector_flow(args: argparse.Namespace) -> None:
     write_text(report_output, render_sector_flow_markdown(payload))
     print(output)
     print(report_output)
+    if payload["status"] == "blocked":
+        raise SystemExit(1)
 
 
 def cmd_notify_telegram(args: argparse.Namespace) -> None:
@@ -3858,6 +3860,8 @@ def cmd_ingest_sector_flow(args: argparse.Namespace) -> None:
         client=UrllibJsonHttpClient(),
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+    if summary["failed"] > 0:
+        raise SystemExit(1)
 
 
 class _TokenMissingFinMindClient:

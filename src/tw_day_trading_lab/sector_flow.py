@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 from .sector_flow_sources import (
     ClosePriceRow,
@@ -35,6 +35,9 @@ CATEGORY_SYNONYMS = {
 BOARD_LABELS = frozenset({"創新板股票", "創新版股票"})  # board labels, never categories
 CATCH_ALL_CATEGORY = "其他"
 UNCLASSIFIED = "未分類"
+TDCC_MAX_SNAPSHOT_GAP_DAYS = 14
+TDCC_MAX_STALENESS_DAYS = 7
+PRICE_COVERAGE_MIN = 0.9
 BROAD_CATEGORIES = frozenset({"電子工業", "化學生技醫療"})
 CATEGORY_OVERLAP_NOTE = "一檔股票可能同時計入多個族群（例如大類「電子工業」與細類「半導體業」），族群之間互有重疊，不可加總。"
 
@@ -136,7 +139,7 @@ def _load_source(
         rows = parser(read_json(path), trading_date)
         status.update({"state": "ok" if rows else "no_data", "row_count": len(rows), "embedded_date": trading_date})
         return rows, status
-    except (OSError, json.JSONDecodeError, ProviderSchemaError) as exc:
+    except (OSError, ValueError) as exc:  # ValueError covers bad JSON, bad UTF-8 and ProviderSchemaError
         status.update({"state": "schema_error", "row_count": 0, "error": str(exc)})
         return [], status
 
@@ -268,19 +271,26 @@ def _aggregate_period(
     return _finalize_categories(categories, ranking_method)
 
 
-def _load_holdings(cache_dir: Path, end_date: str) -> dict[str, list[HoldingDistributionRow]]:
+def _load_holdings(cache_dir: Path, end_date: str) -> tuple[dict[str, list[HoldingDistributionRow]], list[dict[str, str]]]:
     root = cache_dir / "tdcc" / "holding_distribution"
     result: dict[str, list[HoldingDistributionRow]] = {}
+    errors: list[dict[str, str]] = []
     if not root.exists():
-        return result
+        return result, errors
     for path in sorted(root.glob("*/market.json")):
         try:
+            if date.fromisoformat(path.parent.name) > _iso_date(end_date):
+                continue
+        except ValueError:
+            continue
+        try:
             rows = parse_tdcc_holdings(read_json(path))
-        except (OSError, json.JSONDecodeError, ProviderSchemaError):
+        except (OSError, ValueError) as exc:
+            errors.append({"as_of_date": path.parent.name, "error": str(exc)})
             continue
         if rows and rows[0].as_of_date <= end_date:
             result[rows[0].as_of_date] = rows
-    return result
+    return result, errors
 
 
 def build_large_holder_proxy(
@@ -289,12 +299,22 @@ def build_large_holder_proxy(
     taxonomy: Mapping[str, TaxonomyEntry],
     closes: Mapping[str, float],
     end_date: str,
+    start_date: str,
+    universe: Collection[str],
 ) -> dict[str, Any]:
     eligible = sorted(key for key in holdings_by_date if key <= end_date)
     latest = eligible[-1] if eligible else None
     if len(eligible) < 2:
         return {"status": "insufficient_data", "reason": "fewer_than_two_eligible_snapshots", "latest_as_of_date": latest}
     prior = eligible[-2]
+    latest_day, prior_day = _iso_date(latest), _iso_date(prior)
+    reason = None
+    if latest_day < _iso_date(start_date) - timedelta(days=TDCC_MAX_STALENESS_DAYS):
+        reason = "latest_snapshot_too_old"
+    elif (latest_day - prior_day).days > TDCC_MAX_SNAPSHOT_GAP_DAYS:
+        reason = "snapshots_not_consecutive_weeks"
+    if reason:
+        return {"status": "insufficient_data", "reason": reason, "latest_as_of_date": latest, "prior_as_of_date": prior}
 
     def by_symbol(rows: Sequence[HoldingDistributionRow]) -> dict[str, tuple[int, float]]:
         shares: dict[str, int] = defaultdict(int)
@@ -307,8 +327,15 @@ def build_large_holder_proxy(
 
     old = by_symbol(holdings_by_date[prior])
     new = by_symbol(holdings_by_date[latest])
+    listed = set(universe)
+    old_symbols = {row.symbol for row in holdings_by_date[prior]}
+    new_symbols = {row.symbol for row in holdings_by_date[latest]}
+    candidates = old_symbols | new_symbols
+    in_universe = candidates & listed
+    counted = in_universe & old_symbols & new_symbols
+    excluded = {"outside_listed_universe": len(candidates - listed), "not_in_both_snapshots": len(in_universe - counted)}
     categories: dict[str, dict[str, Any]] = {}
-    for symbol in sorted(set(old) | set(new)):
+    for symbol in sorted(counted):
         share_delta = new.get(symbol, (0, 0.0))[0] - old.get(symbol, (0, 0.0))[0]
         percent_delta = new.get(symbol, (0, 0.0))[1] - old.get(symbol, (0, 0.0))[1]
         for category in _categories_of(taxonomy.get(symbol)):
@@ -328,6 +355,7 @@ def build_large_holder_proxy(
         "prior_as_of_date": prior,
         "latest_as_of_date": latest,
         "levels": [12, 13, 14, 15],
+        "excluded_symbols": excluded,
         "categories": sorted(categories.values(), key=lambda row: (row["large_holder_share_delta"], row["category"]), reverse=True),
     }
 
@@ -379,7 +407,9 @@ def build_sector_flow_report(*, cache_dir: Path, start_date: str, end_date: str)
     price_coverage = total_priced_rows / total_flow_rows if total_flow_rows else 0.0
     taxonomy_coverage = mapped_rows / total_flow_rows if total_flow_rows else 0.0
     daily_coverages = [sum(1 for row in flows if (row.market, row.symbol) in closes) / len(flows) for _, flows, closes in day_inputs]
-    ranking_method = "estimated_amount" if daily_coverages and min(daily_coverages) >= 0.9 else "net_shares"
+    prices_ok = bool(daily_coverages) and min(daily_coverages) >= PRICE_COVERAGE_MIN
+    ranking_method = "estimated_amount" if prices_ok else "net_shares"
+    low_days = [f"{day[0]} ({coverage:.1%})" for day, coverage in zip(day_inputs, daily_coverages) if coverage < PRICE_COVERAGE_MIN]
     daily = [
         {
             "trading_date": trading_date,
@@ -390,16 +420,27 @@ def build_sector_flow_report(*, cache_dir: Path, start_date: str, end_date: str)
     ]
     if not total_flow_rows:
         status = "blocked"
-    elif incomplete_source or price_coverage < 0.9 or taxonomy_coverage < 1.0:
+    elif incomplete_source or not prices_ok or taxonomy_coverage < 1.0:
         status = "degraded"
     else:
         status = "ok"
     warnings = list(incomplete_notes)
-    if price_coverage < 0.9 and total_flow_rows:
-        warnings.append("price coverage below 90%; rankings use exact net shares")
+    if low_days and total_flow_rows:
+        warnings.append(f"price coverage below 90% on {', '.join(low_days)}; rankings use exact net shares")
     if taxonomy_coverage < 1.0 and total_flow_rows:
         warnings.append("taxonomy mapping incomplete; unmatched symbols are 未分類")
-    holdings = _load_holdings(cache_dir, end_date)
+    holdings, holding_errors = _load_holdings(cache_dir, end_date)
+    # Only a corrupt snapshot that would be one of the two compared blocks the proxy;
+    # ingest only fetches the latest week, so an old corrupt file could never be repaired.
+    compared = sorted(set(holdings) | {item["as_of_date"] for item in holding_errors})[-2:]
+    holding_errors = [item for item in holding_errors if item["as_of_date"] in compared]
+    universe = {row.symbol for _, flows, _ in day_inputs for row in flows}
+    if holding_errors:
+        large_holder: dict[str, Any] = {"status": "schema_error", "reason": "unreadable_tdcc_snapshot", "errors": holding_errors}
+        warnings.append(f"TDCC snapshot unreadable: {', '.join(item['as_of_date'] for item in holding_errors)}")
+        status = "degraded" if status != "blocked" else status
+    else:
+        large_holder = build_large_holder_proxy(holdings_by_date=holdings, taxonomy=taxonomy, closes=all_closes_by_symbol, end_date=end_date, start_date=start_date, universe=universe)
     return {
         "schema_version": 1,
         "requested_period": {"start_date": start_date, "end_date": end_date},
@@ -414,7 +455,7 @@ def build_sector_flow_report(*, cache_dir: Path, start_date: str, end_date: str)
         "price_coverage": price_coverage,
         "daily": daily,
         "period_summary": _aggregate_period(day_inputs, taxonomy, ranking_method),
-        "large_holder": build_large_holder_proxy(holdings_by_date=holdings, taxonomy=taxonomy, closes=all_closes_by_symbol, end_date=end_date),
+        "large_holder": large_holder,
         "exclusions": {"symbol_rule": "^[1-9][0-9]{3}$; excludes ^91[0-9]{2}$ (Taiwan depositary receipts)"},
         "warnings": warnings,
     }

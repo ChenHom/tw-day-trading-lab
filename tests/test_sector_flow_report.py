@@ -1,9 +1,11 @@
 import argparse
+import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from tw_day_trading_lab.cli import build_parser, cmd_report_sector_flow
+from tw_day_trading_lab.cli import build_parser, cmd_ingest_sector_flow, cmd_report_sector_flow
 from tw_day_trading_lab.sector_flow_report import render_sector_flow_markdown
 
 
@@ -57,10 +59,43 @@ class SectorFlowReportTest(unittest.TestCase):
                 report_output=str(root / "report.md"),
             )
 
-            cmd_report_sector_flow(args)
+            with self.assertRaises(SystemExit) as raised:
+                cmd_report_sector_flow(args)
 
+            self.assertEqual(raised.exception.code, 1)  # empty cache is blocked
             self.assertTrue(Path(args.output).exists())
             self.assertTrue(Path(args.report_output).exists())
+
+    def test_degraded_report_exits_zero_and_ingest_failure_exits_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = argparse.Namespace(start_date="2026-09-24", end_date="2026-09-24", cache_dir=str(root), output=str(root / "r.json"), report_output=str(root / "r.md"))
+            with patch("tw_day_trading_lab.cli.build_sector_flow_report", return_value={**sample_payload(), "status": "degraded"}):
+                cmd_report_sector_flow(args)
+            ingest_args = argparse.Namespace(start_date="2026-09-24", end_date="2026-09-24", cache_dir=str(root))
+            with patch("tw_day_trading_lab.cli.ingest_sector_flow", return_value={"failed": 0}):
+                cmd_ingest_sector_flow(ingest_args)
+            with patch("tw_day_trading_lab.cli.ingest_sector_flow", return_value={"failed": 1}):
+                with self.assertRaises(SystemExit) as raised:
+                    cmd_ingest_sector_flow(ingest_args)
+            self.assertEqual(raised.exception.code, 1)
+
+    def test_amount_ranking_explains_opposite_share_and_amount_signs_only_in_amount_mode(self):
+        note = "排名依估算金額"
+        self.assertIn(note, render_sector_flow_markdown(sample_payload()))
+        payload = sample_payload()
+        payload["ranking_method"] = "net_shares"
+        self.assertNotIn(note, render_sector_flow_markdown(payload))
+
+    def test_daily_section_lists_largest_outflows_by_ranking_metric(self):
+        payload = sample_payload()
+        template = payload["period_summary"][0]
+        rows = [dict(template, category=f"族群{i:02d}", institutional_net_shares=-i, estimated_institutional_net_amount_twd=float(i if i % 2 else -i) * 1000) for i in range(1, 13)]
+        payload["daily"][0]["categories"] = sorted(rows, key=lambda row: row["estimated_institutional_net_amount_twd"], reverse=True)
+        daily = render_sector_flow_markdown(payload).split("## 每日族群排行", 1)[1].split("## 主要個股貢獻", 1)[0]
+        outflow = daily.split("最大流出", 1)[1]
+        self.assertEqual(len(re.findall(r"族群\d\d", outflow)), 6)  # only the 6 negative-amount categories, not the net-share signs
+        self.assertLess(outflow.index("族群12"), outflow.index("族群02"))
 
     def test_report_distinguishes_exact_shares_from_estimated_amount(self):
         markdown = render_sector_flow_markdown(sample_payload())

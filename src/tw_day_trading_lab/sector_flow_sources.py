@@ -147,13 +147,17 @@ def _roc_to_iso(value: object) -> str:
 
 
 def _validate_payload_date(payload: Mapping[str, Any], requested_date: str) -> None:
+    if not isinstance(payload, Mapping):
+        raise ProviderSchemaError("provider payload is not an object")
     if str(payload.get("date", "")) != _compact_date(requested_date):
         raise ProviderNoData("provider date does not match requested date")
 
 
-def _rows(payload: Mapping[str, Any], fields: Sequence[Any], data: Any) -> list[Sequence[Any]]:
+def _rows(payload: Mapping[str, Any], fields: Sequence[Any], data: Any, declared: Any = None) -> list[Sequence[Any]]:
     if not isinstance(data, list):
         raise ProviderSchemaError("provider data is not a list")
+    if declared is not None and declared != len(data):
+        raise ProviderSchemaError(f"provider declared {declared} rows but returned {len(data)}")
     for row in data:
         if not isinstance(row, list) or len(row) != len(fields):
             raise ProviderSchemaError("provider row width changed")
@@ -180,7 +184,7 @@ def parse_twse_institutional(
         "total": _field_index(fields, "三大法人買賣超股數"),
     }
     result: list[InstitutionalFlowRow] = []
-    for row in _rows(payload, fields, payload.get("data")):
+    for row in _rows(payload, fields, payload.get("data"), payload.get("total")):
         symbol = str(row[indexes["symbol"]]).strip()
         if not COMMON_STOCK_RE.fullmatch(symbol):
             continue
@@ -253,7 +257,7 @@ def parse_tpex_institutional(
     if [_header(item) for item in fields] != expected:
         raise ProviderSchemaError("TPEx institutional group layout changed")
     result: list[InstitutionalFlowRow] = []
-    for row in _rows(payload, fields, table.get("data")):
+    for row in _rows(payload, fields, table.get("data"), table.get("totalCount")):
         symbol = str(row[0]).strip()
         if not COMMON_STOCK_RE.fullmatch(symbol):
             continue
@@ -279,7 +283,7 @@ def parse_tpex_closes(payload: Mapping[str, Any], requested_date: str) -> list[C
     symbol_idx = _field_index(fields, "代號")
     close_idx = _field_index(fields, "收盤")
     result = []
-    for row in _rows(payload, fields, table.get("data")):
+    for row in _rows(payload, fields, table.get("data"), table.get("totalCount")):
         symbol = str(row[symbol_idx]).strip()
         close_text = str(row[close_idx]).strip()
         if COMMON_STOCK_RE.fullmatch(symbol) and close_text not in {"", "--", "---", "----"}:
@@ -362,7 +366,7 @@ def ingest_sector_flow(
             if request.cache_path.exists():
                 try:
                     row_count = _validate_request_payload(request, read_json(request.cache_path))
-                except (OSError, json.JSONDecodeError, ProviderSchemaError):
+                except (OSError, ValueError):  # ValueError covers bad JSON, bad UTF-8 and ProviderSchemaError
                     row_count = 0
                 if row_count:
                     item.update({"state": "ok", "via": "cache", "row_count": row_count, "embedded_date": request.requested_date})
@@ -401,14 +405,25 @@ def ingest_sector_flow(
         else:
             as_of = holdings[0].as_of_date
             path = cache_dir / "tdcc" / "holding_distribution" / as_of / "market.json"
+            repaired = False
             if path.exists():
+                try:
+                    cached = parse_tdcc_holdings(read_json(path))
+                    valid = bool(cached) and cached[0].as_of_date == as_of
+                except (OSError, ValueError):
+                    valid = False
+                repaired = not valid
+            if path.exists() and not repaired:
                 summary["cached"] += 1
                 via = "cache"
             else:
                 _atomic_json(path, tdcc_payload)
                 summary["fetched"] += 1
                 via = "network"
-            summary["sources"].append({"provider": "tdcc", "dataset": "holding_distribution", "state": "ok", "via": via, "as_of_date": as_of, "row_count": len(holdings), "cache_path": str(path)})
+            item = {"provider": "tdcc", "dataset": "holding_distribution", "state": "ok", "via": via, "as_of_date": as_of, "row_count": len(holdings), "cache_path": str(path)}
+            if repaired:
+                item["repaired_cache"] = True
+            summary["sources"].append(item)
     except Exception as exc:
         summary["failed"] += 1
         summary["sources"].append({"provider": "tdcc", "dataset": "holding_distribution", "state": "schema_error" if isinstance(exc, ProviderSchemaError) else "error", "error": str(exc)})

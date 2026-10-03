@@ -4587,9 +4587,22 @@ Telegram 傳送或 GitHub report publication side effect。
 
 ### 未修（審查成立但不在本次範圍）
 
-- TDCC 大戶段：涵蓋未上市櫃股票、兩期 snapshot 的間隔不受報告期間約束、期間內新上市股票整筆算成變化。目前大戶段為 `insufficient_data`，尚未影響報告。
-- TDCC 損壞 cache 不會被 ingest 偵測與重抓。
-- 未比對 T86 `total` / TPEx `totalCount`，被截斷的 payload 仍判 `ok`。
-- cache 為 JSON list 或非 UTF-8 時直接例外中止。
-- CLI 在 blocked / degraded 仍 exit 0。
-- 全部 `missing` 的日期仍無法區分休市與整天沒抓到；ingest 未寫 no-data 標記。
+已於 2026-10-03 (4) 修完，僅剩最後一條（全部 `missing` 的日期無法區分休市與未抓取）。
+
+## 2026-10-03 (4) Sector Flow 審查剩餘項目依嚴重度修完
+
+使用者決定族群歸屬維持「全部計入」，並要求把審查剩下的問題依嚴重度修完。每項都先寫測試並確認修正前失敗。
+
+1. **價格覆蓋率規則不一致**：排名用「每日最低覆蓋率 ≥ 90%」、狀態卻用整體覆蓋率，一天 82.7%、整體 95.7% 時報告 `ok` 但排名默默改用股數。改成同一條 `prices_ok` 規則，低於門檻即降級並列出日期。
+2. **TDCC 大戶段比錯東西**：只計入期間內有法人資料的上市櫃代號、只計入兩期都存在的代號（新上市不再整筆算成變化），排除數量輸出於 `excluded_symbols`；最新一期早於 `start_date` 7 天以上，或兩期相隔超過 14 天 → `insufficient_data`、不給數字。
+3. **TDCC 壞 cache**：ingest 會重新解析既有 cache，壞掉或日期不符就用剛抓到的 payload 覆寫（`repaired_cache: true`）；報告端壞檔不再被默默略過，改為 `schema_error` 並降級。驗收時主對話補一條：**只有要比較的那兩期壞掉才算錯**，更舊的壞檔不影響，否則一個修不了的舊檔會讓大戶段永遠出不來。
+4. **截斷偵測**：T86 `total`、TPEx 表格 `totalCount` 與實際列數不符即 `ProviderSchemaError`（已確認所有真實 cache 兩者相等）。
+5. **壞 cache 不再崩潰**：parser 拒絕非物件 payload；捕捉 `ValueError`（涵蓋壞 JSON、壞 UTF-8 與 `ProviderSchemaError`）。
+6. **CLI exit code**：`report` 在 `blocked` 時寫完檔再 exit 1；`ingest` 有失敗來源時 exit 1；`degraded` 仍 exit 0（現行報告因 0.1% 分類缺口本來就是 degraded）。
+7. **Markdown**：金額排名下加註「淨股數與淨金額可能正負相反」，每日排行補最大流出表。
+
+TPEx 表格日期與請求日不符維持 `schema_error`（無法離線驗證 TPEx 休市行為，fail closed）。
+
+驗證：全套 450 tests 通過（系統 python 與 `.venv`）。重產報告 JSON 與修正前 byte-identical（股數、金額全未變動），Markdown 新 checksum `75e8ac1859d904bbab06fe5acf6199ec4ef8eb8164c16157c69b2f3fae06445f`。
+
+剩餘：全部 `missing` 的日期仍無法區分休市與整天沒抓到（ingest 未寫 no-data 標記）。

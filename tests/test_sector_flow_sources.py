@@ -101,6 +101,29 @@ class SectorFlowSourceParserTest(unittest.TestCase):
         self.assertEqual(rows[0].shares, 400_000)
         self.assertEqual(rows[0].level, 12)
 
+    def test_declared_count_mismatch_is_schema_error_but_absent_or_equal_count_passes(self):
+        t86 = load_fixture("twse-t86.json")
+        parse_twse_institutional(t86, "2026-09-24")
+        t86["total"] = len(t86["data"])
+        parse_twse_institutional(t86, "2026-09-24")
+        t86["total"] = len(t86["data"]) + 1
+        with self.assertRaisesRegex(ProviderSchemaError, "3.*2"):
+            parse_twse_institutional(t86, "2026-09-24")
+        for name, parser in (("tpex-institutional.json", parse_tpex_institutional), ("tpex-daily-close.json", parse_tpex_closes)):
+            payload = load_fixture(name)
+            table = payload["tables"][0]
+            table["totalCount"] = len(table["data"])
+            parser(payload, "2026-09-24")
+            table["totalCount"] = len(table["data"]) + 1
+            with self.assertRaisesRegex(ProviderSchemaError, "3.*2"):
+                parser(payload, "2026-09-24")
+
+    def test_non_mapping_payload_is_schema_error_for_every_daily_parser(self):
+        for parser in (parse_twse_institutional, parse_twse_closes, parse_tpex_institutional, parse_tpex_closes):
+            with self.subTest(parser=parser.__name__):
+                with self.assertRaises(ProviderSchemaError):
+                    parser([], "2026-09-24")
+
 
 class FakeHttpClient:
     def __init__(self):
@@ -172,6 +195,36 @@ class SectorFlowIngestionTest(unittest.TestCase):
         self.assertEqual(item["state"], "ok")
         self.assertEqual(item["via"], "network")
         self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["date"], "20260924")
+
+    def test_unreadable_or_list_daily_cache_is_refetched(self):
+        for content in (b"[]", b"\xff\xfe\x00"):
+            with self.subTest(content=content):
+                path = self.cache_dir / "twse" / "T86" / "2026-09-24" / "market.json"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+                summary = ingest_sector_flow(cache_dir=self.cache_dir, start_date="2026-09-24", end_date="2026-09-24", client=FakeHttpClient())
+                item = next(row for row in summary["sources"] if row["dataset"] == "T86")
+                self.assertEqual(item["via"], "network")
+                self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["date"], "20260924")
+
+    def test_corrupt_or_mismatched_tdcc_cache_is_repaired_from_fresh_payload(self):
+        path = self.cache_dir / "tdcc" / "holding_distribution" / "2026-09-24" / "market.json"
+        other_date = json.dumps(load_fixture("tdcc-holding-distribution.json")).replace("20260924", "20260917")
+        for content in (b"{not json", b"\xff\xfe\x00", b"[]", other_date.encode()):
+            with self.subTest(content=content):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+                summary = ingest_sector_flow(cache_dir=self.cache_dir, start_date="2026-09-24", end_date="2026-09-24", client=FakeHttpClient())
+                item = next(row for row in summary["sources"] if row["provider"] == "tdcc")
+                self.assertEqual((item["state"], item["via"], item.get("repaired_cache")), ("ok", "network", True))
+                self.assertEqual(parse_tdcc_holdings(json.loads(path.read_text(encoding="utf-8")))[0].as_of_date, "2026-09-24")
+
+    def test_valid_tdcc_cache_stays_cache_without_repair_flag(self):
+        ingest_sector_flow(cache_dir=self.cache_dir, start_date="2026-09-24", end_date="2026-09-24", client=FakeHttpClient())
+        summary = ingest_sector_flow(cache_dir=self.cache_dir, start_date="2026-09-24", end_date="2026-09-24", client=FakeHttpClient())
+        item = next(row for row in summary["sources"] if row["provider"] == "tdcc")
+        self.assertEqual(item["via"], "cache")
+        self.assertNotIn("repaired_cache", item)
 
     def test_schema_error_does_not_write_cache(self):
         class BrokenClient(FakeHttpClient):
