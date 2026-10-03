@@ -4628,3 +4628,9 @@ TPEx 表格日期與請求日不符維持 `schema_error`（無法離線驗證 TP
 已知風險與緩解：抓取失敗不會被誤判為休市，因為 `ingest sector-flow` 有失敗來源時 exit 1；只有「某日完全沒跑 ingest」會被當成休市。
 
 驗證：全套 470 tests 通過；重產報告 JSON 不變，Markdown 只差這一行，新 checksum `53f813c43049ef132402656abefffccc67a1532134ca0aafeaa7963997e6c506`。
+
+## 2026-10-03 (7) ingest 請求間隔與歷史回補
+
+- `UrllibJsonHttpClient` 新增 `min_interval_seconds`（預設 3 秒），任兩次網路請求至少間隔這麼久；cache 命中不呼叫 client，所以不受影響。理由：TWSE 會封鎖短時間大量請求的 IP，而這台機器上 `quantitative-trading-decision-system` 的排程也打 TWSE。
+- 回補 2026-07-01～10-02：TWSE T86 / MI_INDEX 補齊 65 個交易日。**TPEx 大多回 HTTP 520**（Cloudflare 類回應），9 月只有少數日期成功；回補後單發一個請求仍為 520。判斷為大量請求觸發的暫時封鎖。不偽裝 User-Agent 繞過，待冷卻後以更長間隔重試。
+- 影響：TPEx 缺漏的日期會依既有規則讓報告 `degraded`，不會被當成休市（同日 TWSE 有資料）。每日排程必須容忍 TPEx 暫時失敗並在之後自動補抓。
