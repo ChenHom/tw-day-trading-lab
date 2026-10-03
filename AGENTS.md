@@ -90,22 +90,11 @@ If a task appears to require live execution, stop and design the gate/SOP first.
 - The tick to 1m to 5m pipeline is live-validated as a data pipeline. That still does not make paper results strategy evidence.
 - `market_data.py` must stay free of Shioaji SDK imports, and any consumer of `ShioajiTickStream` must refuse to produce new entry signals unless `stream.is_healthy` is true.
 - Shioaji 1.7.5 upgrade is complete offline (2026-10-02). `pyproject.toml` pins `shioaji==1.7.5`, and `shioaji_compat.py` centralizes the login signature, stock contract lookup (`api.contracts.stocks.get` first, old `api.Contracts.Stocks` only as a fallback) and the enums. The repo-local `.venv` has 1.7.5 (created 2026-10-03; 419 tests pass under it), but the system `python3` still has shioaji 1.3.2. Run anything that imports the Shioaji SDK with `.venv/bin/python`. The real SDK's simulation behavior under 1.7.5 has not been smoke-tested during trading hours.
-- Sector Flow V1 is delivered (2026-10-02 / 10-03). It is a separate reporting track that does not touch trading:
-  - Network: `ingest sector-flow` (`sector_flow_sources.py`) is the only network boundary. It makes read-only GETs to TWSE T86 / MI_INDEX, TPEx and TDCC, and caches under `data/raw`.
-  - Replay: `report sector-flow` (`sector_flow.py`, `sector_flow_report.py`) replays fully offline from that cache.
-  - Amounts: values are estimated as `net_shares_times_close` and must never be called exact fund flows.
-  - Categories: a stock with several FinMind categories is counted in ALL of them after normalization (`CATEGORY_SYNONYMS` merges TPEx/older names; 創新板股票/創新版股票 are dropped; 其他 only when it is the sole category). Sectors overlap, so never sum across sectors. 電子工業 / 化學生技醫療 are `is_broad`. Do not go back to one category per stock: picking one made the sector depend on cache row order.
-  - Universe: four-digit common stocks only; 91xx Taiwan depositary receipts are excluded.
-  - Drill-down: `report sector-flow --category NAME [--top N]` adds `category_detail` (top-N inflow/outflow stocks with foreign/trust/dealer split, share of side, daily series; broad categories first get sub-category subtotals). Without `--category` the output must stay byte-identical.
-  - Trading days: a date with at least one `ok` source is a trading day, and any non-`ok` source on it degrades the report. A date whose sources are all `missing` / `no_data` goes to `dates_without_data` and is treated as a market holiday (user decision 2026-10-03; no holiday calendar). Fetch failures still surface because `ingest sector-flow` exits 1, so only a day that was never ingested could be mistaken for a holiday. A `schema_error` always degrades.
-  - `source_status[*][*].cache_path` is relative to `--cache-dir`, so the JSON is byte-identical however the cache dir is spelled. Do not put absolute paths back into the report.
-  - TDCC large holders: levels 12-15 need two weekly snapshots. With fewer than two, the report says `insufficient_data`.
-  - TWSE no-trade dates: TWSE can return the previous trading day's data on a no-trade date. A payload whose date differs from the requested date is `no_data`.
-  - First report: `reports/2026-09-24_2026-10-01-sector-flow.{json,md}` (regenerated 2026-10-03 after the review fixes; rankings in the originally delivered version are invalid) is `degraded`, because the FinMind taxonomy snapshot is from 2026-06-03 with 7 rows unclassified and there is only one TDCC snapshot. See `docs/superpowers/specs/2026-10-02-sector-flow-v1-design.md`.
+- Sector Flow V1 已於 2026-10-03 搬到 `~/services/stock/tw-day-trading`（MVP commit 3d6032e），本 repo 不再包含。
 
 ## Next Development Priority
 
-Three tracks are open. Do not confuse them.
+Two tracks are open. Do not confuse them.
 
 **Track 1 - Price Action Intraday (active, research stage).** PA-P1 to PA-P9 are code complete, and the data pipeline and paper chain are live-validated. The blocker is no longer plumbing; it is the lack of edge. The direction recorded on 2026-08-22, in order:
 
@@ -136,8 +125,6 @@ Recommended next implementation:
 4. Keep formal live order blocked until a separate production approval SOP exists.
 5. Do not treat smoke OK as strategy edge or live-order readiness.
 
-**Track 3 - Sector Flow V1 (delivered, maintenance).** Collect a second TDCC weekly snapshot before claiming large-holder deltas, and refresh the FinMind industry taxonomy snapshot. Keep it read-only public data: no Shioaji, Telegram or GitHub publication side effects.
-
 ## Important Docs
 
 Read these before changing behavior:
@@ -154,7 +141,6 @@ Read these before changing behavior:
 - `docs/price-action-p3-design.md` - PA-P3 5m aggregation and the 1m correction rule.
 - `docs/price-action-p4-design.md` / `docs/price-action-p5-design.md` / `docs/price-action-p6-p8-design.md` - bar store, RVOL, structure / setup / paper.
 - `docs/superpowers/specs/2026-10-02-shioaji-1-7-5-upgrade-design.md` - Shioaji 1.7.5 compatibility layer.
-- `docs/superpowers/specs/2026-10-02-sector-flow-v1-design.md` - Sector Flow V1 sources, semantics and fail-closed rules.
 
 When phase status changes, update both `docs/development-work.md` and `docs/mvp-roadmap.md`.
 
@@ -227,14 +213,6 @@ PYTHONPATH=src python3 -m tw_day_trading_lab.cli simulate trading-day-cycle-smok
   --run-all-stages
 
 make daily-ops DATE=2026-06-04 ARGS="--skip-ingestion --allow-outside-session --fail-on-audit"
-
-# offline replay from cache; `ingest sector-flow` is the networked step
-PYTHONPATH=src python3 -m tw_day_trading_lab.cli report sector-flow \
-  --start-date 2026-09-24 \
-  --end-date 2026-10-01 \
-  --cache-dir data/raw \
-  --output reports/2026-09-24_2026-10-01-sector-flow.json \
-  --report-output reports/2026-09-24_2026-10-01-sector-flow.md
 ```
 
 Do not run gated real Shioaji login/order/cancel smoke unless the task explicitly calls for it and the gate is clear.
@@ -260,8 +238,8 @@ The GitHub repo is private: `https://github.com/ChenHom/tw-day-trading-lab`.
 
 | 資料夾 | GitHub repo | 目標 | CLI | 站台 | 狀態 |
 |---|---|---|---|---|---|
-| `~/services/stock/tw-day-trading` | `ChenHom/tw-swing-trading-mvp` | 台股**波段**量化交易 MVP：回測、每日模擬（paper / FakeBroker）、風控授權、FIFO 對帳。資料夾名稱是歷史遺留，**不是當沖** | `python3 -m app <account\|market\|simulation\|backtest\|report…>` | 有：`https://192.168.50.109/trading/`（台股波段交易儀表板，`trading-web.service` → 127.0.0.1:8800） | 運作中：平日 15:10 / 15:12 影子模擬、21:00 籌碼同步（cron） |
-| `~/services/stock/tw-day-trading-lab` | `ChenHom/tw-day-trading-lab` | 台股**當沖**重建實驗室：候選名單、replay / paper 驗證、Shioaji **模擬**執行鏈驗證；另有族群資金流報表 | `tw-daytrade`（`PYTHONPATH=src python3 -m tw_day_trading_lab.cli …`） | 無 | 開發中；無有效排程（crontab 內 8/19–21 的收集排程已過期） |
+| `~/services/stock/tw-day-trading` | `ChenHom/tw-swing-trading-mvp` | 台股**波段**量化交易 MVP：回測、每日模擬（paper / FakeBroker）、風控授權、FIFO 對帳。另有族群資金流報表（2026-10-03 自 lab 搬入）。資料夾名稱是歷史遺留，**不是當沖** | `python3 -m app <account\|market\|simulation\|backtest\|report…>` | 有：`https://192.168.50.109/trading/`（台股波段交易儀表板，`trading-web.service` → 127.0.0.1:8800） | 運作中：平日 15:10 / 15:12 影子模擬、21:00 籌碼同步（cron） |
+| `~/services/stock/tw-day-trading-lab` | `ChenHom/tw-day-trading-lab` | 台股**當沖**重建實驗室：候選名單、replay / paper 驗證、Shioaji **模擬**執行鏈驗證 | `tw-daytrade`（`PYTHONPATH=src python3 -m tw_day_trading_lab.cli …`） | 無 | 開發中；無有效排程（crontab 內 8/19–21 的收集排程已過期） |
 | `~/services/stock/quantitative-trading-decision-system` | `ChenHom/quantitative-trading-decision-system` | 舊版 Shioaji 盤中當沖機器人；`tw-day-trading-lab` 只把它當資料來源與失敗案例 | `scripts/run_trading_system.sh`、`scripts/run_intraday_event_monitor.sh` | 無 | 程式凍結於 2026-04，但平日 08:30 / 08:58 仍由 cron 以**模擬模式**執行 |
 | `~/services/stock/quant-feather-integration` | 無（非 git） | 整合 quantitative-trading-decision-system 與 StrategyExecutor_feather 的骨架 | 無 | 無 | 封存（2026-03） |
 | `~/services/stock/StrategyExecutor_feather` | `phenomenoner/StrategyExecutor_feather`（第三方） | 富邦 Neo SDK 當沖機器人，本機分支改寫為 Shioaji | `python strategy_async_demo.py` | 無 | 封存（本機改寫停在 2026-02） |

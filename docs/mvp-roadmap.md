@@ -464,38 +464,9 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
 2. 改用限價掛單（約省 39% 成本）；掛單 0 滑價是樂觀上界，需實測成交率與逆選擇代價。
 3. 在 1、2 之上找剩下約 0.13% 的 alpha。
 
-## Sector Flow V1（2026-10-02）
+## Sector Flow V1
 
-狀態：`CODE_COMPLETE`，第一版 2026-09-24～2026-10-01 data run 已完成。
-
-- 官方 TWSE / TPEx 日法人與收盤資料聚合成產業族群。
-- 輸出法人、外資、投信、自營商精確淨股數與收盤價估算金額。
-- TDCC 大戶為週持股變化代理，兩期不足時 `insufficient_data`。
-- 第一版固定驗證期間：2026-09-24～2026-10-01。
-- 實際 observed trading dates：09-24、09-29、09-30、10-01；四來源均成功，
-  price coverage 100%。taxonomy coverage 99.906% 因此 report 為 `degraded`；
-  TDCC 只有一期所以 `large_holder.status=insufficient_data`。
-- 驗證：418 tests passed，離線重播 checksum 一致，無未解 Critical /
-  Important review finding。
-- 真實 provider payload 調整已落地：無交易日舊日期回應、`--` / `----`
-  無價 placeholder、TPEx 尾端空 table、cache 重驗證、no-data / schema-error
-  分型、TDCC 百分點欄位語意、金額 round，以及金額排名正負側一致性。
-- 交付 commit：`4b011ce34fb9bc289d432f581aa578b244f75f9d`（`master` /
-  `origin/master`）。
-- 2026-10-03 對抗審查後修正並重產（詳見 `docs/development-work.md` 2026-10-03 (3)）：
-  原交付版的族群歸屬取決於分類檔列順序（台積電被歸進電子工業、不在半導體業），
-  **原版的族群排名不可再引用**。現行版本一檔股票計入全部正規化後的分類（族群互相
-  重疊、不可加總），排除 TDR，缺資料的交易日會降級。現行 JSON checksum
-  `4813eff16e65ddae0b119ffdcff75dccf89b6cac1c7ce5084e925b45e6453ea4`，Markdown checksum `53f813c43049ef132402656abefffccc67a1532134ca0aafeaa7963997e6c506`
-  （2026-10-03 (6) 無資料日標示改為「休市日」；JSON 未變）。
-  歷代 JSON checksum：`4327908605fb…`（原交付）→ `63168ca59ba8…`（`cache_path` 相對化）
-  → 現行。
-- Dashboard、candidate score、scheduler 與通知整合均留待後續，不影響現有
-  PA 或 Trading Day Cycle phase 狀態。
-- 2026-10-03 新增族群細看：`--category NAME [--top N]`，大類先列子類小計，再列流入／流出前 N 名個股
-  （外資／投信／自營商拆分、佔同方向比重、逐日進出）。不帶 `--category` 時輸出不變。
-- 後續維護：累積第二期 TDCC 週 snapshot 後才能產出大戶變化；更新 FinMind
-  產業分類 snapshot。
+Sector Flow V1（族群資金流）已於 2026-10-03 搬到 `~/services/stock/tw-day-trading`（MVP commit 3d6032e），本 repo 不再包含。
 
 ## Shioaji 1.7.5 Upgrade（2026-10-02）
 

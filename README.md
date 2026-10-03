@@ -90,24 +90,6 @@ python3 -m tw_day_trading_lab.cli ingest finmind \
   --date 2026-05-28 \
   --requests examples/finmind.requests.sample.json \
   --cache-dir data/raw
-python3 -m tw_day_trading_lab.cli ingest sector-flow \
-  --start-date 2026-09-24 \
-  --end-date 2026-10-01 \
-  --cache-dir data/raw
-python3 -m tw_day_trading_lab.cli report sector-flow \
-  --start-date 2026-09-24 \
-  --end-date 2026-10-01 \
-  --cache-dir data/raw \
-  --output reports/2026-09-24_2026-10-01-sector-flow.json \
-  --report-output reports/2026-09-24_2026-10-01-sector-flow.md
-# 族群細看（可重複 --category；大類先列子類小計；--top 預設 10）
-python3 -m tw_day_trading_lab.cli report sector-flow \
-  --start-date 2026-09-24 \
-  --end-date 2026-10-01 \
-  --cache-dir data/raw \
-  --category 電子工業 --category 半導體業 --top 10 \
-  --output reports/2026-09-24_2026-10-01-sector-flow-detail.json \
-  --report-output reports/2026-09-24_2026-10-01-sector-flow-detail.md
 python3 -m tw_day_trading_lab.cli candidates build-from-raw \
   --date 2026-05-28 \
   --cache-dir data/raw \
@@ -165,16 +147,7 @@ python3 -m tw_day_trading_lab.cli simulate trading-day-cycle \
   --run-all-stages
 ```
 
-`sector-flow` 的 ingest 只讀取 TWSE、TPEx、TDCC 公開資料，不登入
-Shioaji；report 完全離線。法人、外資、投信與自營商的淨股數是官方精確
-值，但金額是 `淨股數 × 收盤價` 的估算，不是實際成交現金流。TDCC 大戶
-資料是週 snapshot 的持股變化代理，不能解讀為逐日大戶淨流入。
-
-第一版實際產物：`reports/2026-09-24_2026-10-01-sector-flow.json` 與
-`reports/2026-09-24_2026-10-01-sector-flow.md`。有效交易日為 09-24、09-29、
-09-30、10-01；報告為 `degraded` 是因產業分類 7,445 / 7,452 rows 有 mapping，
-不是價格或交易所來源缺漏。TDCC 只有 2026-09-24 一期，故大戶欄位為
-`insufficient_data`。
+Sector Flow V1（族群資金流）已於 2026-10-03 搬到 `~/services/stock/tw-day-trading`（MVP commit 3d6032e），本 repo 不再包含。
 
 ### 一鍵執行當沖模擬 (Simplified Daily Ops Run)
 
@@ -396,7 +369,7 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 - Price Action Intraday PA-P9 已完成（2026-08-19）：成本進入 R（`cost_r` / `net_r` / `risk_ticks`），`summarize_expectancy` 輸出 expectancy / win rate / PF / MDD，毛淨並列；進場前成本閘門 `DEFAULT_MAX_COST_R = 1.0`；ETF 成本另計；研究標的定版為 `config/universe.txt` 37 檔。
 - **PA 研究結論（2026-08-21～08-22）：目前沒有 edge。** 突破訊號 alpha 約為零；37 檔有持續盤中下飄而引擎寫死只做多；無條件做空 + 全掛單仍為淨 -0.066 R。13:25 強制平倉是原則，不留倉。詳見 `docs/development-work.md`。
 - Shioaji 1.7.5 離線升級已完成（2026-10-02）：`shioaji_compat.py` 集中登入、合約查找與 enum 相容層；交易時段的真實 simulation smoke 尚未跑。
-- Sector Flow V1 已交付（2026-10-02～03）：官方 TWSE / TPEx / TDCC 公開資料的族群法人資金流報告，與交易線分離、無 Shioaji / 通知副作用；第一版報告為 `degraded`（產業分類 snapshot 偏舊、TDCC 僅一期）。
+- Sector Flow V1（族群資金流）已於 2026-10-03 搬到 `~/services/stock/tw-day-trading`（MVP commit 3d6032e），本 repo 不再包含。
 - **PA-P1 驗收分兩段**：Gate A `PA-P1_CODE_COMPLETE` 已達成（50 個 unit / adversarial tests）；Gate B `PA-P1_LIVE_VALIDATED` 已於 2026-08-17 達成（交易時段 smoke `live_validation.passed=true`），08-19～08-21 三個完整場次 12 檔亦通過。smoke report 的 `live_validation.passed` 會自己算出有沒有達標，不需人工核對欄位。詳見 `docs/price-action-p1-design.md`。
 - P4b 已支援 FinMind 20-50 日窗口、`TaiwanStockInfo` 非普通股排除、法人 / 融資融券 enrichment 與缺資料降權。
 - P5 已支援 classified samples replay，只用 `validity=valid` 計算 expectancy，並分開列示 gross / cost / net R。
@@ -422,7 +395,6 @@ FinMind nightly ingestion 仍然必要，但它是下一步：用來建立新的
 | PA-P6/P7/P8 結構 / setup / paper | swing、breakout → retest → trigger、paper trading 日循環 | Gate A 完成；P7/P8 Gate B 完成（2026-08-19） |
 | PA-P9 成本 / expectancy / ablation | 成本進 R、expectancy / PF / MDD、成本閘門 | 已完成；結論為目前無 edge |
 | Shioaji 1.7.5 upgrade | 版本鎖定與 SDK 相容層 | 離線完成；真實 smoke 未跑 |
-| Sector Flow V1 | 官方來源族群法人資金流報告 | 已交付（報告 `degraded`） |
 
 `PA-Pn` 是 `docs/price-action-intraday-plan.md` 的階段編號，與上表的 P8-P11 是兩套不同編號。
 
@@ -450,11 +422,7 @@ PA-P1～PA-P9 程式皆完成，資料鏈與 paper 鏈已通過真實行情驗�
 
 核心邊界固定不變：simulation / readiness 只能證明執行鏈可控，不能當成 strategy edge 或獲利證明；smoke OK 也不等於 live-order readiness。
 
-### Track 3：Sector Flow V1（已交付，維護中）
-
-- 累積第二期 TDCC 週 snapshot 後，才能產出大戶持股變化。
-- 更新 FinMind 產業分類 snapshot（目前為 2026-06-03，7 筆未分類）。
-- 維持只讀公開資料：不碰 Shioaji、Telegram 或 GitHub report publication。
+Sector Flow V1（族群資金流）已於 2026-10-03 搬到 `~/services/stock/tw-day-trading`（MVP commit 3d6032e），本 repo 不再包含。
 
 ## Documentation Map
 
@@ -472,5 +440,4 @@ PA-P1～PA-P9 程式皆完成，資料鏈與 paper 鏈已通過真實行情驗�
 - `docs/price-action-p5-design.md`：PA-P5 RVOL、Shioaji kbars backfill 與 FinMind 分 K 付費限制。
 - `docs/price-action-p6-p8-design.md`：PA-P6 結構、PA-P7 setup 狀態機、PA-P8 paper trading。
 - `docs/superpowers/specs/2026-10-02-shioaji-1-7-5-upgrade-design.md`：Shioaji 1.7.5 相容層設計。
-- `docs/superpowers/specs/2026-10-02-sector-flow-v1-design.md`：Sector Flow V1 來源、語意與 fail-closed 規則。
 - `docs/old-log-importer.md`、`docs/tidb-integration.md`、`docs/finmind-ingestion.md`、`docs/candidate-engine-v1.md`：各子系統說明。

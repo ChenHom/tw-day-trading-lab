@@ -4634,3 +4634,20 @@ TPEx 表格日期與請求日不符維持 `schema_error`（無法離線驗證 TP
 - `UrllibJsonHttpClient` 新增 `min_interval_seconds`（預設 3 秒），任兩次網路請求至少間隔這麼久；cache 命中不呼叫 client，所以不受影響。理由：TWSE 會封鎖短時間大量請求的 IP，而這台機器上 `quantitative-trading-decision-system` 的排程也打 TWSE。
 - 回補 2026-07-01～10-02：TWSE T86 / MI_INDEX 補齊 65 個交易日。**TPEx 大多回 HTTP 520**（Cloudflare 類回應），9 月只有少數日期成功；回補後單發一個請求仍為 520。判斷為大量請求觸發的暫時封鎖。不偽裝 User-Agent 繞過，待冷卻後以更長間隔重試。
 - 影響：TPEx 缺漏的日期會依既有規則讓報告 `degraded`，不會被當成休市（同日 TWSE 有資料）。每日排程必須容忍 TPEx 暫時失敗並在之後自動補抓。
+
+## 2026-10-03 (8) Sector Flow V1 搬到波段 MVP
+
+動機：使用者要在波段站台 `https://192.168.50.109/trading/` 加「族群資金」頁籤並排平日 22:00 cron 抓資料，producer 必須和站台同 repo。
+
+- 搬到 `~/services/stock/tw-day-trading`（MVP commit `3d6032e`）：
+  - `sector_flow_sources.py` -> `src/market_data/sector_flow_sources.py`
+  - `sector_flow.py` / `sector_flow_report.py` -> `src/application/reporting/`
+  - 4 個測試 -> `tests/unit/`，fixtures `fixtures/sector-flow/` -> `tests/fixtures/sector-flow/`
+  - CLI：`ingest sector-flow` -> `python3 -m app market sync-sector-flow`；`report sector-flow` -> `python3 -m app report sector-flow`
+  - design / plan 兩份 doc 搬入 MVP `docs/superpowers/`，本 repo `data-contracts.md` 的 Sector Flow 合約附在 design doc 文末。
+- 快取：`data/raw/{twse,tpex,tdcc}` 與 `data/raw/finmind/TaiwanStockInfo` 以 `cp -a` 複製到 MVP；本 repo 刪除 `twse/tpex/tdcc`，保留 `TaiwanStockInfo`（candidate_builder 仍用）。
+- 本 repo 已移除：3 個模組、4 個測試、fixtures、2 份 doc、`reports/2026-09-24_2026-10-01-sector-flow.{json,md}`、`cli.py` 的 import / cmd / parser / `_positive_int`。上文歷史條目保留不改。
+- 等價驗證：在 MVP 以 `.venv/bin/python -m app report sector-flow --start-date 2026-09-24 --end-date 2026-10-01 --cache-dir data/raw` 重產，與本 repo 搬遷前的報告 sha256 完全相同：
+  - JSON `4813eff16e65ddae0b119ffdcff75dccf89b6cac1c7ce5084e925b45e6453ea4`
+  - Markdown `53f813c43049ef132402656abefffccc67a1532134ca0aafeaa7963997e6c506`
+- 殘留風險：TPEx 2026-07-01..10-02 回補曾被 HTTP 520 擋下，搬過去的快取可能不完整，報告會因此 `degraded`；MVP 站台頁籤與 22:00 cron 尚未建立（搬遷時刻意不做）。

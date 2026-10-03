@@ -13,9 +13,6 @@ from .finmind_ingestion import (
     ingest_finmind_requests,
     read_request_file,
 )
-from .sector_flow import UnknownCategoryError, build_sector_flow_report
-from .sector_flow_report import render_sector_flow_markdown
-from .sector_flow_sources import UrllibJsonHttpClient, ingest_sector_flow
 from .backfill import run_gated_shioaji_kbars_backfill
 from .bars import (
     FiveMinuteBarAggregator,
@@ -339,35 +336,6 @@ def cmd_report_close(args: argparse.Namespace) -> None:
             ),
         )
         print(summary_output)
-
-
-def _positive_int(value: str) -> int:
-    number = int(value)
-    if number < 1:
-        raise argparse.ArgumentTypeError("must be >= 1")
-    return number
-
-
-def cmd_report_sector_flow(args: argparse.Namespace) -> None:
-    """Build deterministic JSON and Markdown sector-flow artifacts from cache."""
-    try:
-        payload = build_sector_flow_report(
-            cache_dir=Path(args.cache_dir),
-            start_date=args.start_date,
-            end_date=args.end_date,
-            detail_categories=getattr(args, "category", None) or (),
-            top=getattr(args, "top", 10),
-        )
-    except UnknownCategoryError as exc:
-        raise SystemExit(f"error: {exc}") from exc  # raised before any output file is written
-    output = Path(args.output)
-    report_output = Path(args.report_output)
-    write_json(output, payload)
-    write_text(report_output, render_sector_flow_markdown(payload))
-    print(output)
-    print(report_output)
-    if payload["status"] == "blocked":
-        raise SystemExit(1)
 
 
 def cmd_notify_telegram(args: argparse.Namespace) -> None:
@@ -3863,19 +3831,6 @@ def cmd_ingest_finmind(args: argparse.Namespace) -> None:
         connection.close()
 
 
-def cmd_ingest_sector_flow(args: argparse.Namespace) -> None:
-    """Fetch public official sector-flow sources into the raw cache."""
-    summary = ingest_sector_flow(
-        cache_dir=Path(args.cache_dir),
-        start_date=args.start_date,
-        end_date=args.end_date,
-        client=UrllibJsonHttpClient(),
-    )
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
-    if summary["failed"] > 0:
-        raise SystemExit(1)
-
-
 class _TokenMissingFinMindClient:
     def fetch_dataset(self, request):
         raise RuntimeError("FinMind token is required")
@@ -3927,15 +3882,6 @@ def build_parser() -> argparse.ArgumentParser:
     close.add_argument("--output")
     close.add_argument("--telegram-summary-output")
     close.set_defaults(func=cmd_report_close)
-    sector_flow_report = report_sub.add_parser("sector-flow")
-    sector_flow_report.add_argument("--start-date", required=True)
-    sector_flow_report.add_argument("--end-date", required=True)
-    sector_flow_report.add_argument("--cache-dir", default="data/raw")
-    sector_flow_report.add_argument("--output", required=True)
-    sector_flow_report.add_argument("--report-output", required=True)
-    sector_flow_report.add_argument("--category", action="append", help="drill into one category (repeatable); synonyms are normalized")
-    sector_flow_report.add_argument("--top", type=_positive_int, default=10, help="stocks per inflow/outflow list in the drill-down")
-    sector_flow_report.set_defaults(func=cmd_report_sector_flow)
 
     notify = subparsers.add_parser("notify")
     notify_sub = notify.add_subparsers(required=True)
@@ -4304,11 +4250,6 @@ def build_parser() -> argparse.ArgumentParser:
     finmind.add_argument("--token")
     finmind.add_argument("--ledger-sqlite", help="use a local SQLite quota ledger instead of TiDB")
     finmind.set_defaults(func=cmd_ingest_finmind)
-    sector_flow_ingest = ingest_sub.add_parser("sector-flow")
-    sector_flow_ingest.add_argument("--start-date", required=True)
-    sector_flow_ingest.add_argument("--end-date", required=True)
-    sector_flow_ingest.add_argument("--cache-dir", default="data/raw")
-    sector_flow_ingest.set_defaults(func=cmd_ingest_sector_flow)
 
     return parser
 
