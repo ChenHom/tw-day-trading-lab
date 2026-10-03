@@ -481,8 +481,14 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
   無價 placeholder、TPEx 尾端空 table、cache 重驗證、no-data / schema-error
   分型、TDCC 百分點欄位語意、金額 round，以及金額排名正負側一致性。
 - 交付 commit：`4b011ce34fb9bc289d432f581aa578b244f75f9d`（`master` /
-  `origin/master`）；JSON checksum `63168ca59ba8244dcb4d766f86ae78c309bdc2a52c770507563c5360fefd3f5f`（2026-10-03 `cache_path` 改為相對路徑後重產；原為 `4327908605fb…`），
-  Markdown checksum `e2e812a23d581ed9b7063aae6c0a051a54a924ad5a9300f829ccaee2eb1ce418`。
+  `origin/master`）。
+- 2026-10-03 對抗審查後修正並重產（詳見 `docs/development-work.md` 2026-10-03 (3)）：
+  原交付版的族群歸屬取決於分類檔列順序（台積電被歸進電子工業、不在半導體業），
+  **原版的族群排名不可再引用**。現行版本一檔股票計入全部正規化後的分類（族群互相
+  重疊、不可加總），排除 TDR，缺資料的交易日會降級。現行 JSON checksum
+  `4813eff16e65ddae0b119ffdcff75dccf89b6cac1c7ce5084e925b45e6453ea4`，Markdown checksum `f58fb740ac44663dd0985549cbb8e96dfd384a4b09e9b5921adb467663a7a0ba`。
+  歷代 JSON checksum：`4327908605fb…`（原交付）→ `63168ca59ba8…`（`cache_path` 相對化）
+  → 現行。
 - Dashboard、candidate score、scheduler 與通知整合均留待後續，不影響現有
   PA 或 Trading Day Cycle phase 狀態。
 - 後續維護：累積第二期 TDCC 週 snapshot 後才能產出大戶變化；更新 FinMind

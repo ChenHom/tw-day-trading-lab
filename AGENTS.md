@@ -92,10 +92,13 @@ If a task appears to require live execution, stop and design the gate/SOP first.
   - Network: `ingest sector-flow` (`sector_flow_sources.py`) is the only network boundary. It makes read-only GETs to TWSE T86 / MI_INDEX, TPEx and TDCC, and caches under `data/raw`.
   - Replay: `report sector-flow` (`sector_flow.py`, `sector_flow_report.py`) replays fully offline from that cache.
   - Amounts: values are estimated as `net_shares_times_close` and must never be called exact fund flows.
+  - Categories: a stock with several FinMind categories is counted in ALL of them after normalization (`CATEGORY_SYNONYMS` merges TPEx/older names; 創新板股票/創新版股票 are dropped; 其他 only when it is the sole category). Sectors overlap, so never sum across sectors. 電子工業 / 化學生技醫療 are `is_broad`. Do not go back to one category per stock: picking one made the sector depend on cache row order.
+  - Universe: four-digit common stocks only; 91xx Taiwan depositary receipts are excluded.
+  - Trading days: a date with at least one `ok` source is a trading day, and any non-`ok` source on it degrades the report. A date whose sources are all `missing` / `no_data` goes to `dates_without_data` (holiday or not fetched; no holiday calendar). A `schema_error` always degrades.
   - `source_status[*][*].cache_path` is relative to `--cache-dir`, so the JSON is byte-identical however the cache dir is spelled. Do not put absolute paths back into the report.
   - TDCC large holders: levels 12-15 need two weekly snapshots. With fewer than two, the report says `insufficient_data`.
   - TWSE no-trade dates: TWSE can return the previous trading day's data on a no-trade date. A payload whose date differs from the requested date is `no_data`.
-  - First report: `reports/2026-09-24_2026-10-01-sector-flow.{json,md}` is `degraded`, because the FinMind taxonomy snapshot is from 2026-06-03 with 7 rows unclassified and there is only one TDCC snapshot. See `docs/superpowers/specs/2026-10-02-sector-flow-v1-design.md`.
+  - First report: `reports/2026-09-24_2026-10-01-sector-flow.{json,md}` (regenerated 2026-10-03 after the review fixes; rankings in the originally delivered version are invalid) is `degraded`, because the FinMind taxonomy snapshot is from 2026-06-03 with 7 rows unclassified and there is only one TDCC snapshot. See `docs/superpowers/specs/2026-10-02-sector-flow-v1-design.md`.
 
 ## Next Development Priority
 

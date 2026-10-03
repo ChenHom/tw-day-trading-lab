@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
+from .sector_flow import CATEGORY_OVERLAP_NOTE
+
 
 def _integer(value: object) -> str:
     return f"{int(value or 0):,}"
@@ -11,6 +13,10 @@ def _amount(value: object) -> str:
     if value is None:
         return "N/A"
     return f"NT$ {float(value):,.0f}"
+
+
+def _name(row: Mapping[str, Any]) -> str:
+    return f"{row['category']}（大類）" if row.get("is_broad") else str(row["category"])
 
 
 def _ranking(
@@ -26,7 +32,7 @@ def _ranking(
     selected.sort(key=lambda row: (float(row.get(ranking_field, 0)), str(row.get("category", ""))), reverse=positive)
     lines = ["| 排名 | 族群 | 精確淨買賣股數 | 估算金額（淨股數 × 收盤價） |", "|---:|---|---:|---:|"]
     for index, row in enumerate(selected[:10], 1):
-        lines.append(f"| {index} | {row['category']} | {_integer(row.get(metric))} | {_amount(row.get(amount_metric))} |")
+        lines.append(f"| {index} | {_name(row)} | {_integer(row.get(metric))} | {_amount(row.get(amount_metric))} |")
     if not selected:
         lines.append("| - | 無 | 0 | NT$ 0 |")
     return lines
@@ -48,7 +54,11 @@ def render_sector_flow_markdown(payload: Mapping[str, Any]) -> str:
         "",
         "> 股數是官方資料的精確淨買賣股數；金額是估算金額（淨股數 × 收盤價），不是法人實際成交現金流。",
         "",
+        f"> {payload.get('category_overlap_note') or CATEGORY_OVERLAP_NOTE}",
+        "",
     ]
+    if "dates_without_data" in payload:
+        lines.extend([f"- 無資料日期（休市或未抓取，無法區分）：{', '.join(payload['dates_without_data']) or '無'}", ""])
     period_rows = payload.get("period_summary", [])
     ranking_method = str(payload.get("ranking_method", "net_shares"))
     metrics = [
@@ -69,7 +79,7 @@ def render_sector_flow_markdown(payload: Mapping[str, Any]) -> str:
         lines.extend([f"### {day['trading_date']}", "", "| 排名 | 族群 | 法人淨股數 | 外資 | 投信 | 自營商 | 估算法人金額 |", "|---:|---|---:|---:|---:|---:|---:|"])
         for index, row in enumerate(day.get("categories", [])[:10], 1):
             lines.append(
-                f"| {index} | {row['category']} | {_integer(row['institutional_net_shares'])} | "
+                f"| {index} | {_name(row)} | {_integer(row['institutional_net_shares'])} | "
                 f"{_integer(row['foreign_net_shares'])} | {_integer(row['investment_trust_net_shares'])} | "
                 f"{_integer(row['dealer_net_shares'])} | {_amount(row['estimated_institutional_net_amount_twd'])} |"
             )
@@ -80,7 +90,7 @@ def render_sector_flow_markdown(payload: Mapping[str, Any]) -> str:
         contributors = list(category.get("top_positive_contributors", [])) + list(category.get("top_negative_contributors", []))
         if not contributors:
             continue
-        lines.extend([f"### {category['category']}", "", "| 市場 | 股票 | 名稱 | 法人淨股數 | 估算金額 |", "|---|---|---|---:|---:|"])
+        lines.extend([f"### {_name(category)}", "", "| 市場 | 股票 | 名稱 | 法人淨股數 | 估算金額 |", "|---|---|---|---:|---:|"])
         for row in contributors:
             lines.append(f"| {row['market']} | {row['symbol']} | {row['name']} | {_integer(row['institutional_net_shares'])} | {_amount(row.get('estimated_net_amount_twd'))} |")
         lines.append("")
@@ -98,11 +108,13 @@ def render_sector_flow_markdown(payload: Mapping[str, Any]) -> str:
             "|---|---:|---:|---:|",
         ])
         for row in large_holder.get("categories", []):
-            lines.append(f"| {row['category']} | {_integer(row['large_holder_share_delta'])} | {float(row['sum_stock_percent_point_delta']):.4f} 個百分點加總 | {_amount(row['estimated_change_twd'])} |")
+            lines.append(f"| {_name(row)} | {_integer(row['large_holder_share_delta'])} | {float(row['sum_stock_percent_point_delta']):.4f} 個百分點加總 | {_amount(row['estimated_change_twd'])} |")
     lines.extend(["", "## 資料品質與限制", ""])
     warnings = payload.get("warnings", [])
     if warnings:
         lines.extend(f"- {warning}" for warning in warnings)
+    elif payload.get("status") == "degraded":
+        lines.append("- 資料狀態為 `degraded`，但 payload 未附原因；請檢查 source_status。")
     else:
         lines.append("- 無額外警告。")
     lines.extend([

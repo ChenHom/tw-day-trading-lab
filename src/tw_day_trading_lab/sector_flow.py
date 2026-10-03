@@ -21,13 +21,42 @@ from .sector_flow_sources import (
 )
 
 
+# Maps TPEx / older category names to one canonical name so one sector is one row.
+CATEGORY_SYNONYMS = {
+    "其他電子類": "其他電子業",
+    "居家生活類": "居家生活",
+    "數位雲端類": "數位雲端",
+    "綠能環保類": "綠能環保",
+    "運動休閒類": "運動休閒",
+    "金融業": "金融保險",
+    "農業科技業": "農業科技",
+    "觀光事業": "觀光餐旅",
+}
+BOARD_LABELS = frozenset({"創新板股票", "創新版股票"})  # board labels, never categories
+CATCH_ALL_CATEGORY = "其他"
+UNCLASSIFIED = "未分類"
+BROAD_CATEGORIES = frozenset({"電子工業", "化學生技醫療"})
+CATEGORY_OVERLAP_NOTE = "一檔股票可能同時計入多個族群（例如大類「電子工業」與細類「半導體業」），族群之間互有重疊，不可加總。"
+
+
 @dataclass(frozen=True)
 class TaxonomyEntry:
     symbol: str
     name: str
-    category: str
+    categories: tuple[str, ...]
     market: str
     snapshot_date: str
+
+
+def normalize_categories(raw: Sequence[str]) -> tuple[str, ...]:
+    names = {CATEGORY_SYNONYMS.get(name, name) for name in (item.strip() for item in raw) if name and name not in BOARD_LABELS}
+    if len(names) > 1:
+        names.discard(CATCH_ALL_CATEGORY)
+    return tuple(sorted(names))
+
+
+def _categories_of(metadata: TaxonomyEntry | None) -> tuple[str, ...]:
+    return metadata.categories if metadata and metadata.categories else (UNCLASSIFIED,)
 
 
 def _iso_date(value: str) -> date:
@@ -69,7 +98,7 @@ def load_taxonomy(cache_dir: Path, *, end_date: str) -> dict[str, TaxonomyEntry]
     if not eligible:
         return {}
     snapshot_date, snapshot_dir = max(eligible, key=lambda item: item[0])
-    result: dict[str, TaxonomyEntry] = {}
+    raw: dict[str, dict[str, Any]] = {}
     for path in sorted(snapshot_dir.glob("*.jsonl")):
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
@@ -78,14 +107,12 @@ def load_taxonomy(cache_dir: Path, *, end_date: str) -> dict[str, TaxonomyEntry]
             symbol = str(row.get("stock_id", "")).strip()
             if not symbol:
                 continue
-            result[symbol] = TaxonomyEntry(
-                symbol=symbol,
-                name=str(row.get("stock_name") or row.get("name") or symbol).strip(),
-                category=str(row.get("industry_category") or "未分類").strip(),
-                market=str(row.get("type") or "").strip().lower(),
-                snapshot_date=snapshot_date,
-            )
-    return result
+            item = raw.setdefault(symbol, {"name": str(row.get("stock_name") or row.get("name") or symbol).strip(), "market": str(row.get("type") or "").strip().lower(), "categories": []})
+            item["categories"].append(str(row.get("industry_category") or ""))
+    return {
+        symbol: TaxonomyEntry(symbol=symbol, name=item["name"], categories=normalize_categories(item["categories"]), market=item["market"], snapshot_date=snapshot_date)
+        for symbol, item in raw.items()
+    }
 
 
 def _source_path(cache_dir: Path, provider: str, dataset: str, trading_date: str) -> Path:
@@ -147,8 +174,12 @@ def _finalize_categories(categories: Mapping[str, dict[str, Any]], ranking_metho
         for contributor in contributors:
             if contributor["estimated_net_amount_twd"] is not None:
                 contributor["estimated_net_amount_twd"] = round(float(contributor["estimated_net_amount_twd"]), 2)
-        positives = sorted((row for row in contributors if row["institutional_net_shares"] > 0), key=lambda row: (row["institutional_net_shares"], row["symbol"]), reverse=True)
-        negatives = sorted((row for row in contributors if row["institutional_net_shares"] < 0), key=lambda row: (row["institutional_net_shares"], row["symbol"]))
+        # Contributors are selected and ordered by the same metric as the category ranking.
+        field = "estimated_net_amount_twd" if ranking_method == "estimated_amount" else "institutional_net_shares"
+        measured = [row for row in contributors if row[field] is not None]
+        positives = sorted((row for row in measured if row[field] > 0), key=lambda row: (row[field], row["symbol"]), reverse=True)
+        negatives = sorted((row for row in measured if row[field] < 0), key=lambda row: (row[field], row["symbol"]))
+        item["is_broad"] = item["category"] in BROAD_CATEGORIES
         item["top_positive_contributors"] = positives[:5]
         item["top_negative_contributors"] = negatives[:5]
         result.append(item)
@@ -165,28 +196,27 @@ def _aggregate_day(
     categories: dict[str, dict[str, Any]] = {}
     for row in flows:
         metadata = taxonomy.get(row.symbol)
-        category = metadata.category if metadata else "未分類"
-        item = categories.setdefault(category, _blank_category(category))
-        for field in ("foreign_net_shares", "investment_trust_net_shares", "dealer_net_shares", "institutional_net_shares"):
-            item[field] += getattr(row, field)
         close = closes.get((row.market, row.symbol))
-        if close is None:
-            item["missing_price_count"] += 1
-            amount = None
-        else:
-            item["covered_symbol_count"] += 1
-            item["estimated_foreign_net_amount_twd"] += row.foreign_net_shares * close
-            item["estimated_investment_trust_net_amount_twd"] += row.investment_trust_net_shares * close
-            item["estimated_dealer_net_amount_twd"] += row.dealer_net_shares * close
-            item["estimated_institutional_net_amount_twd"] += row.institutional_net_shares * close
-            amount = row.institutional_net_shares * close
-        item["_contributors"].append({
-            "market": row.market,
-            "symbol": row.symbol,
-            "name": metadata.name if metadata else row.name,
-            "institutional_net_shares": row.institutional_net_shares,
-            "estimated_net_amount_twd": amount,
-        })
+        amount = None if close is None else row.institutional_net_shares * close
+        for category in _categories_of(metadata):
+            item = categories.setdefault(category, _blank_category(category))
+            for field in ("foreign_net_shares", "investment_trust_net_shares", "dealer_net_shares", "institutional_net_shares"):
+                item[field] += getattr(row, field)
+            if close is None:
+                item["missing_price_count"] += 1
+            else:
+                item["covered_symbol_count"] += 1
+                item["estimated_foreign_net_amount_twd"] += row.foreign_net_shares * close
+                item["estimated_investment_trust_net_amount_twd"] += row.investment_trust_net_shares * close
+                item["estimated_dealer_net_amount_twd"] += row.dealer_net_shares * close
+                item["estimated_institutional_net_amount_twd"] += amount
+            item["_contributors"].append({
+                "market": row.market,
+                "symbol": row.symbol,
+                "name": metadata.name if metadata else row.name,
+                "institutional_net_shares": row.institutional_net_shares,
+                "estimated_net_amount_twd": amount,
+            })
     return _finalize_categories(categories, ranking_method)
 
 
@@ -197,39 +227,44 @@ def _aggregate_period(
 ) -> list[dict[str, Any]]:
     categories: dict[str, dict[str, Any]] = {}
     contributors: dict[tuple[str, str, str], dict[str, Any]] = {}
+    covered: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    missing: dict[str, set[tuple[str, str]]] = defaultdict(set)
     for _trading_date, flows, closes in day_inputs:
         for row in flows:
             metadata = taxonomy.get(row.symbol)
-            category = metadata.category if metadata else "未分類"
-            item = categories.setdefault(category, _blank_category(category))
-            for field in ("foreign_net_shares", "investment_trust_net_shares", "dealer_net_shares", "institutional_net_shares"):
-                item[field] += getattr(row, field)
             close = closes.get((row.market, row.symbol))
-            if close is None:
-                item["missing_price_count"] += 1
-                amount = None
-            else:
-                item["covered_symbol_count"] += 1
-                item["estimated_foreign_net_amount_twd"] += row.foreign_net_shares * close
-                item["estimated_investment_trust_net_amount_twd"] += row.investment_trust_net_shares * close
-                item["estimated_dealer_net_amount_twd"] += row.dealer_net_shares * close
-                item["estimated_institutional_net_amount_twd"] += row.institutional_net_shares * close
-                amount = row.institutional_net_shares * close
-            key = (category, row.market, row.symbol)
-            contributor = contributors.setdefault(key, {
-                "market": row.market,
-                "symbol": row.symbol,
-                "name": metadata.name if metadata else row.name,
-                "institutional_net_shares": 0,
-                "estimated_net_amount_twd": 0.0 if amount is not None else None,
-            })
-            contributor["institutional_net_shares"] += row.institutional_net_shares
-            if amount is None:
-                contributor["estimated_net_amount_twd"] = None
-            elif contributor["estimated_net_amount_twd"] is not None:
-                contributor["estimated_net_amount_twd"] += amount
+            amount = None if close is None else row.institutional_net_shares * close
+            for category in _categories_of(metadata):
+                item = categories.setdefault(category, _blank_category(category))
+                for field in ("foreign_net_shares", "investment_trust_net_shares", "dealer_net_shares", "institutional_net_shares"):
+                    item[field] += getattr(row, field)
+                # Period counts are distinct stocks, not stock-days.
+                if close is None:
+                    missing[category].add((row.market, row.symbol))
+                else:
+                    covered[category].add((row.market, row.symbol))
+                    item["estimated_foreign_net_amount_twd"] += row.foreign_net_shares * close
+                    item["estimated_investment_trust_net_amount_twd"] += row.investment_trust_net_shares * close
+                    item["estimated_dealer_net_amount_twd"] += row.dealer_net_shares * close
+                    item["estimated_institutional_net_amount_twd"] += amount
+                key = (category, row.market, row.symbol)
+                contributor = contributors.setdefault(key, {
+                    "market": row.market,
+                    "symbol": row.symbol,
+                    "name": metadata.name if metadata else row.name,
+                    "institutional_net_shares": 0,
+                    "estimated_net_amount_twd": 0.0 if amount is not None else None,
+                })
+                contributor["institutional_net_shares"] += row.institutional_net_shares
+                if amount is None:
+                    contributor["estimated_net_amount_twd"] = None
+                elif contributor["estimated_net_amount_twd"] is not None:
+                    contributor["estimated_net_amount_twd"] += amount
     for (category, _market, _symbol), contributor in contributors.items():
         categories[category]["_contributors"].append(contributor)
+    for category, item in categories.items():
+        item["covered_symbol_count"] = len(covered[category])
+        item["missing_price_count"] = len(missing[category])
     return _finalize_categories(categories, ranking_method)
 
 
@@ -274,16 +309,16 @@ def build_large_holder_proxy(
     new = by_symbol(holdings_by_date[latest])
     categories: dict[str, dict[str, Any]] = {}
     for symbol in sorted(set(old) | set(new)):
-        category = taxonomy[symbol].category if symbol in taxonomy else "未分類"
-        item = categories.setdefault(category, {"category": category, "large_holder_share_delta": 0, "sum_stock_percent_point_delta": 0.0, "estimated_change_twd": 0.0, "missing_price_count": 0})
         share_delta = new.get(symbol, (0, 0.0))[0] - old.get(symbol, (0, 0.0))[0]
         percent_delta = new.get(symbol, (0, 0.0))[1] - old.get(symbol, (0, 0.0))[1]
-        item["large_holder_share_delta"] += share_delta
-        item["sum_stock_percent_point_delta"] += percent_delta
-        if symbol in closes:
-            item["estimated_change_twd"] += share_delta * closes[symbol]
-        else:
-            item["missing_price_count"] += 1
+        for category in _categories_of(taxonomy.get(symbol)):
+            item = categories.setdefault(category, {"category": category, "is_broad": category in BROAD_CATEGORIES, "large_holder_share_delta": 0, "sum_stock_percent_point_delta": 0.0, "estimated_change_twd": 0.0, "missing_price_count": 0})
+            item["large_holder_share_delta"] += share_delta
+            item["sum_stock_percent_point_delta"] += percent_delta
+            if symbol in closes:
+                item["estimated_change_twd"] += share_delta * closes[symbol]
+            else:
+                item["missing_price_count"] += 1
     for item in categories.values():
         item["sum_stock_percent_point_delta"] = round(float(item["sum_stock_percent_point_delta"]), 6)
         item["estimated_change_twd"] = round(float(item["estimated_change_twd"]), 2)
@@ -307,6 +342,8 @@ def build_sector_flow_report(*, cache_dir: Path, start_date: str, end_date: str)
     total_priced_rows = 0
     mapped_rows = 0
     incomplete_source = False
+    incomplete_notes: list[str] = []
+    dates_without_data: list[str] = []
 
     for trading_date in requested_dates:
         source_status[trading_date] = {}
@@ -319,6 +356,16 @@ def build_sector_flow_report(*, cache_dir: Path, start_date: str, end_date: str)
         tpex_close, status = _load_source(cache_dir, "tpex", "daily_close", parse_tpex_closes, trading_date)
         source_status[trading_date]["tpex_close"] = status
         flows = list(twse_flow) + list(tpex_flow)
+        states = source_status[trading_date]
+        if all(states[key]["state"] in ("missing", "no_data") for key in states):
+            # No holiday calendar: a day with no usable source is "no data", not a failure.
+            # A schema_error is never a holiday, so it falls through and degrades the report.
+            dates_without_data.append(trading_date)
+            continue
+        bad = [f"{key}={states[key]['state']}" for key in states if states[key]["state"] != "ok"]
+        if bad:
+            incomplete_source = True
+            incomplete_notes.append(f"incomplete sources on {trading_date}: {', '.join(bad)}")
         if not flows:
             continue
         closes = {(row.market, row.symbol): row.close for row in list(twse_close) + list(tpex_close)}
@@ -326,10 +373,7 @@ def build_sector_flow_report(*, cache_dir: Path, start_date: str, end_date: str)
             all_closes_by_symbol[row.symbol] = row.close
         total_flow_rows += len(flows)
         total_priced_rows += sum(1 for row in flows if (row.market, row.symbol) in closes)
-        mapped_rows += sum(1 for row in flows if row.symbol in taxonomy)
-        states = source_status[trading_date]
-        if any(states[key]["state"] != "ok" for key in states):
-            incomplete_source = True
+        mapped_rows += sum(1 for row in flows if row.symbol in taxonomy and taxonomy[row.symbol].categories)
         day_inputs.append((trading_date, flows, closes))
 
     price_coverage = total_priced_rows / total_flow_rows if total_flow_rows else 0.0
@@ -350,7 +394,7 @@ def build_sector_flow_report(*, cache_dir: Path, start_date: str, end_date: str)
         status = "degraded"
     else:
         status = "ok"
-    warnings = []
+    warnings = list(incomplete_notes)
     if price_coverage < 0.9 and total_flow_rows:
         warnings.append("price coverage below 90%; rankings use exact net shares")
     if taxonomy_coverage < 1.0 and total_flow_rows:
@@ -362,12 +406,15 @@ def build_sector_flow_report(*, cache_dir: Path, start_date: str, end_date: str)
         "observed_trading_dates": [item[0] for item in day_inputs],
         "status": status,
         "ranking_method": ranking_method,
+        "dates_without_data": sorted(dates_without_data),
+        "category_overlap": True,
+        "category_overlap_note": CATEGORY_OVERLAP_NOTE,
         "source_status": source_status,
         "taxonomy": {"snapshot_date": next(iter(taxonomy.values())).snapshot_date if taxonomy else None, "mapped_rows": mapped_rows, "total_rows": total_flow_rows, "coverage": taxonomy_coverage},
         "price_coverage": price_coverage,
         "daily": daily,
         "period_summary": _aggregate_period(day_inputs, taxonomy, ranking_method),
         "large_holder": build_large_holder_proxy(holdings_by_date=holdings, taxonomy=taxonomy, closes=all_closes_by_symbol, end_date=end_date),
-        "exclusions": {"symbol_rule": "^[1-9][0-9]{3}$"},
+        "exclusions": {"symbol_rule": "^[1-9][0-9]{3}$; excludes ^91[0-9]{2}$ (Taiwan depositary receipts)"},
         "warnings": warnings,
     }

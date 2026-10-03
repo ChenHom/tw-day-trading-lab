@@ -32,6 +32,12 @@ class SectorFlowSourceParserTest(unittest.TestCase):
         self.assertEqual([row.symbol for row in rows], ["2330"])
         self.assertEqual(rows[0].institutional_net_shares, 1_250_000)
 
+    def test_taiwan_depositary_receipts_are_excluded(self):
+        payload = load_fixture("twse-t86.json")
+        payload["data"].append(["9103"] + payload["data"][0][1:])
+        rows = parse_twse_institutional(payload, "2026-09-24")
+        self.assertEqual([row.symbol for row in rows], ["2330"])
+
     def test_tpex_group_layout_parses_components_and_filters_non_common(self):
         rows = parse_tpex_institutional(load_fixture("tpex-institutional.json"), "2026-09-24")
         self.assertEqual([row.symbol for row in rows], ["6488"])

@@ -81,6 +81,20 @@ class SectorFlowReportTest(unittest.TestCase):
         self.assertIn("## 每日族群排行", markdown)
         self.assertIn("台積電", markdown)
 
+    def test_report_states_overlap_marks_broad_and_lists_dates_without_data(self):
+        payload = sample_payload()
+        payload["period_summary"][0]["is_broad"] = True
+        payload["dates_without_data"] = ["2026-09-26"]
+        markdown = render_sector_flow_markdown(payload)
+        self.assertIn("一檔股票可能同時計入多個族群（例如大類「電子工業」與細類「半導體業」），族群之間互有重疊，不可加總。", markdown)
+        self.assertIn("半導體業（大類）", markdown)
+        self.assertIn("無資料日期（休市或未抓取，無法區分）：2026-09-26", markdown)
+
+    def test_degraded_report_never_prints_no_extra_warning(self):
+        payload = sample_payload()
+        payload["status"] = "degraded"
+        self.assertNotIn("無額外警告", render_sector_flow_markdown(payload))
+
     def test_same_payload_renders_identically(self):
         payload = sample_payload()
         self.assertEqual(render_sector_flow_markdown(payload), render_sector_flow_markdown(payload))

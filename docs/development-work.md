@@ -4547,3 +4547,49 @@ Telegram 傳送或 GitHub report publication side effect。
 - 與原交付 JSON（`4327908605fb…`）逐欄比對，除 `cache_path` 外完全相同；新檔不再含本機絕對路徑。
 
 範圍外、未改：`ingest sector-flow` 印到 stdout 的 summary 仍是 `str(request.cache_path)`，那是操作輸出，不寫入報告也不進 commit。
+
+## 2026-10-03 (3) Sector Flow 對抗審查與修正
+
+### 審查
+
+派一個不帶實作脈絡的 agent 對 Sector Flow V1 做對抗審查（只讀、不連網），結論由主對話逐條重現後才採信。
+
+成立的部分：T86 5,337 列、TPEx 3,639 列的欄位對應皆與官方三大法人合計欄相符；獨立重算的股數完全一致、金額到分；單位、收盤價、placeholder、非交易日舊日期判定、TDCC 級距 12–15 都正確。
+
+**嚴重問題：族群歸屬取決於 cache 列順序。** FinMind `TaiwanStockInfo` 有 858 檔普通股帶多個分類（例如 2330 同時是 半導體業 與 電子工業），`load_taxonomy` 只留最後一列。原交付版因此把 2330 / 2454 / 3711 歸進電子工業、半導體業裡沒有台積電；TWSE 與 TPEx 對同一族群用不同名稱，又讓一個族群拆成兩列。**原交付版的族群排名不可再引用。**
+
+另外重現成立的：整天法人資料缺漏不會降級（`if not flows: continue` 在 incomplete 檢查之前）；金額模式下主要貢獻股仍以股數選排；期間 `covered_symbol_count` 是股票日不是檔數（塑膠工業 93 對約 25 檔）；四碼 TDR（91xx）未排除。
+
+### 決策（使用者決定）
+
+一檔股票有多個分類時**全部計入**，搭配三條防護：同義名稱合併、板別標籤與 catch-all 不當族群、報告明示族群重疊不可加總並標出大類。這比「只取細類」更貼近資料：多分類中有同義名、板別、真實的跨產業（建材營造＋紡織纖維、汽車工業＋電機機械），取細類對後者沒有定義。
+
+### 實作
+
+- `sector_flow.py`：`TaxonomyEntry.categories`、`CATEGORY_SYNONYMS`（8 組，見 `docs/data-contracts.md`）、`BOARD_LABELS`、`其他` 僅在唯一分類時保留、`BROAD_CATEGORIES = {電子工業, 化學生技醫療}` → `is_broad`；日、期間、大戶三處都展開到全部分類；主要貢獻股依排名方式選排；期間檔數改為不重複股票；新增 `category_overlap`、`dates_without_data`。
+- 交易日判定：任一來源 `ok` 即交易日，其餘來源非 `ok` 即降級並寫出日期；全部 `missing` / `no_data` 的日期列入 `dates_without_data`、不降級（不建假日曆）。驗收時補上一條：**`schema_error` 一律降級**，原規格會把「四個來源都損壞」誤當成無資料日。
+- `sector_flow_sources.py`：`COMMON_STOCK_RE` 排除 `91xx`。2026-06-03 snapshot 的 11 檔存託憑證全是 91xx，91xx 也沒有其他分類。
+- `sector_flow_report.py`：開頭加重疊說明、大類標「（大類）」、列出無資料日期；degraded 報告不再印「無額外警告」。
+
+每一項都先寫測試並確認在修正前失敗。期間檔數的測試由主對話另外拿 HEAD 版原始碼重跑，確認舊程式得到 `4 != 2`。全套 430 tests 在系統 python（shioaji 1.3.2）與 `.venv`（1.7.5）皆通過。
+
+### 重產與獨立對帳
+
+離線重產 2026-09-24～10-01 報告，另寫腳本以官方 parser + 獨立的分類正規化重算全部 38 個族群，股數與金額零差異，報告中不再出現已合併或排除的名稱。
+
+| 族群 | 原交付版 | 修正後 |
+|---|---|---|
+| 半導體業 | -122.32 億 | **-318.07 億**（含台積電、聯發科、日月光） |
+| 電子工業（大類） | -167.11 億 | -158.57 億 |
+| 電子零組件業 | -2.73 億（淨流出） | **+134.49 億（流入第 1）** |
+
+族群數由 45 降為 38（同義合併、TDR 與板別移除）。現行 checksum：JSON `4813eff16e65ddae0b119ffdcff75dccf89b6cac1c7ce5084e925b45e6453ea4`、Markdown `f58fb740ac44663dd0985549cbb8e96dfd384a4b09e9b5921adb467663a7a0ba`。
+
+### 未修（審查成立但不在本次範圍）
+
+- TDCC 大戶段：涵蓋未上市櫃股票、兩期 snapshot 的間隔不受報告期間約束、期間內新上市股票整筆算成變化。目前大戶段為 `insufficient_data`，尚未影響報告。
+- TDCC 損壞 cache 不會被 ingest 偵測與重抓。
+- 未比對 T86 `total` / TPEx `totalCount`，被截斷的 payload 仍判 `ok`。
+- cache 為 JSON list 或非 UTF-8 時直接例外中止。
+- CLI 在 blocked / degraded 仍 exit 0。
+- 全部 `missing` 的日期仍無法區分休市與整天沒抓到；ingest 未寫 no-data 標記。

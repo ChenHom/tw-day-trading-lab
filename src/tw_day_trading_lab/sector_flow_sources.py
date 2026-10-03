@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
 
-COMMON_STOCK_RE = re.compile(r"^[1-9][0-9]{3}$")
+# Four-digit common stocks; 91xx are Taiwan depositary receipts (TDRs) and are excluded.
+COMMON_STOCK_RE = re.compile(r"^(?!91)[1-9][0-9]{3}$")
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 

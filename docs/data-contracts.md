@@ -906,14 +906,16 @@ data/raw/tdcc/holding_distribution/{as_of_date}/market.json
 |---|---|
 | `requested_period` | 使用者要求的 ISO 日期範圍，最多 31 個 calendar days |
 | `observed_trading_dates` | 至少有合法法人 row 的日期，不用假資料補休市日 |
-| `status` | `ok` / `degraded` / `blocked` |
+| `dates_without_data` | 四個來源全部是 `missing` 或 `no_data` 的日期（已排序）；休市或未抓取無法區分，不使用假日曆，也不使報告降級。任一來源 `schema_error` 的日期不會列在這裡 |
+| `category_overlap` / `category_overlap_note` | 固定 `true` 與說明：一檔股票可能同時計入多個族群，族群之間互有重疊，不可加總 |
+| `status` | `ok` / `degraded` / `blocked`；每個 `degraded` 必附至少一則 `warnings` 說明原因 |
 | `source_status` | 每個日期與 provider 的 cache path（相對於 `--cache-dir`，與其寫法無關）、狀態、row count |
 | `taxonomy` | `TaiwanStockInfo` raw-cache snapshot date 與 mapping coverage |
 | `daily` | 每日族群的法人、外資、投信、自營商淨股數與估算金額 |
-| `period_summary` | 僅加總 observed days 的區間結果與個股貢獻 |
+| `period_summary` | 僅加總 observed days 的區間結果與個股貢獻；每列有 `is_broad`；`covered_symbol_count` / `missing_price_count` 為不重複股票數（`missing_price_count` = 至少一個觀察日缺收盤價的股票數），每日列仍為當日數 |
 | `large_holder` | TDCC 週 snapshot levels 12-15 的 `holding_change_proxy` |
 
-只有符合 `^[1-9][0-9]{3}$` 的普通股樣式代號進入 V1。分類採不晚於
+只有符合 `^[1-9][0-9]{3}$` 且不符合 `^91[0-9]{2}$` 的代號進入 V1；91xx 為台灣存託憑證（TDR），一律排除。分類採不晚於
 報告截止日的最新 `TaiwanStockInfo/{snapshot_date}` 目錄；row-level `date`
 不是 metadata 版本。精確量為 shares；金額欄位固定標示
 `amount_method=net_shares_times_close`。任一交易日價格 coverage 低於 90%
@@ -922,6 +924,27 @@ data/raw/tdcc/holding_distribution/{as_of_date}/market.json
 TDCC 必須有兩個不晚於截止日的 snapshot 才計算差值；不足時回
 `status=insufficient_data` 且不產生數值。此欄是持股變化代理，不是下單流
 或精確淨流入。
+
+### Sector Flow V1 分類與降級規則
+
+- 多分類：`TaiwanStockInfo` 同一股票可有多列分類，該股票計入其全部（正規化後）分類，
+  股數與估算金額加到每一個分類。因此族群之間互有重疊，**不可跨族群加總**。
+  `TaxonomyEntry.categories` 為排序、去重後的 tuple，與 cache 列順序無關。
+- 名稱正規化（TPEx／舊名 → 標準名）：其他電子類→其他電子業、居家生活類→居家生活、
+  數位雲端類→數位雲端、綠能環保類→綠能環保、運動休閒類→運動休閒、金融業→金融保險、
+  農業科技業→農業科技、觀光事業→觀光餐旅。
+- 非產業標籤：`創新板股票`／`創新版股票` 是板別，一律捨棄；`其他` 為 catch-all，
+  只在該股票沒有其他分類時保留。全部被捨棄者歸 `未分類`。`taxonomy.coverage`
+  = 至少有一個分類的 flow row 比例。
+- `is_broad`：`電子工業`、`化學生技醫療` 為大類（`BROAD_CATEGORIES`），與細類放在同一排行，
+  Markdown 於名稱加註「（大類）」。
+- 交易日判定：四個來源（twse／tpex 法人、twse／tpex 收盤）至少一個 `ok` 即視為交易日；
+  該日任一來源非 `ok`（即使沒有 flow row）→ `incomplete_source`、報告 `degraded`，並加
+  warning `incomplete sources on {date}: {source}={state}, ...`。四個來源皆為 `missing` 或
+  `no_data` 的日期只列入 `dates_without_data`，不降級；只要有一個來源 `schema_error`，
+  即使沒有任何 `ok` 也算 incomplete 並降級（格式錯誤不可能是休市）。
+- 個股貢獻排序：`ranking_method=estimated_amount` 時以 `estimated_net_amount_twd`
+  選正負並排序（無收盤價者不入榜）；`net_shares` 時以 `institutional_net_shares`。同值依代號。
 
 ## Old Log Import Output
 
