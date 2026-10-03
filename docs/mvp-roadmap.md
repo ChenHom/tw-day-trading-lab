@@ -486,8 +486,8 @@ PA-Pn_LIVE_VALIDATED    真實行情跑過且資料無 loss
   原交付版的族群歸屬取決於分類檔列順序（台積電被歸進電子工業、不在半導體業），
   **原版的族群排名不可再引用**。現行版本一檔股票計入全部正規化後的分類（族群互相
   重疊、不可加總），排除 TDR，缺資料的交易日會降級。現行 JSON checksum
-  `4813eff16e65ddae0b119ffdcff75dccf89b6cac1c7ce5084e925b45e6453ea4`，Markdown checksum `75e8ac1859d904bbab06fe5acf6199ec4ef8eb8164c16157c69b2f3fae06445f`
-  （2026-10-03 (4) 補金額排名說明與每日流出表；JSON 未變）。
+  `4813eff16e65ddae0b119ffdcff75dccf89b6cac1c7ce5084e925b45e6453ea4`，Markdown checksum `53f813c43049ef132402656abefffccc67a1532134ca0aafeaa7963997e6c506`
+  （2026-10-03 (6) 無資料日標示改為「休市日」；JSON 未變）。
   歷代 JSON checksum：`4327908605fb…`（原交付）→ `63168ca59ba8…`（`cache_path` 相對化）
   → 現行。
 - Dashboard、candidate score、scheduler 與通知整合均留待後續，不影響現有

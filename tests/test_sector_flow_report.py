@@ -124,7 +124,7 @@ class SectorFlowReportTest(unittest.TestCase):
         markdown = render_sector_flow_markdown(payload)
         self.assertIn("一檔股票可能同時計入多個族群（例如大類「電子工業」與細類「半導體業」），族群之間互有重疊，不可加總。", markdown)
         self.assertIn("半導體業（大類）", markdown)
-        self.assertIn("無資料日期（休市或未抓取，無法區分）：2026-09-26", markdown)
+        self.assertIn("休市日（四個來源皆無資料，視為休市）：2026-09-26", markdown)
 
     def test_degraded_report_never_prints_no_extra_warning(self):
         payload = sample_payload()

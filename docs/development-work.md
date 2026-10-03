@@ -4605,7 +4605,7 @@ TPEx 表格日期與請求日不符維持 `schema_error`（無法離線驗證 TP
 
 驗證：全套 450 tests 通過（系統 python 與 `.venv`）。重產報告 JSON 與修正前 byte-identical（股數、金額全未變動），Markdown 新 checksum `75e8ac1859d904bbab06fe5acf6199ec4ef8eb8164c16157c69b2f3fae06445f`。
 
-剩餘：全部 `missing` 的日期仍無法區分休市與整天沒抓到（ingest 未寫 no-data 標記）。
+剩餘：全部 `missing` 的日期仍無法區分休市與整天沒抓到（ingest 未寫 no-data 標記）。→ 2026-10-03 (6) 由使用者決定一律視為休市。
 
 ## 2026-10-03 (5) Sector Flow 族群細看
 
@@ -4620,3 +4620,11 @@ TPEx 表格日期與請求日不符維持 `schema_error`（無法離線驗證 TP
 驗證：全套 470 tests 通過（系統 python 與 `.venv`）；不帶 `--category` 重產的報告與 commit 版 byte-identical。真實資料跑 `--category 電子工業 --category 半導體業 --top 10`，另寫腳本由官方 parser 獨立重算：兩族群成員數（460 / 209）、流入與流出前 10 名順序、`share_of_side_pct`、電子工業→半導體業子類小計（98 檔、NT$ -23,328,481,286.55）全部一致。
 
 本期（2026-09-24～10-01）半導體業流出前三：聯發科 -261.8 億（佔流出 30.1%）、台積電 -61.5 億、京元電子 -57.2 億；流入前三：景碩 +139.6 億、穩懋 +92.4 億、華邦電 +81.3 億。數字為淨股數 × 收盤價的估算，不是實際成交金額。
+
+## 2026-10-03 (6) 四個來源皆無資料的日期視為休市
+
+使用者決定：四個來源（TWSE／TPEx 法人、TWSE／TPEx 收盤）全部是 `missing` 或 `no_data` 的日期，一律認定為休市。行為本來就是如此（列入 `dates_without_data`、不降級），本次只把 Markdown 標示由「無資料日期（休市或未抓取，無法區分）」改為「休市日（四個來源皆無資料，視為休市）」，並在 `docs/data-contracts.md` 與 AGENTS.md 寫明這是規則。JSON 欄位名稱維持 `dates_without_data`（描述證據，不改契約）。
+
+已知風險與緩解：抓取失敗不會被誤判為休市，因為 `ingest sector-flow` 有失敗來源時 exit 1；只有「某日完全沒跑 ingest」會被當成休市。
+
+驗證：全套 470 tests 通過；重產報告 JSON 不變，Markdown 只差這一行，新 checksum `53f813c43049ef132402656abefffccc67a1532134ca0aafeaa7963997e6c506`。

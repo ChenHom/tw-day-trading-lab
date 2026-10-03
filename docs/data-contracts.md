@@ -906,7 +906,7 @@ data/raw/tdcc/holding_distribution/{as_of_date}/market.json
 |---|---|
 | `requested_period` | 使用者要求的 ISO 日期範圍，最多 31 個 calendar days |
 | `observed_trading_dates` | 至少有合法法人 row 的日期，不用假資料補休市日 |
-| `dates_without_data` | 四個來源全部是 `missing` 或 `no_data` 的日期（已排序）；休市或未抓取無法區分，不使用假日曆，也不使報告降級。任一來源 `schema_error` 的日期不會列在這裡 |
+| `dates_without_data` | 四個來源全部是 `missing` 或 `no_data` 的日期（已排序），**一律視為休市**（使用者決定，2026-10-03）；Markdown 標示為「休市日」。不使用假日曆，也不使報告降級。任一來源 `schema_error` 的日期不會列在這裡 |
 | `category_overlap` / `category_overlap_note` | 固定 `true` 與說明：一檔股票可能同時計入多個族群，族群之間互有重疊，不可加總 |
 | `status` | `ok` / `degraded` / `blocked`；每個 `degraded` 必附至少一則 `warnings` 說明原因 |
 | `source_status` | 每個日期與 provider 的 cache path（相對於 `--cache-dir`，與其寫法無關）、狀態、row count |
@@ -998,8 +998,10 @@ Markdown 在 `## 資料品質與限制` 之前為每個分類加 `## 族群細�
 - 交易日判定：四個來源（twse／tpex 法人、twse／tpex 收盤）至少一個 `ok` 即視為交易日；
   該日任一來源非 `ok`（即使沒有 flow row）→ `incomplete_source`、報告 `degraded`，並加
   warning `incomplete sources on {date}: {source}={state}, ...`。四個來源皆為 `missing` 或
-  `no_data` 的日期只列入 `dates_without_data`，不降級；只要有一個來源 `schema_error`，
+  `no_data` 的日期視為休市，只列入 `dates_without_data`，不降級；只要有一個來源 `schema_error`，
   即使沒有任何 `ok` 也算 incomplete 並降級（格式錯誤不可能是休市）。
+  已知風險：某日完全沒跑 ingest 也會被當成休市；抓取失敗不受影響，因為 `ingest sector-flow` 有失敗來源時 exit 1，
+  在抓取當下就會被發現。
 - Markdown：`estimated_amount` 模式在區間排行下附註「排名依估算金額，淨股數與淨金額可能正負相反」；每日區塊除前 10
   名外，另列最大流出（依同一排名指標，僅負值，最多 10 筆）。
 - 個股貢獻排序：`ranking_method=estimated_amount` 時以 `estimated_net_amount_twd`

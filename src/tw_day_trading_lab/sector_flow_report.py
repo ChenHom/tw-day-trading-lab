@@ -120,7 +120,7 @@ def render_sector_flow_markdown(payload: Mapping[str, Any]) -> str:
         "",
     ]
     if "dates_without_data" in payload:
-        lines.extend([f"- 無資料日期（休市或未抓取，無法區分）：{', '.join(payload['dates_without_data']) or '無'}", ""])
+        lines.extend([f"- 休市日（四個來源皆無資料，視為休市）：{', '.join(payload['dates_without_data']) or '無'}", ""])
     period_rows = payload.get("period_summary", [])
     ranking_method = str(payload.get("ranking_method", "net_shares"))
     metrics = [
